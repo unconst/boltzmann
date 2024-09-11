@@ -90,10 +90,10 @@ def main( config ):
 
                 # Download the delta.
                 model = download_model( metadata = miner_meta, device = 'cpu', CLIENT = CLIENT )
-                model.to(config.device)
                 if model == None:
                     # Failed to download the delta.
                     continue
+                model.to(config.device)
             
                 # Pull pages from the miner windo.
                 tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained( 'gpt2', verbose=False, clean_up_tokenization_spaces=True )
