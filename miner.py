@@ -115,7 +115,7 @@ def main( config ):
             eval_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( offset = subtensor.block, n_pages = config.eval_window, seed = my_uid )            
             dataset = SubsetFineWebEdu2Loader(
                 batch_size = config.batch_size,
-                sequence_length = model_meta.sequence_length,
+                sequence_length = 2048,
                 pages_info = [ random.sample( eval_pages ) ],
                 tokenizer = tokenizer
             )

@@ -89,8 +89,8 @@ def main( config ):
                     continue
 
                 # Download the delta.
-                miner_delta = download_model( metadata = miner_meta, device = 'cpu', CLIENT = CLIENT )
-                if miner_delta == None:
+                model = download_model( metadata = miner_meta, device = 'cpu', CLIENT = CLIENT )
+                if model == None:
                     # Failed to download the delta.
                     continue
             
@@ -99,7 +99,7 @@ def main( config ):
                 dataset = SubsetFineWebEdu2Loader(
                     batch_size = config.batch_size,
                     sequence_length = 2048,
-                    pages_info = [ random.choice( eval_pages ) for _ in config.pages_per_step ],
+                    pages_info = [ random.choice( eval_pages ) for _ in range(config.pages_per_step) ],
                     tokenizer = tokenizer
                 )
                                     
@@ -110,7 +110,7 @@ def main( config ):
                     labels = input_ids.clone()
                     labels = torch.where( labels == tokenizer.pad_token_id, -100, labels )
                     with torch.no_grad():
-                        outputs = master( input_ids=input_ids, labels=labels )
+                        outputs = model( input_ids=input_ids, labels=labels )
                     losses.append( outputs.loss.item() )                    
                     del input_ids, labels, outputs
                     torch.cuda.empty_cache()
