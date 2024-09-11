@@ -84,7 +84,7 @@ def main( config ):
             
                 # Get the miner metadata
                 miner_meta = get_latest_metadata( uid, metagraph, subtensor, CLIENT = CLIENT )
-                if miner_meta == None or miner_meta.master_hash != master_hash:
+                if miner_meta == None:
                     # Miner meta is non existent or out of sync with the master.
                     continue
 
