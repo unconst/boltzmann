@@ -141,7 +141,7 @@ def main( config ):
             moving_average_losses = moving_average_losses / moving_average_losses.sum()            
             exp_losses = torch.exp( config.temperature * moving_average_losses )
             weights = exp_losses / exp_losses.sum()            
-            print(f"Normalized weights: {weights}")
+            print(f"Exponentiated weights.: {weights}")
             if config.use_wandb:
                 for i, weight in enumerate(weights):
                     wandb.log({ f"weight_{i}": weight.item() })
@@ -165,7 +165,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
     parser.add_argument('--eval_window', type=int, default=3, help='Number of pages to load')
     parser.add_argument('--pages_per_step', type=int, default=1, help='Number of pages to eval the miner on every step.')
-    parser.add_argument('--temperature', type=int, default=3, help='How steep the exponentiation is.')
+    parser.add_argument('--temperature', type=int, default=20, help='How steep the exponentiation is.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
     bt.wallet.add_args( parser )
