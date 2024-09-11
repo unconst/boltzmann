@@ -149,10 +149,6 @@ def main( config ):
 
         # Handle keyboard interrupts, stops training gracefully.
         except (KeyboardInterrupt, SystemExit):
-            if config.use_wandb and run != None: 
-                api = wandb.Api()
-                api_run = api.run(f"{run.entity}/{run.project}/{run.id}")
-                api_run.delete()
             for el in history:
                 print (f'Deleting: {el.filename}')
                 CLIENT.delete_object( Bucket = config.bucket, Key = el.filename )
@@ -173,7 +169,7 @@ if __name__ == "__main__":
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate for the optimizer')
-    parser.add_argument('--pages_per_step', type=int, default=3, help='Number of pages to eval the miner on every step.')
+    parser.add_argument('--pages_per_step', type=int, default=1, help='Number of pages to eval the miner on every step.')
     parser.add_argument('--optimizer_beta1', type=float, default=0.9, help='Beta1 for the optimizer')
     parser.add_argument('--optimizer_beta2', type=float, default=0.95, help='Beta2 for the optimizer')
     parser.add_argument('--optimizer_weight_decay', type=float, default=0.1, help='Weight decay for the optimizer')

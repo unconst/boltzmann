@@ -144,14 +144,9 @@ def main( config ):
             if config.use_wandb:
                 for i, weight in enumerate(weights):
                     wandb.log({ f"weight_{i}": weight.item() })
-                    
                                 
         # Handle keyboard interrupts, stops training gracefully.
         except (KeyboardInterrupt, SystemExit):
-            if config.use_wandb and run != None: 
-                api = wandb.Api()
-                api_run = api.run(f"{run.entity}/{run.project}/{run.id}")
-                api_run.delete()
             break
         
         # Handle unknown exceptions, continue training after 5 seconds.
@@ -168,7 +163,7 @@ if __name__ == "__main__":
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network uid.')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
     parser.add_argument('--eval_window', type=int, default=3, help='Number of pages to load')
-    parser.add_argument('--pages_per_step', type=int, default=3, help='Number of pages to eval the miner on every step.')
+    parser.add_argument('--pages_per_step', type=int, default=1, help='Number of pages to eval the miner on every step.')
     parser.add_argument('--temperature', type=int, default=3, help='How steep the exponentiation is.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
