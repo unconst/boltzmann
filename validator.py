@@ -90,6 +90,7 @@ def main( config ):
 
                 # Download the delta.
                 model = download_model( metadata = miner_meta, device = 'cpu', CLIENT = CLIENT )
+                model.to(config.device)
                 if model == None:
                     # Failed to download the delta.
                     continue
@@ -122,6 +123,11 @@ def main( config ):
                 step_losses[ uid ] = median_loss 
                 print ( 'UID', uid, 'loss', loss  )
                 if config.use_wandb: wandb.log({ "loss": loss } )
+                
+                # Remove the model.
+                model.to('cpu')
+                del model
+                torch.cuda.empty_cache()
             
             # Compute weights.
             moving_average_losses = torch.zeros( (metagraph.n), dtype=torch.float32 )
