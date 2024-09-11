@@ -31,8 +31,6 @@ from transformers import GPT2Config, GPT2LMHeadModel
 from transformers import LlamaForCausalLM, LlamaConfig, LlamaTokenizer
 from typing import Dict, List, Optional, Tuple
 
-from compression import topk_compress_gradients, topk_decompress_gradients
-
 def human_readable_size(size, decimal_places=2):
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
         if size < 1024.0:
@@ -176,8 +174,6 @@ def upload_model(
         extras: Dict[ str, object ],
         bucket: str,
         CLIENT,
-        use_compression: bool = False,
-        compression_percent: float = 0.9,
     ) -> SimpleNamespace:
     """
     Uploads a model to a specified bucket along with its metadata.
@@ -228,11 +224,6 @@ def upload_model(
         GrantReadACP='uri="http://acs.amazonaws.com/groups/global/AllUsers"'
     )
     
-    # Compress the model.
-    if use_compression:
-        for key, param in model_state_dict.items():
-            model_state_dict[key] = topk_compress_gradients({key: param}, k=int( ( 1 - compression_percent ) * param.numel()))[key]
-
     # Upload the model to the storage service
     start_time = time.time()  # Record the start time for the upload process.
     with io.BytesIO() as module_buffer:
@@ -289,16 +280,7 @@ def download_model(
 
         # Load the model state dict from the unique temporary file
         new_model_state_dict = torch.load(unique_temp_file, map_location=torch.device(device), weights_only=True)  # Load the model state dict
-        
-        # Check if the model is compressed and decompress if necessary
-        if hasattr(metadata, 'compressed') and metadata.compressed:
-            original_shape_dict = {name: param.shape for name, param in model.named_parameters()}
-            for name, param in model.named_parameters():
-                if name in new_model_state_dict:
-                    compressed_data = new_model_state_dict[name]
-                    decompressed_data = topk_decompress_gradients({name: compressed_data}, {name: param.shape})
-                    new_model_state_dict[name] = decompressed_data[name]
-        
+                
         model.load_state_dict(new_model_state_dict)  # Load the state dict into the model
         model.to(device)  # Move the model to the specified device
 
