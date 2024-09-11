@@ -138,7 +138,7 @@ def main( config ):
                 
             # Normalize the moving_average_losses
             moving_average_losses = moving_average_losses / moving_average_losses.sum()            
-            exp_losses = torch.exp( config.temperature * normalized_losses)
+            exp_losses = torch.exp( config.temperature * moving_average_losses )
             weights = exp_losses / exp_losses.sum()            
             print(f"Normalized weights: {weights}")
             if config.use_wandb:
