@@ -116,7 +116,7 @@ def main( config ):
                 # Compute the loss.
                 median_loss = np.mean( losses )
                 step_losses[ miner_uid ] = median_loss 
-                print ( 'UID', miner_uid 'loss', loss  )
+                print ( 'UID', miner_uid, 'loss', loss  )
                 if config.use_wandb: wandb.log({ "loss": loss } )
             
             # Compute weights.

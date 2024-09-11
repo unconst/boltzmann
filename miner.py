@@ -75,7 +75,7 @@ def main( config ):
     print('Bucket:', config.bucket , '\n')
     
     # Init the model.
-    tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained( 'gpt2' verbose=False, clean_up_tokenization_spaces=True )
+    tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained( 'gpt2', verbose=False, clean_up_tokenization_spaces=True )
     tokenizer.pad_token = tokenizer.eos_token        
     model = LlamaForCausalLM( config = LlamaConfig(
         vocab_size = tokenizer.vocab_size,     
