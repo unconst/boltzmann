@@ -206,7 +206,6 @@ def upload_model(
         })
     # Add model hashes.
     extras['model_hash'] = hash_model( model )
-    extras['compressed'] = use_compression
 
     # Generate filenames for the model and its metadata
     filename = f'model-{wallet.hotkey.ss58_address}-{block}.pt'  # Filename for the model
