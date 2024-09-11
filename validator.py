@@ -67,7 +67,7 @@ def main( config ):
     run = None
     if config.use_wandb:
         name = f'Validator-{wallet.hotkey.ss58_address[:5]}'
-        run = wandb.init(project='bistro', name = name, config = config )
+        run = wandb.init(project='bistro', resume = 'allow', name = name, config = config )
         
     # Remember delta for later removal.
     history = []
@@ -98,7 +98,7 @@ def main( config ):
                 eval_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( offset = subtensor.block, n_pages = config.eval_window, seed = uid )
                 dataset = SubsetFineWebEdu2Loader(
                     batch_size = config.batch_size,
-                    sequence_length = master_meta.sequence_length,
+                    sequence_length = 2048,
                     pages_info = [ random.choice( eval_pages ) for _ in config.pages_per_step ],
                     tokenizer = tokenizer
                 )
