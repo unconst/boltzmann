@@ -95,6 +95,8 @@ def main( config ):
                     continue
             
                 # Pull pages from the miner windo.
+                tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained( 'gpt2', verbose=False, clean_up_tokenization_spaces=True )
+                tokenizer.pad_token = tokenizer.eos_token        
                 eval_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( offset = subtensor.block, n_pages = config.eval_window, seed = uid )
                 dataset = SubsetFineWebEdu2Loader(
                     batch_size = config.batch_size,
