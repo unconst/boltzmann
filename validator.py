@@ -121,8 +121,8 @@ def main( config ):
                 # Compute the loss.
                 median_loss = np.mean( losses )
                 step_losses[ uid ] = median_loss 
-                print ( 'UID', uid, 'loss', loss  )
-                if config.use_wandb: wandb.log({ "loss": loss } )
+                print ( 'UID', uid, 'loss', median_loss  )
+                if config.use_wandb: wandb.log({ "loss": median_loss } )
                 
                 # Remove the model.
                 model.to('cpu')

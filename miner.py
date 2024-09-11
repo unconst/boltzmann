@@ -116,7 +116,7 @@ def main( config ):
             dataset = SubsetFineWebEdu2Loader(
                 batch_size = config.batch_size,
                 sequence_length = 2048,
-                pages_info = [ random.sample( eval_pages ) ],
+                pages_info = [ random.choice( eval_pages ) for _ in range(config.pages_per_step) ],
                 tokenizer = tokenizer
             )
                 
@@ -173,6 +173,7 @@ if __name__ == "__main__":
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate for the optimizer')
+    parser.add_argument('--pages_per_step', type=int, default=3, help='Number of pages to eval the miner on every step.')
     parser.add_argument('--optimizer_beta1', type=float, default=0.9, help='Beta1 for the optimizer')
     parser.add_argument('--optimizer_beta2', type=float, default=0.95, help='Beta2 for the optimizer')
     parser.add_argument('--optimizer_weight_decay', type=float, default=0.1, help='Weight decay for the optimizer')
