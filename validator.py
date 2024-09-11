@@ -83,7 +83,7 @@ def main( config ):
             for uid in metagraph.uids:
             
                 # Get the miner metadata
-                miner_meta = get_latest_metadata( miner_uid, metagraph, subtensor, CLIENT = CLIENT )
+                miner_meta = get_latest_metadata( uid, metagraph, subtensor, CLIENT = CLIENT )
                 if miner_meta == None or miner_meta.master_hash != master_hash:
                     # Miner meta is non existent or out of sync with the master.
                     continue
@@ -95,7 +95,7 @@ def main( config ):
                     continue
             
                 # Pull pages from the miner windo.
-                eval_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( offset = subtensor.block, n_pages = config.eval_window, seed = miner_uid )
+                eval_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( offset = subtensor.block, n_pages = config.eval_window, seed = uid )
                 dataset = SubsetFineWebEdu2Loader(
                     batch_size = config.batch_size,
                     sequence_length = master_meta.sequence_length,
@@ -117,8 +117,8 @@ def main( config ):
                 
                 # Compute the loss.
                 median_loss = np.mean( losses )
-                step_losses[ miner_uid ] = median_loss 
-                print ( 'UID', miner_uid, 'loss', loss  )
+                step_losses[ uid ] = median_loss 
+                print ( 'UID', uid, 'loss', loss  )
                 if config.use_wandb: wandb.log({ "loss": loss } )
             
             # Compute weights.
