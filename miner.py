@@ -99,7 +99,7 @@ def main( config ):
     # Init weights and biases
     run = None
     if config.use_wandb:
-        name = f'Miner-{wallet.hotkey.ss58_address[:5]}'
+        name = f'M{wallet.hotkey.ss58_address[:5]}'
         run = wandb.init( project='bistro', resume = 'allow', name = name, config = config )
     
     # Main training loop.
