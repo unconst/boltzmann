@@ -35,6 +35,9 @@ from dotenv import dotenv_values
 from types import SimpleNamespace
 from transformers import AutoTokenizer
 from typing import Dict, List, Optional, Tuple
+from transformers import GPT2Config, GPT2LMHeadModel
+from transformers import LlamaForCausalLM, LlamaConfig, LlamaTokenizer
+
 
 # Import common tooling.
 from common import upload_model, get_latest_metadata, download_model, hash_model

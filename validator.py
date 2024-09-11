@@ -33,6 +33,8 @@ from dotenv import dotenv_values
 from types import SimpleNamespace
 from transformers import AutoTokenizer
 from typing import Dict, Optional
+from transformers import GPT2Config, GPT2LMHeadModel
+from transformers import LlamaForCausalLM, LlamaConfig, LlamaTokenizer
 
 from common import upload_model, get_latest_metadata, download_model, hash_model
 from dataset import SubsetFineWebEdu2Loader
