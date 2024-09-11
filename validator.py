@@ -128,6 +128,7 @@ def main( config ):
                 model.to('cpu')
                 del model
                 torch.cuda.empty_cache()
+            history.append( step_losses )
             
             # Compute weights.
             moving_average_losses = torch.zeros( (metagraph.n), dtype=torch.float32 )
