@@ -1,0 +1,11 @@
+bittensor
+boto3
+safetensors
+torch
+transformers
+python-dotenv
+datasets
+torchvision
+wandb
+typer
+numpy
