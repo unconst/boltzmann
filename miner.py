@@ -75,7 +75,7 @@ def main( config ):
             raise ValueError(f'Chain commitment does not match: {config.bucket}')
     except Exception: 
         subtensor.commit( wallet, config.netuid, config.bucket)
-    print('Bucket:', config.bucket , '\n')
+    print('Bucket:', config.bucket)
     
     # Init the model.
     tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained( 'gpt2', verbose=False, clean_up_tokenization_spaces=True )
@@ -93,70 +93,84 @@ def main( config ):
         betas = ( config.optimizer_beta1, config.optimizer_beta2 ), # B1 and B2
         weight_decay = config.optimizer_weight_decay  # Weight decay
     )
+    print ('Optimizer', optimizer )
+    print ('Model', 'llama', '\n')
     model.to(config.device)
     model.train()
                     
     # Init weights and biases
     if config.use_wandb:
         name = f'M{wallet.hotkey.ss58_address[:5]}'
-        run = wandb.init( project='bistro', resume = 'allow', name = name, config = config )
+        run = wandb.init( project='cont', resume = 'allow', name = name, config = config )
     
     # Main training loop.
-    history = []
+    n_epochs = 0
+    current_meta = None 
     while True:
         
         try:
             # Resync the chain state.
+            n_epochs += 1
+            print('\n', '=' * 40, f'Epoch: {n_epochs}', '=' * 40, '\n')
             subtensor = bt.subtensor( config = config )
             metagraph = subtensor.metagraph( netuid = config.netuid )
             
-            # Pull my eval window pages.
-            eval_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( 
-                offset = subtensor.block * config.window_speed, 
-                n_pages = config.window_size, 
-                seed = my_uid 
-            )
-            # Pull dataset from eval window.
-            dataset = SubsetFineWebEdu2Loader(
-                batch_size = config.batch_size,
-                sequence_length = 2048,
-                pages_info = [ random.choice( eval_pages ) ],
-                tokenizer = tokenizer
-            )
+            # Iterate pages per epoch training on the next from my window.
+            for step in range(config.pages_per_epoch):
                 
-            # Train...
-            for batch in dataset:
+                # Get the current window.
+                eval_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( 
+                    offset = subtensor.block * config.window_speed, 
+                    n_pages = config.window_size, 
+                    seed = my_uid 
+                )
                 
-                # Forward pass
-                input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
-                labels = input_ids.clone()
-                labels = torch.where( labels == tokenizer.pad_token_id, -100, labels )
-                outputs = model( input_ids = input_ids, labels = labels )
-                
-                # Accumulate gradients.
-                outputs.loss.backward()
-                if config.use_wandb: wandb.log({ "loss": outputs.loss.item() } )
-
-                # Step the optimizer.
-                optimizer.step()
-                optimizer.zero_grad()
+                # Pull a random page from my eval window.
+                dataset = SubsetFineWebEdu2Loader(
+                    batch_size = config.batch_size,
+                    sequence_length = 2048,
+                    pages_info = [ random.choice( eval_pages ) ],
+                    tokenizer = tokenizer
+                )
                     
-            # Upload the delta to S3 and check state.
-            history.append( upload_model(
+                # Train on the epoch.
+                for idx, batch in enumerate(dataset):
+                    
+                    # Forward pass
+                    input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
+                    labels = input_ids.clone()
+                    labels = torch.where( labels == tokenizer.pad_token_id, -100, labels )
+                    outputs = model( input_ids = input_ids, labels = labels )
+                    
+                    # Accumulate gradients.
+                    outputs.loss.backward()
+                    print ( "epoch:", n_epochs, "step:", f"{step}/{config.pages_per_epoch}", "batch:", f"{idx}", "loss:", outputs.loss.item() )
+                    if config.use_wandb: wandb.log({ "epoch": n_epochs, "step": step, "batch": idx, "loss": outputs.loss.item() } )
+
+                    # Step the optimizer.
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    
+            # Delete the previous model.
+            if current_meta != None:
+                CLIENT.delete_object( Bucket = config.bucket, Key = current_meta.filename )
+                CLIENT.delete_object( Bucket = config.bucket, Key = current_meta.metadata_filename )
+                
+            # Upload the next to S3.
+            current_meta = upload_model(
                 wallet = wallet,
                 model = model,
                 block = int(time.time()),
                 extras = {},
                 bucket = config.bucket,
                 CLIENT = CLIENT,
-            ))
+            )
 
         # Handle keyboard interrupts, stops training gracefully.
         except (KeyboardInterrupt, SystemExit):
-            for el in history:
-                print (f'Deleting: {el.filename}')
-                CLIENT.delete_object( Bucket = config.bucket, Key = el.filename )
-                CLIENT.delete_object( Bucket = config.bucket, Key = el.metadata_filename )
+            if current_meta != None:
+                CLIENT.delete_object( Bucket = config.bucket, Key = current_meta.filename )
+                CLIENT.delete_object( Bucket = config.bucket, Key = current_meta.metadata_filename )
             break
         
         # Handle unknown exceptions, continue training after 5 seconds.
@@ -178,6 +192,7 @@ if __name__ == "__main__":
     parser.add_argument('--optimizer_weight_decay', type=float, default=0.1, help='Weight decay for the optimizer')
     parser.add_argument('--window_size', type=int, default=5, help='Size of eval window used to evaluate the miner')
     parser.add_argument('--window_speed', type=int, default=5, help='Speed that eval window moves forward across series.')
+    parser.add_argument('--pages_per_epoch', type=int, default=5, help='Pages to train per epoch.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
     bt.wallet.add_args( parser )

@@ -68,7 +68,7 @@ def main( config ):
     # Init weights and biases
     if config.use_wandb:
         name = f'V{wallet.hotkey.ss58_address[:5]}'
-        run = wandb.init(project='bistro', resume = 'allow', name = name, config = config )
+        run = wandb.init(project='cont', resume = 'allow', name = name, config = config )
         
     # Remember delta for later removal.
     n_uids = 0
