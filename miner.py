@@ -97,7 +97,6 @@ def main( config ):
     model.train()
                     
     # Init weights and biases
-    run = None
     if config.use_wandb:
         name = f'M{wallet.hotkey.ss58_address[:5]}'
         run = wandb.init( project='bistro', resume = 'allow', name = name, config = config )
@@ -111,12 +110,17 @@ def main( config ):
             subtensor = bt.subtensor( config = config )
             metagraph = subtensor.metagraph( netuid = config.netuid )
             
-            # Pull my eval windo pages.
-            eval_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( offset = subtensor.block, n_pages = config.eval_window, seed = my_uid )            
+            # Pull my eval window pages.
+            eval_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( 
+                offset = subtensor.block * config.window_speed, 
+                n_pages = config.window_size, 
+                seed = my_uid 
+            )
+            # Pull dataset from eval window.
             dataset = SubsetFineWebEdu2Loader(
                 batch_size = config.batch_size,
                 sequence_length = 2048,
-                pages_info = [ random.choice( eval_pages ) for _ in range(config.pages_per_step) ],
+                pages_info = [ random.choice( eval_pages ) ],
                 tokenizer = tokenizer
             )
                 
@@ -169,11 +173,11 @@ if __name__ == "__main__":
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate for the optimizer')
-    parser.add_argument('--pages_per_step', type=int, default=1, help='Number of pages to eval the miner on every step.')
     parser.add_argument('--optimizer_beta1', type=float, default=0.9, help='Beta1 for the optimizer')
     parser.add_argument('--optimizer_beta2', type=float, default=0.95, help='Beta2 for the optimizer')
     parser.add_argument('--optimizer_weight_decay', type=float, default=0.1, help='Weight decay for the optimizer')
-    parser.add_argument('--eval_window', type=int, default=5, help='Number of pages to load')
+    parser.add_argument('--window_size', type=int, default=5, help='Size of eval window used to evaluate the miner')
+    parser.add_argument('--window_speed', type=int, default=5, help='Speed that eval window moves forward across series.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
     bt.wallet.add_args( parser )
