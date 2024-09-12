@@ -95,7 +95,7 @@ def main( config ):
             np.random.seed( epoch_block )
             metagraph = subtensor.metagraph( netuid = config.netuid, block = epoch_block )
             probabilities = ( metagraph.I + 1e-10 ) / (( metagraph.I + 1e-10 ).sum())
-            epoch_uids = np.random.choice( len(probabilities), size = config.uids_per_epoch, replace=False, p = probabilities)
+            epoch_uids = np.random.choice( len(probabilities), size = config.uids_per_epoch, replace = True, p = probabilities)
             
             # Generate a random series of UIDS [ 21, 1, 4, 99 ...] as a function of the block hash at the last eval checkpoint.
             # We use the block hashes from the previous metagraph.n blocks at the eval_checkpoint_block and then sort the indices to create the 
