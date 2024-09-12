@@ -195,7 +195,7 @@ def main( config ):
                     if current_uid not in history: history[ current_uid ] = []
                     history[ current_uid ].append( { 'n_epochs': n_epochs, 'epoch_block': epoch_block, 'block': current_block, 'uid': current_uid, 'page': page_to_eval_on, 'losses': losses, 'median_loss': median_loss } )
                     print ( 'n_epochs', n_epochs, 'epoch_block', epoch_block, 'block', current_block, 'uid', current_uid, 'page', page_to_eval_on, 'loss', median_loss )
-                    if config.use_wandb: wandb.log( { 'n_uids':uids, 'n_samples':n_samples, 'n_epochs': n_epochs, 'epoch_block': epoch_block, 'block': current_block, 'uid': current_uid, 'page': page_to_eval_on, 'median_loss': median_loss } )
+                    if config.use_wandb: wandb.log( { 'n_uids': n_uids, 'n_samples':n_samples, 'n_epochs': n_epochs, 'epoch_block': epoch_block, 'block': current_block, 'uid': current_uid, 'page': page_to_eval_on, 'median_loss': median_loss } )
                     
                 # Remove the model here and start again.
                 model.to('cpu')
