@@ -79,31 +79,31 @@ def main( config ):
     while True:
         try:
             
-            # Sync the chain state.
+            # Sync the chain state and reconnect to subtensor.
             n_epochs += 1
             subtensor = bt.subtensor( config = config )
                                                         
-            # Creates a random series over the miner uids using the block hash at the last eval checkpoint.
-            # The eval_checkpoint_block = floor( floor( sub.block / eval_window_size ) * eval_window_size )
-            epoch_length = config.blocks_per_uid * config.uids_per_epoch 
-            epoch_block = int( int( (subtensor.block / epoch_length) ) * epoch_length) 
-                        
-            # Compute the miner UIDs to eval on this checkpoint by sampling the incentive distribution.
-            # Use use the eval_checkpoint_block as the seed to keep this consistent across all validator machines.
-            # The likelihood of a miner being selected is proportional to their incentive, this pushes out inactive miners
-            # We only want to sample from the best miners for efficiency.
-            np.random.seed( epoch_block )
-            metagraph = subtensor.metagraph( netuid = config.netuid, block = epoch_block )
-            probabilities = ( metagraph.I + 1e-10 ) / (( metagraph.I + 1e-10 ).sum())
-            epoch_uids = np.random.choice( len(probabilities), size = config.uids_per_epoch, replace = True, p = probabilities)
+            # Compute the epoch length from blocks_per_uid and uids_per_epoch.
+            # Attains the block of the last epoch start with epoch_length num blocks between them. 
+            epoch_length = config.blocks_per_uid * config.uids_per_epoch # Get the epoch length in blocks.
+            epoch_block = int( (subtensor.block / epoch_length) * epoch_length) # Get the block at the last epoch.
+            epoch_hash = subtensor.get_block_hash( epoch_block ) # Get the hash of the block at the last epoch.
+            metagraph = subtensor.metagraph( netuid = config.netuid, block = epoch_block ) # Sync the graph at the epoch block.
             
-            # Generate a random series of UIDS [ 21, 1, 4, 99 ...] as a function of the block hash at the last eval checkpoint.
-            # We use the block hashes from the previous metagraph.n blocks at the eval_checkpoint_block and then sort the indices to create the 
-            # Random but consistent series of evals.
-            epoch_series = epoch_uids[ sorted( range( config.uids_per_epoch ), key=lambda i: int(subtensor.get_block_hash( epoch_block - i ), 16 ) ) ]  
+            # Compute the epoch series function which returns a UID per block during the epoch. For instance:
+            # uids_per_epoch = 4
+            # blocks_per_uid = 3
+            # epoch_uids = [ 1, 4, 2, 5 ]
+            # get_current_uid  = [ 1, 1, 1, 4, 4, 4, 2, 2, 2, 5, 5, 5 ] for block --> block + epoch_length.
+            # We sample the UIDs based on the incentive of each miner at the epoch_block to miners with higher incentive are sampled more often.
+            np.random.seed( int( epoch_hash[:10], 16 ) ) # Seed numpy randomness from the block hash
+            probabilities = ( metagraph.I + 1e-10 ) / (( metagraph.I + 1e-10 ).sum()) # Get probabilities from the metagraph.
+            epoch_uids = np.random.choice( len( probabilities ), size = config.uids_per_epoch, replace = True, p = probabilities ) # Get the UIDs to sample for this epoch.
+            np.random.shuffle( epoch_uids ) # Shuffle the uids over the epoch
+            # Function which returns the UID to sample for each block --> block + epoch_length
             def get_current_uid( block: int ) -> int:
                 current_epoch_index = config.uids_per_epoch * ( (block % ( config.uids_per_epoch * config.blocks_per_uid ) ) + 1 ) / (config.uids_per_epoch * config.blocks_per_uid)  
-                return epoch_series[ min( config.uids_per_epoch -1 , int( current_epoch_index ) )]
+                return int( epoch_uids[ min( len(epoch_uids) - 1 , int( current_epoch_index ) )] )
             
             # Print epoch information.
             print('\n', '=' * 40, f'Epoch: {n_epochs}', '=' * 40, '\n')
@@ -111,9 +111,9 @@ def main( config ):
             print ( 'blocks_per_uid:', config.blocks_per_uid )
             print ( 'epoch_length:', epoch_length )
             print ( 'epoch_block:', epoch_block )
+            print ( 'epoch_hash:', epoch_hash )
             print ( 'probabilities:', probabilities )
             print ( 'epoch_uids:', epoch_uids )
-            print ( 'epoch_series:', epoch_series )
             
             # Iterate over each UID in the series.
             for index in range( config.uids_per_epoch ):
