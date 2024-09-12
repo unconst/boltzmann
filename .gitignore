@@ -4,6 +4,8 @@ venv/
 wandb/
 wandb/**
 
+history.json
+
 *.pyc
 __pycache__/
 *.pyo

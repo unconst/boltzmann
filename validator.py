@@ -197,6 +197,10 @@ def main( config ):
                     print ( 'n_epochs', n_epochs, 'epoch_block', epoch_block, 'block', current_block, 'uid', current_uid, 'page', page_to_eval_on[1], 'loss', median_loss )
                     if config.use_wandb: wandb.log( { 'n_uids': n_uids, 'n_samples':n_samples, 'n_epochs': n_epochs, 'epoch_block': epoch_block, 'block': current_block, 'uid': current_uid, 'page': page_to_eval_on[1], 'median_loss': median_loss } )
                     
+                # Save the history to file
+                with open('history.json', 'w') as f:
+                    json.dump(history, f, indent=4)
+                    
                 # Remove the model here and start again.
                 model.to('cpu')
                 del model
