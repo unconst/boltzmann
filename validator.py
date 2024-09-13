@@ -150,52 +150,87 @@ def main( config ):
                 
                 # Load the tokenizer.
                 tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained( 'gpt2', verbose=False, clean_up_tokenization_spaces=True )
-                tokenizer.pad_token = tokenizer.eos_token        
+                tokenizer.pad_token = tokenizer.eos_token
+                
+                # Get the eval pages based on the current epoch block (these blocks are known to miners.)
+                # The next pages function returns a unique set of pages for each miner based on the epoch block.
+                # All validators see the same window of pages for each miner.
+                eval_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( 
+                    offset = epoch_block * config.window_speed, 
+                    n_pages = config.window_size, 
+                    seed = current_uid 
+                )
+                # Get the miner holdout pages. This is a random sample from outside the 
+                # eval window of a miner (although there may be some overlap). The window is seeded 
+                # by the hash of the epoch block which ensure that the miners can't know this until the epoch
+                # block passes, but all validators will see the same set.
+                holdout_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( 
+                    offset = epoch_block * config.window_speed, 
+                    n_pages = config.window_size, 
+                    seed = epoch_hash 
+                )        
         
                 # We continously pull the current miner to eval until it changes. 
                 # When it changes we will remove the model and restart the loop.
                 while get_current_uid( subtensor.block ) == current_uid:
                     
-                    # Pull pages from the miner window given the speed. The next pages function
-                    # returns a random set of pages for the miner based on the current block.
-                    # The sequence of pages to eval is unique for each miner and indexed by the block.
-                    # All validators see the same sequence of pages for each miner and are evaluating the miners
-                    # on the same block.
-                    current_block = subtensor.block
-                    eval_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( 
-                        offset = epoch_block * config.window_speed, 
-                        n_pages = config.window_size, 
-                        seed = current_uid 
-                    )
-                    
                     # Generate a random page to evaluate the miner on given the 
-                    page_to_eval_on = random.choice( eval_pages )
-                    dataset = SubsetFineWebEdu2Loader(
+                    eval_page = np.random.choice( eval_pages )
+                    holdout_page = np.random.choice( holdout_pages )
+                    eval_dataset = SubsetFineWebEdu2Loader(
                         batch_size = config.batch_size,
                         sequence_length = 2048,
-                        pages_info = [ page_to_eval_on ],
+                        pages_info = [ eval_page ],
+                        tokenizer = tokenizer
+                    )
+                    holdout_dataset = SubsetFineWebEdu2Loader(
+                        batch_size = config.batch_size,
+                        sequence_length = 2048,
+                        pages_info = [ holdout_page],
                         tokenizer = tokenizer
                     )
                                         
-                    # Eval the miner on the window.  
-                    losses = []      
-                    for batch in dataset:                
+                    # Compute losses for miner model on the eval set.  
+                    eval_losses = []      
+                    for batch in eval_dataset:                
                         input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
                         labels = input_ids.clone()
                         labels = torch.where( labels == tokenizer.pad_token_id, -100, labels )
                         with torch.no_grad():
                             outputs = model( input_ids=input_ids, labels=labels )
-                        losses.append( outputs.loss.item() )                    
+                        eval_losses.append( outputs.loss.item() )                    
                         del input_ids, labels, outputs
                         torch.cuda.empty_cache()
                     
-                    # Compute the loss.
+                    # Compute losses for miner model on the holdout set.  
+                    holdout_losses = []      
+                    for batch in holdout_dataset:                
+                        input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
+                        labels = input_ids.clone()
+                        labels = torch.where( labels == tokenizer.pad_token_id, -100, labels )
+                        with torch.no_grad():
+                            outputs = model( input_ids=input_ids, labels=labels )
+                        holdout_losses.append( outputs.loss.item() )                    
+                        del input_ids, labels, outputs
+                        torch.cuda.empty_cache()
+                    
+                    # Record the event.
                     n_samples += 1
-                    median_loss = np.median( losses )
                     if current_uid not in history: history[ current_uid ] = []
-                    history[ current_uid ].append( { 'n_epochs': n_epochs, 'epoch_block': epoch_block, 'block': current_block, 'uid': current_uid, 'page': page_to_eval_on[1], 'losses': losses, 'median_loss': median_loss } )
-                    print ( 'n_epochs', n_epochs, 'epoch_block', epoch_block, 'block', current_block, 'uid', current_uid, 'page', page_to_eval_on[1], 'loss', median_loss )
-                    if config.use_wandb: wandb.log( { 'n_uids': n_uids, 'n_samples':n_samples, 'n_epochs': n_epochs, 'epoch_block': epoch_block, 'block': current_block, 'uid': current_uid, 'page': page_to_eval_on[1], 'median_loss': median_loss } )
+                    event = {
+                        'n_epochs': n_epochs, 
+                        'n_samples':n_samples, 
+                        'epoch_block': epoch_block, 
+                        'block': current_block, 
+                        'uid': current_uid, 
+                        'eval_page': eval_page, 
+                        'holdout_page': holdout_page, 
+                        'eval_losses': eval_losses, 
+                        'holdout_losses': holdout_losses
+                    }
+                    print ( event )
+                    history[ current_uid ].append( event )
+                    if config.use_wandb: wandb.log( event )
                     
                 # Save the history to file
                 with open('history.json', 'w') as f:
