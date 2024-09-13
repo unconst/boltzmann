@@ -29,7 +29,7 @@ import bittensor as bt
 from types import SimpleNamespace
 from transformers import GPT2Config, GPT2LMHeadModel
 from transformers import LlamaForCausalLM, LlamaConfig, LlamaTokenizer
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 def human_readable_size(size, decimal_places=2):
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -292,3 +292,97 @@ def download_model(
     except Exception as e:
         print (f'Error while downloading model from {metadata.filename}@{metadata.bucket} with error {e}.')
         return None
+    
+def save_history(
+    wallet: 'bt.wallet',
+    history: Dict[str, Any],
+    bucket: str,
+    CLIENT,
+) -> None:
+    """
+    Saves the history JSON object to a specified S3 bucket.
+
+    Args:
+        wallet (bt.wallet): The wallet containing the hotkey used to generate the filename.
+        history (Dict[str, Any]): The history data to be saved.
+        bucket (str): The S3 bucket to save the history to.
+        CLIENT: The client used to interact with the storage service.
+
+    Returns:
+        None
+    """
+    try:
+        # Generate the filename based on the wallet's hotkey
+        filename = f'history-{wallet.hotkey.ss58_address}.json'
+        
+        # Serialize the history to JSON and encode to bytes
+        history_bytes = json.dumps(history).encode('utf-8')
+        
+        # Create a buffer from the bytes
+        history_buffer = io.BytesIO(history_bytes)
+        
+        # Upload the history JSON to S3
+        CLIENT.upload_fileobj(history_buffer, bucket, filename)
+        
+        # Grant read and list permissions to all users for the history file
+        CLIENT.put_object_acl(
+            Bucket=bucket,
+            Key=filename,
+            GrantRead='uri="http://acs.amazonaws.com/groups/global/AllUsers"',
+            GrantReadACP='uri="http://acs.amazonaws.com/groups/global/AllUsers"'
+        )
+        
+        print(f"Successfully saved history to {filename} in bucket {bucket}.")
+    except Exception as e:
+        print(f"Error while saving history to {filename} in bucket {bucket}: {e}")
+
+def load_history(
+        uid: int, 
+        metagraph, 
+        subtensor, 
+        CLIENT 
+
+    ) -> Dict[str, Any]:
+    """
+    Loads the history JSON object associated with the latest model from a specified S3 bucket.
+
+    This function retrieves the latest metadata for the given uid using the subtensor and then downloads
+    the corresponding history file from S3 based on the metadata.
+
+    Args:
+        uid (int): The unique identifier for the model.
+        metagraph (bt.metagraph): The metagraph object used to interact with the network.
+        subtensor (bt.subtensor): The subtensor object used to interact with the network.
+        CLIENT: The client used to interact with the storage service.
+
+    Returns:
+        Dict[str, Any]: The loaded history data. Returns an empty dict if loading fails.
+    """
+    try:
+        # Get the bucket name using the subtensor and metagraph information
+        bucket = subtensor.get_commitment(metagraph.netuid, uid)
+        hotkey = metagraph.hotkeys[ uid ]
+        
+        # Define the history filename based on metadata
+        history_filename = f'history-{ hotkey }.json'
+        
+        # Create a buffer to receive the downloaded data
+        history_buffer = io.BytesIO()
+        
+        # Download the history JSON from S3
+        CLIENT.download_fileobj( bucket, history_filename, history_buffer)
+        
+        # Move the buffer's cursor to the beginning
+        history_buffer.seek(0)
+        
+        # Deserialize the JSON data
+        history = json.load(history_buffer)
+        
+        print(f"Successfully loaded history from {history_filename} in bucket { bucket}.")
+        return history
+    except CLIENT.exceptions.NoSuchKey:
+        print(f"History file {history_filename} does not exist in bucket { bucket}. Returning empty history.")
+        return {}
+    except Exception as e:
+        print(f"Error while loading history from {history_filename} in bucket { bucket}: {e}")
+        return {}

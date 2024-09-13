@@ -16,6 +16,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 import os
+import json
 import copy
 import math
 import time
@@ -36,7 +37,7 @@ from typing import Dict, Optional
 from transformers import GPT2Config, GPT2LMHeadModel
 from transformers import LlamaForCausalLM, LlamaConfig, LlamaTokenizer
 
-from common import upload_model, get_latest_metadata, download_model, hash_model
+from common import get_latest_metadata, download_model, load_history, save_history
 from dataset import SubsetFineWebEdu2Loader
 
 # Instantiate my S3 client.
@@ -65,6 +66,14 @@ def main( config ):
     print('\n', '=' * 40, 'Objects', '=' * 40,)
     print ( f'Wallet: {wallet}\nSubtensor: {subtensor}\nMetagraph: {metagraph}\nUID: {my_uid}' )
     
+    # Assert the chain commitment.
+    try:
+        if config.bucket != subtensor.get_commitment(config.netuid, my_uid):
+            raise ValueError(f'Chain commitment does not match: {config.bucket}')
+    except Exception: 
+        subtensor.commit( wallet, config.netuid, config.bucket)
+    print('Bucket:', config.bucket)
+    
     # Init weights and biases
     if config.use_wandb:
         name = f'V{wallet.hotkey.ss58_address[:5]}'
@@ -74,8 +83,9 @@ def main( config ):
     n_uids = 0
     n_epochs = 0
     n_samples = 0
-    history = {}
-    weights = torch.zeros( (metagraph.n), dtype=torch.float32)
+    # Load the history from s3.
+    history = load_history( my_uid, metagraph, subtensor, CLIENT )
+            
     while True:
         try:
             
@@ -97,10 +107,10 @@ def main( config ):
             # uid_for_block( [ 0, 1, 2, 3, 4, 5 ] )  = [ 1, 1, 4, 4, 2, 2] 
             # We sample the UIDs based on the incentive of each miner at the epoch_block to miners with higher incentive are sampled more often.
             np.random.seed( int( epoch_hash[:10], 16 ) ) # Seed numpy randomness from the block hash
-            probabilities = ( metagraph.I + 1e-10 ) / (( metagraph.I + 1e-10 ).sum()) # Get probabilities from the metagraph.
+            probabilities = ( metagraph.I + ( 0.001 / float(metagraph.n) ) ) / (( metagraph.I + ( 0.001 / float(metagraph.n) ) ).sum()) # Get probabilities from the metagraph.
             epoch_uids = np.random.choice( len( probabilities ), size = config.uids_per_epoch, replace = config.uids_per_epoch > metagraph.n, p = probabilities ) # Get the UIDs to sample for this epoch.
             np.random.shuffle( epoch_uids ) # Shuffle the uids over the epoch
-            # Function which returns the UID to sample for each block --> block + epoch_length
+            epoch_uids = [ int( u ) for u in epoch_uids ] # convert to integer list.
             def uid_for_block( block: int ) -> int:
                 current_epoch_index = config.uids_per_epoch * ( (block % ( config.uids_per_epoch * config.blocks_per_uid ) ) + 1 ) / (config.uids_per_epoch * config.blocks_per_uid)  
                 return int( epoch_uids[ min( len(epoch_uids) - 1 , int( current_epoch_index ) )] )
@@ -175,8 +185,9 @@ def main( config ):
                 while uid_for_block( subtensor.block ) == current_uid:
                     
                     # Select random pages to eval on.
-                    eval_page = eval_pages[ np.random.choice( list(range(len(eval_pages))) ) ]
-                    holdout_page = holdout_pages[ np.random.choice( list(range(len(holdout_pages))) ) ]
+                    current_block = subtensor.block
+                    eval_page = random.choice( eval_pages )
+                    holdout_page = random.choice( holdout_pages )
                     eval_dataset = SubsetFineWebEdu2Loader(
                         batch_size = config.batch_size,
                         sequence_length = 2048,
@@ -218,6 +229,7 @@ def main( config ):
                     n_samples += 1
                     if current_uid not in history: history[ current_uid ] = []
                     event = {
+                        'uid': current_uid,
                         'n_epochs': n_epochs, 
                         'n_samples': n_samples, 
                         'epoch_block': epoch_block, 
@@ -226,21 +238,70 @@ def main( config ):
                         'eval_page': eval_page, 
                         'holdout_page': holdout_page, 
                         'eval_losses': eval_losses, 
-                        'holdout_losses': holdout_losses
+                        'holdout_losses': holdout_losses,
+                        'epoch_uids': epoch_uids,
                     }
-                    print ( event )
                     history[ current_uid ].append( event )
                     if config.use_wandb: wandb.log( event )
-                    
-                # Save the history to file
-                with open('history.json', 'w') as f:
-                    json.dump(history, f, indent=4)
-                    
+                    # Save the history to s3.
+                    save_history( wallet, history, config.bucket, CLIENT )
+
                 # Remove the model here and start again.
                 model.to('cpu')
                 del model
                 torch.cuda.empty_cache()
+                
+            ###############
+            ## End Epoch ##
+            ###############
+                           
+            # Compute the minimum model moving average.
+            min_moving_hold_loss = math.inf
+            evals = load_history( my_uid, metagraph, subtensor, CLIENT )
+            for uid in evals.keys():
+                last_block = None
+                moving_hold_loss = 0
+                for sample in evals[uid]:
+                    block = int(sample['block'])
+                    hold_loss = float(np.mean(sample['holdout_losses']))
+                    alpha = config.base_alpha * (block - last_block) if last_block != None else 1
+                    moving_hold_loss = alpha * hold_loss + (1 - alpha) * moving_hold_loss
+                    last_block = block
+                if moving_hold_loss < min_moving_hold_loss:
+                    min_moving_hold_loss = moving_hold_loss
+                    
+            # For each model compute the moving average of it's eval scores (block based.)
+            # Subtract this score from the reference min moving hold out loss to compute the raw score.
+            evals_losses = [ math.inf for _ in metagraph.uids ]
+            scores = [ -min_moving_hold_loss for _ in metagraph.uids ]
+            for uid in evals.keys():
+                last_block = None
+                moving_eval_loss = 0
+                for sample in evals[uid]:
+                    block = int(sample['block'])
+                    eval_loss = float(np.mean(sample['eval_losses']))
+                    alpha = config.base_alpha * (block - last_block) if last_block != None else 1
+                    moving_eval_loss = alpha * eval_loss + (1 - alpha) * moving_eval_loss
+                    last_block = block
+                evals_losses[ int(uid) ] = moving_eval_loss
+                scores[ int(uid) ] = min_moving_hold_loss - moving_eval_loss
+
+            # Using the raw scores normalize them onto the same dimension and then normalize.
+            weights = torch.tensor(scores)
+            weights = (weights - weights.min())/(weights.max() - weights.min())
+            weights = weights/weights.sum()
             
+            # Set weights
+            subtensor.set_weights(
+                wallet = wallet,
+                netuid = metagraph.netuid,
+                uids = metagraph.uids.tolist(),
+                weights = weights.tolist(),
+                wait_for_inclusion = False,
+                wait_for_finalization = False,
+            )
+            print ('Sent Weights to chain:', weights.tolist())
+                        
         # Handle keyboard interrupts, stops training gracefully.
         except (KeyboardInterrupt, SystemExit):
             break
@@ -256,8 +317,10 @@ def main( config ):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Miner script')
     parser.add_argument('--name', type=str, default=None, help='Optional name')
+    parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network uid.')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
+    parser.add_argument('--base_alpha', type=float, default = 0.001, help='Block based moving alpha for setting weights.')
     parser.add_argument('--uids_per_epoch', type=int, default = 3, help='Number of miners to eval on each window.')
     parser.add_argument('--blocks_per_uid', type=int, default = 10, help='Number of blocks we spend evaluating each miner.')
     parser.add_argument('--window_size', type=int, default=50, help='Size of eval window used to evaluate the miner')

@@ -114,13 +114,14 @@ def main( config ):
             print('\n', '=' * 40, f'Epoch: {n_epochs}', '=' * 40, '\n')
             subtensor = bt.subtensor( config = config )
             metagraph = subtensor.metagraph( netuid = config.netuid )
-            
+            if config.use_wandb: wandb.log({ f"Incentive({my_uid})": float(metagraph.I[ my_uid ]) } )
+
             # Iterate pages per epoch training on the next from my window.
             for step in range(config.pages_per_epoch):
                 
                 # Get the current window.
                 eval_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( 
-                    offset = subtensor.block * config.window_speed, 
+                    offset = subtensor.block * config.window_speed + 100, # Sampling from the future.
                     n_pages = config.window_size, 
                     seed = my_uid 
                 )
