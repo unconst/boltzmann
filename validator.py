@@ -91,17 +91,17 @@ def main( config ):
             metagraph = subtensor.metagraph( netuid = config.netuid, block = epoch_block ) # Sync the graph at the epoch block.
             
             # Compute the epoch series function which returns a UID per block during the epoch. For instance:
-            # uids_per_epoch = 4
-            # blocks_per_uid = 3
-            # epoch_uids = [ 1, 4, 2, 5 ]
-            # get_current_uid  = [ 1, 1, 1, 4, 4, 4, 2, 2, 2, 5, 5, 5 ] for block --> block + epoch_length.
+            # uids_per_epoch = 3
+            # blocks_per_uid = 2
+            # epoch_uids = [ 1, 4, 2 ]
+            # uid_for_block( [ 0, 1, 2, 3, 4, 5 ] )  = [ 1, 1, 4, 4, 2, 2] 
             # We sample the UIDs based on the incentive of each miner at the epoch_block to miners with higher incentive are sampled more often.
             np.random.seed( int( epoch_hash[:10], 16 ) ) # Seed numpy randomness from the block hash
             probabilities = ( metagraph.I + 1e-10 ) / (( metagraph.I + 1e-10 ).sum()) # Get probabilities from the metagraph.
-            epoch_uids = np.random.choice( len( probabilities ), size = config.uids_per_epoch, replace = True, p = probabilities ) # Get the UIDs to sample for this epoch.
+            epoch_uids = np.random.choice( len( probabilities ), size = config.uids_per_epoch, replace = config.uids_per_epoch > metagraph.n, p = probabilities ) # Get the UIDs to sample for this epoch.
             np.random.shuffle( epoch_uids ) # Shuffle the uids over the epoch
             # Function which returns the UID to sample for each block --> block + epoch_length
-            def get_current_uid( block: int ) -> int:
+            def uid_for_block( block: int ) -> int:
                 current_epoch_index = config.uids_per_epoch * ( (block % ( config.uids_per_epoch * config.blocks_per_uid ) ) + 1 ) / (config.uids_per_epoch * config.blocks_per_uid)  
                 return int( epoch_uids[ min( len(epoch_uids) - 1 , int( current_epoch_index ) )] )
             
@@ -120,7 +120,7 @@ def main( config ):
                 
                 # Here we get the current UID to eval at this block. 
                 n_uids += 1
-                current_uid = get_current_uid( subtensor.block )
+                current_uid = uid_for_block( subtensor.block )
                 print('\n\n', '-' * 20, f'current_uid: { current_uid }', '-' * 20, '\n')
                 
                 # Here we get the miner metadata at this current block which tells us about their model.
@@ -129,7 +129,7 @@ def main( config ):
                     # Wait until we are evaluating the next miner
                     print ('No valid metadata for uid.')
                     print ('Waiting for next valid uid ...')
-                    while get_current_uid( subtensor.block ) == current_uid:
+                    while uid_for_block( subtensor.block ) == current_uid:
                         time.sleep( 12 )
                     continue
                 
@@ -143,7 +143,7 @@ def main( config ):
                     print ( 'e:', e )
                     # Wait until we are evaluating the next miner uid.
                     print ('Waiting for next valid uid ...')
-                    while get_current_uid( subtensor.block ) == current_uid:
+                    while uid_for_block( subtensor.block ) == current_uid:
                         time.sleep( 12 )
                     continue
                 model.to(config.device)
@@ -155,7 +155,7 @@ def main( config ):
                 # Get the eval pages based on the current epoch block (these blocks are known to miners.)
                 # The next pages function returns a unique set of pages for each miner based on the epoch block.
                 # All validators see the same window of pages for each miner.
-                eval_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( 
+                eval_pages: List[ Tuple[ str, int, str ] ] = SubsetFineWebEdu2Loader.next_pages( 
                     offset = epoch_block * config.window_speed, 
                     n_pages = config.window_size, 
                     seed = current_uid 
@@ -164,19 +164,19 @@ def main( config ):
                 # eval window of a miner (although there may be some overlap). The window is seeded 
                 # by the hash of the epoch block which ensure that the miners can't know this until the epoch
                 # block passes, but all validators will see the same set.
-                holdout_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( 
+                holdout_pages: List[ Tuple[ str, int, str ] ] = SubsetFineWebEdu2Loader.next_pages( 
                     offset = epoch_block * config.window_speed, 
                     n_pages = config.window_size, 
                     seed = epoch_hash 
-                )        
+                )    
         
                 # We continously pull the current miner to eval until it changes. 
                 # When it changes we will remove the model and restart the loop.
-                while get_current_uid( subtensor.block ) == current_uid:
+                while uid_for_block( subtensor.block ) == current_uid:
                     
-                    # Generate a random page to evaluate the miner on given the 
-                    eval_page = np.random.choice( eval_pages )
-                    holdout_page = np.random.choice( holdout_pages )
+                    # Select random pages to eval on.
+                    eval_page = eval_pages[ np.random.choice( list(range(len(eval_pages))) ) ]
+                    holdout_page = holdout_pages[ np.random.choice( list(range(len(holdout_pages))) ) ]
                     eval_dataset = SubsetFineWebEdu2Loader(
                         batch_size = config.batch_size,
                         sequence_length = 2048,
@@ -186,7 +186,7 @@ def main( config ):
                     holdout_dataset = SubsetFineWebEdu2Loader(
                         batch_size = config.batch_size,
                         sequence_length = 2048,
-                        pages_info = [ holdout_page],
+                        pages_info = [ holdout_page ],
                         tokenizer = tokenizer
                     )
                                         
@@ -219,7 +219,7 @@ def main( config ):
                     if current_uid not in history: history[ current_uid ] = []
                     event = {
                         'n_epochs': n_epochs, 
-                        'n_samples':n_samples, 
+                        'n_samples': n_samples, 
                         'epoch_block': epoch_block, 
                         'block': current_block, 
                         'uid': current_uid, 
