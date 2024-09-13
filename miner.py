@@ -100,8 +100,7 @@ def main( config ):
                     
     # Init weights and biases
     if config.use_wandb:
-        name = f'M{wallet.hotkey.ss58_address[:5]}'
-        run = wandb.init( project='cont', resume = 'allow', name = name, config = config )
+        run = wandb.init( project='cont', resume = 'allow', name = f'M{my_uid}', config = config )
     
     # Main training loop.
     n_epochs = 0
