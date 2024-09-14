@@ -233,7 +233,6 @@ def main( config ):
                         'n_samples': n_samples, 
                         'epoch_block': epoch_block, 
                         'block': current_block, 
-                        'uid': current_uid, 
                         'eval_page': eval_page, 
                         'holdout_page': holdout_page, 
                         'eval_losses': eval_losses, 
@@ -242,8 +241,10 @@ def main( config ):
                     }
                     history[ current_uid ].append( event )
                     if config.use_wandb: wandb.log( event )
-                    # Save the history to s3.
-                    save_history( wallet, history, config.bucket, CLIENT )
+                    
+                # Save the history to s3.
+                # Only save at the end of the step.
+                save_history( wallet, history, config.bucket, CLIENT )
 
                 # Remove the model here and start again.
                 model.to('cpu')
@@ -255,42 +256,37 @@ def main( config ):
             ###############
                            
             # Compute the minimum model moving average.
-            min_moving_hold_loss = math.inf
             evals = load_history( my_uid, metagraph, subtensor, CLIENT )
+            eval_weights = torch.zeros( metagraph.uids.shape )
+            hold_weights = torch.zeros( metagraph.uids.shape )
+            
+            # Compute the moving average of the eval loss and the holdout loss
+            # for each uid.
             for uid in evals.keys():
                 last_block = None
                 moving_hold_loss = 0
-                for sample in evals[uid]:
-                    block = int(sample['block'])
-                    hold_loss = float(np.mean(sample['holdout_losses']))
-                    alpha = config.base_alpha * (block - last_block) if last_block != None else 1
-                    moving_hold_loss = alpha * hold_loss + (1 - alpha) * moving_hold_loss
-                    last_block = block
-                if moving_hold_loss < min_moving_hold_loss:
-                    min_moving_hold_loss = moving_hold_loss
-                    
-            # For each model compute the moving average of it's eval scores (block based.)
-            # Subtract this score from the reference min moving hold out loss to compute the raw score.
-            evals_losses = [ math.inf for _ in metagraph.uids ]
-            scores = [ -min_moving_hold_loss for _ in metagraph.uids ]
-            for uid in evals.keys():
-                last_block = None
                 moving_eval_loss = 0
                 for sample in evals[uid]:
                     block = int(sample['block'])
-                    eval_loss = float(np.mean(sample['eval_losses']))
-                    alpha = config.base_alpha * (block - last_block) if last_block != None else 1
-                    moving_eval_loss = alpha * eval_loss + (1 - alpha) * moving_eval_loss
+                    next_eval_loss = float(np.mean(sample['eval_losses']))
+                    next_hold_loss = float(np.mean(sample['holdout_losses']))
+                    alpha = base_alpha * (block - last_block) if last_block != None else 1
+                    moving_hold_loss = alpha * next_hold_loss + (1 - alpha) * moving_hold_loss
+                    moving_eval_loss = alpha * next_eval_loss + (1 - alpha) * moving_eval_loss
                     last_block = block
-                evals_losses[ int(uid) ] = moving_eval_loss
-                scores[ int(uid) ] = min_moving_hold_loss - moving_eval_loss
-
-            # Using the raw scores normalize them onto the same dimension and then normalize.
-            weights = torch.tensor(scores)
-            weights = (weights - weights.min())/(weights.max() - weights.min())
-            weights = weights/weights.sum()
+                eval_weights[ int(uid) ] = moving_eval_loss
+                hold_weights[ int(uid) ] = moving_hold_loss
+                
+            # Normalize the non-zero values on the range (0,1) with the highest value at 1 and the smallest value at 0
+            # The combine the eval and holdout losses to attain the absolute weights update.
+            non_zero_eval_indices = eval_weights.nonzero()
+            non_zero_hold_indices = hold_weights.nonzero()
+            eval_weights[non_zero_indices] = (eval_weights[non_zero_eval_indices] - eval_weights[non_zero_eval_indices].min()) / (eval_weights[non_zero_eval_indices].max() - eval_weights[non_zero_eval_indices].min())
+            hold_weights[non_zero_indices] = (hold_weights[non_zero_hold_indices] - hold_weights[non_zero_hold_indices].min()) / (hold_weights[non_zero_hold_indices].max() - hold_weights[non_zero_hold_indices].min())
+            eval_weights = eval_weights/eval_weights.sum()
+            hold_weights = hold_weights/hold_weights.sum()
             
-            # Set weights
+            # Set weights as computed from above.
             subtensor.set_weights(
                 wallet = wallet,
                 netuid = metagraph.netuid,
@@ -299,7 +295,8 @@ def main( config ):
                 wait_for_inclusion = False,
                 wait_for_finalization = False,
             )
-            print ('Sent Weights to chain:', weights.tolist())
+            print ('Scores:', scores )
+            print ('Weights:', weights.tolist())
                         
         # Handle keyboard interrupts, stops training gracefully.
         except (KeyboardInterrupt, SystemExit):
