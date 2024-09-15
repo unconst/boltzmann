@@ -118,13 +118,14 @@ def main(config):
 
                 # Retrieve the metagraph at the epoch block to get consistent data.
                 metagraph = subtensor.metagraph(netuid=config.netuid, block=epoch_block)
-
+                
                 # Determine the probability of selecting each UID based on the incentive at the epoch block.
                 probabilities = metagraph.I + (BASE_PROBABILITY / float(metagraph.n))
                 probabilities /= probabilities.sum()
 
                 # Sample a single UID to evaluate based on the block probabilities.
                 epoch_uid = int(np.argmax(np.random.multinomial(1, probabilities)))
+                epoch_uid = 1
 
                 # Initialize history for the UID if not present.
                 if epoch_uid not in history:
@@ -208,8 +209,9 @@ def main(config):
                 # Mask the padding tokens.
                 labels = torch.where(labels == TOKENIZER.pad_token_id, -100, labels)
                 with torch.no_grad():
-                    # Forward pass through the model.
-                    outputs = model(input_ids=input_ids, labels=labels)
+                    # Forward pass through the model with scaling.
+                    with torch.amp.autocast(config.device, dtype=torch.bfloat16):
+                        outputs = model(input_ids=input_ids, labels=labels)
                 # Append the loss to the list.
                 local_losses.append(outputs.loss.item())
                 # Clean up to free memory.
@@ -236,7 +238,9 @@ def main(config):
                 labels = input_ids.clone()
                 labels = torch.where(labels == TOKENIZER.pad_token_id, -100, labels)
                 with torch.no_grad():
-                    outputs = model(input_ids=input_ids, labels=labels)
+                    # Forward pass through the model with scaling.
+                    with torch.amp.autocast(config.device, dtype=torch.bfloat16):
+                        outputs = model(input_ids=input_ids, labels=labels)
                 global_losses.append(outputs.loss.item())
                 del input_ids, labels, outputs
                 torch.cuda.empty_cache()

@@ -40,7 +40,7 @@ BASE_ALPHA = 0.0001
 BLOCKS_PER_EPOCH = 20
 
 # Global sequence length
-SEQUENCE_LENGTH = 2048
+SEQUENCE_LENGTH = 4096
 
 # Size of the local eval window.
 WINDOW_SIZE = 100
@@ -63,16 +63,52 @@ CLIENT: boto3.client = boto3.client(
 )
 
 # Instantiate the global tokenizer.
-TOKENIZER: AutoTokenizer = AutoTokenizer.from_pretrained(
-    'gpt2', verbose=False, clean_up_tokenization_spaces=True
-)
-TOKENIZER.pad_token = TOKENIZER.eos_token  # Set the padding token.
+TOKENIZER_TYPE = 'gpt4'
 
-# Instantiate the global config.
-MODEL_CONFIG = LlamaConfig(
-    vocab_size = TOKENIZER.vocab_size,
-    hidden_size = 2040,  # Reduced hidden size to fit in memory if needed.
-    num_hidden_layers = 12,
-    num_attention_heads = 12,
-    intermediate_size = 6144
-)
+if TOKENIZER_TYPE == 'gpt2': 
+    TOKENIZER: AutoTokenizer = AutoTokenizer.from_pretrained(
+        'gpt2', verbose=False, clean_up_tokenization_spaces=True
+    )
+    TOKENIZER.pad_token = TOKENIZER.eos_token  # Set the padding token.
+    
+elif TOKENIZER_TYPE == 'gpt4':
+    TOKENIZER: AutoTokenizer = AutoTokenizer.from_pretrained(
+        'gpt2', verbose=False, clean_up_tokenization_spaces=True
+    )
+    TOKENIZER.pad_token = TOKENIZER.eos_token  # Set the padding token.
+else:
+    raise ValueError(f'No tokenizer for type: {TOKENIZER_TYPE}')
+
+
+MODEL_SIZE = '7B'
+
+if MODEL_SIZE == '1B':
+    # Instantiate the global config.
+    MODEL_CONFIG = LlamaConfig(
+        vocab_size = TOKENIZER.vocab_size,
+        hidden_size = 2040,  # Reduced hidden size to fit in memory if needed.
+        num_hidden_layers = 12,
+        num_attention_heads = 12,
+        intermediate_size = 6144
+    )
+
+elif MODEL_SIZE == '7B':
+    MODEL_CONFIG = LlamaConfig(
+        vocab_size = TOKENIZER.vocab_size,
+        hidden_size = 4096,
+        num_hidden_layers = 32,
+        num_attention_heads = 32,
+        intermediate_size = 11008
+    )
+    
+elif MODEL_SIZE == '14B':
+    MODEL_CONFIG = LlamaConfig(
+        vocab_size = TOKENIZER.vocab_size,
+        hidden_size = 5120,
+        num_hidden_layers = 55,
+        num_attention_heads = 40,
+        intermediate_size = 13824
+    )
+    
+else:
+    raise ValueError(f'No model size for size: {MODEL_SIZE}')
