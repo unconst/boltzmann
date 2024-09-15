@@ -39,18 +39,17 @@ from transformers import LlamaForCausalLM, LlamaConfig, LlamaTokenizer
 
 from common import get_latest_metadata, download_model, load_history, save_history
 from dataset import SubsetFineWebEdu2Loader
-
-# Instantiate the AWS S3 client.
-env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables from .env file and OS environment.
-AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')  # Get AWS access key ID.
-AWS_SECRET_ACCESS_KEY = env_config.get('AWS_SECRET_ACCESS_KEY')  # Get AWS secret access key.
-
-# Create a boto3 client for S3 with the provided credentials.
-CLIENT: boto3.client = boto3.client(
-    's3',
-    region_name='us-east-1',  # Specify the AWS region.
-    aws_access_key_id=AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+from constants import (
+    LOCAL_DOMINANCE,
+    BASE_ALPHA,
+    BLOCKS_PER_UID,
+    UIDS_PER_EPOCH,
+    WINDOW_SIZE, 
+    WINDOW_SPEED, 
+    SEQUENCE_LENGTH, 
+    TOKENIZER, 
+    MODEL_CONFIG, 
+    CLIENT
 )
 
 # Main function that runs the validator script.
@@ -103,7 +102,7 @@ def main(config):
             subtensor = bt.subtensor(config=config)
 
             # Calculate the length of an epoch in blocks.
-            epoch_length = config.blocks_per_uid * config.uids_per_epoch  # Total blocks in an epoch.
+            epoch_length = BLOCKS_PER_UID * UIDS_PER_EPOCH # Total blocks in an epoch.
 
             # Determine the starting block of the current epoch.
             epoch_block = int((subtensor.block / epoch_length) * epoch_length)
@@ -124,9 +123,9 @@ def main(config):
             # Sample UIDs for the current epoch based on the calculated probabilities.
             epoch_uids = np.random.choice(
                 len(probabilities),
-                size=config.uids_per_epoch,
-                replace=config.uids_per_epoch > metagraph.n,
-                p=probabilities
+                size = UIDS_PER_EPOCH,
+                replace = UIDS_PER_EPOCH > metagraph.n,
+                p = probabilities
             )
             np.random.shuffle(epoch_uids)  # Shuffle the UIDs to distribute them over the epoch.
             epoch_uids = [int(u) for u in epoch_uids]  # Convert UIDs to integers.
@@ -134,14 +133,14 @@ def main(config):
             # Function to determine the UID to evaluate at a given block.
             def uid_for_block(block: int) -> int:
                 # Calculate the index within the epoch based on the block number.
-                current_epoch_index = (block % epoch_length) // config.blocks_per_uid
+                current_epoch_index = (block % epoch_length) // BLOCKS_PER_UID
                 # Return the UID corresponding to the calculated index.
                 return int(epoch_uids[min(len(epoch_uids) - 1, int(current_epoch_index))])
 
             # Print epoch information for debugging and tracking.
             print('\n', '=' * 40, f'Epoch: {n_epochs}', '=' * 40, '\n')
-            print('uids_per_epoch:', config.uids_per_epoch)
-            print('blocks_per_uid:', config.blocks_per_uid)
+            print('uids_per_epoch:', UIDS_PER_EPOCH)
+            print('blocks_per_uid:', BLOCKS_PER_UID)
             print('epoch_length:', epoch_length)
             print('epoch_block:', epoch_block)
             print('epoch_hash:', epoch_hash)
@@ -149,7 +148,7 @@ def main(config):
             print('epoch_uids:', epoch_uids)
 
             # Iterate over each UID to be evaluated in the current epoch.
-            for index in range(config.uids_per_epoch):
+            for index in range( UIDS_PER_EPOCH ):
 
                 # Get the current UID to evaluate based on the current block.
                 n_uids += 1
@@ -180,28 +179,37 @@ def main(config):
                         time.sleep(12)
                         subtensor.sync()
                     continue  # Skip to the next UID.
+                
+                # Check that the model.config matches item by item the values in MODEL_CONFIG
+                # Miners must upload models which match the model config as set in the constants.py file.
+                try:
+                    for key, value in MODEL_CONFIG.to_dict().items():
+                        model_value = getattr(model.config, key, None)
+                        if model_value != value:
+                            raise ValueError(f"Model config mismatch for {key}: expected {value}, got {model_value}")
+                except Exception as e:
+                    print('Model config is incorrect.')
+                    # If the model cannot be downloaded, wait until the next UID.
+                    print('Waiting for next valid uid ...')
+                    while uid_for_block(subtensor.block) == current_uid:
+                        time.sleep(12)
+                    continue  # Skip to the next UID.
 
                 # Move the model to the specified device (e.g., GPU).
                 model.to(config.device)
 
-                # Load the tokenizer for the model.
-                tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
-                    'gpt2', verbose=False, clean_up_tokenization_spaces=True
-                )
-                tokenizer.pad_token = tokenizer.eos_token  # Set the padding token.
-
                 # Generate evaluation pages based on the current epoch block and UID.
                 local_pages: List[Tuple[str, int, str]] = SubsetFineWebEdu2Loader.next_pages(
-                    offset = epoch_block * config.window_speed,
-                    n_pages = config.window_size,
+                    offset = epoch_block * WINDOW_SPEED,
+                    n_pages = WINDOW_SIZE,
                     seed = current_uid
                 )
 
                 # Generate global pages seeded by the epoch hash to prevent miners from knowing them in advance.
                 global_pages: List[Tuple[str, int, str]] = SubsetFineWebEdu2Loader.next_pages(
-                    offset = epoch_block * config.window_speed,
-                    n_pages = config.window_size,
-                    seed = epoch_hash
+                    offset = epoch_block * WINDOW_SPEED,
+                    n_pages = WINDOW_SIZE,
+                    seed = random.randint(0, 1000) # Randomly select holdout pages (this can be unqiue per miner.)
                 )
 
                 # Continue evaluating the current UID until it changes.
@@ -214,16 +222,16 @@ def main(config):
 
                     # Create datasets for the eval and global pages.
                     local_dataset = SubsetFineWebEdu2Loader(
-                        batch_size=config.batch_size,
-                        sequence_length=2048,
-                        pages_info=[local_page],
-                        tokenizer=tokenizer
+                        batch_size = config.batch_size,
+                        sequence_length = SEQUENCE_LENGTH,
+                        pages_info =[local_page],
+                        tokenizer = TOKENIZER
                     )
                     global_dataset = SubsetFineWebEdu2Loader(
-                        batch_size=config.batch_size,
-                        sequence_length=2048,
-                        pages_info=[global_page],
-                        tokenizer=tokenizer
+                        batch_size = config.batch_size,
+                        sequence_length = SEQUENCE_LENGTH,
+                        pages_info = [global_page],
+                        tokenizer = TOKENIZER
                     )
 
                     # Initialize lists to store losses.
@@ -284,10 +292,9 @@ def main(config):
                 # Save the history to S3 storage after processing the UID.
                 save_history(wallet, history, config.bucket, CLIENT)
 
-                # Clean up by deleting the model and tokenizer to free memory.
+                # Clean up by deleting the model to free memory.
                 model.to('cpu')
                 del model
-                del tokenizer
                 torch.cuda.empty_cache()
 
             ###############
@@ -316,9 +323,9 @@ def main(config):
                     next_global_loss = float(np.mean(sample['global_losses']))
                     # Calculate the smoothing factor alpha.
                     if last_block is not None:
-                        alpha = config.base_alpha * (block - last_block)
+                        alpha = BASE_ALPHA * (block - last_block)
                     else:
-                        alpha = config.base_alpha
+                        alpha = BASE_ALPHA
                     # Update the moving averages.
                     moving_global_loss = alpha * next_global_loss + (1 - alpha) * moving_global_loss
                     moving_local_loss = alpha * next_local_loss + (1 - alpha) * moving_local_loss
@@ -363,7 +370,7 @@ def main(config):
 
             # Combine the local and global weights equally.
             # The miners must perform well on the global out and local sets.
-            weights = 0.5 * local_weights + 0.5 * global_weights
+            weights = LOCAL_DOMINANCE * local_weights + ( 1 - LOCAL_DOMINANCE ) * global_weights
 
             # Set the computed weights on the chain using the wallet.
             subtensor.set_weights(
@@ -387,8 +394,6 @@ def main(config):
             # Clean up resources if they exist.
             if 'model' in locals():
                 del model
-            if 'tokenizer' in locals():
-                del tokenizer
             torch.cuda.empty_cache()
             time.sleep(5)  # Wait for a short period before retrying.
             continue
@@ -403,12 +408,6 @@ if __name__ == "__main__":
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network uid.')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
-    parser.add_argument('--base_alpha', type=float, default=0.001, help='Block-based moving alpha for setting weights.')
-    parser.add_argument('--uids_per_epoch', type=int, default=3, help='Number of miners to evaluate in each epoch.')
-    parser.add_argument('--blocks_per_uid', type=int, default=10, help='Blocks spent localuating each miner.')
-    parser.add_argument('--window_size', type=int, default=50, help='Size of the local window used to evaluate the miner')
-    parser.add_argument('--window_speed', type=int, default=5, help='Speed that local window moves forward across series.')
-    parser.add_argument('--temperature', type=int, default=20, help='How steep the exponentiation is.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
 

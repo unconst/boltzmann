@@ -38,20 +38,10 @@ from typing import Dict, List, Optional, Tuple
 from transformers import GPT2Config, GPT2LMHeadModel
 from transformers import LlamaForCausalLM, LlamaConfig, LlamaTokenizer
 
-# Import common tooling.
+# Import tooling.
+from constants import WINDOW_SIZE, WINDOW_SPEED, SEQUENCE_LENGTH, TOKENIZER, MODEL_CONFIG, CLIENT
 from common import upload_model, get_latest_metadata, download_model, hash_model
 from dataset import SubsetFineWebEdu2Loader
-
-# Instantiate the AWS S3 client.
-env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
-AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')  # AWS access key ID.
-AWS_SECRET_ACCESS_KEY = env_config.get('AWS_SECRET_ACCESS_KEY')  # AWS secret access key.
-CLIENT: boto3.client = boto3.client(
-    's3',
-    region_name='us-east-1',  # AWS region.
-    aws_access_key_id=AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY
-)
 
 def main(config):
     """
@@ -92,21 +82,9 @@ def main(config):
         subtensor.commit(wallet, config.netuid, config.bucket)
     print('Bucket:', config.bucket)
 
-    # Initialize the tokenizer.
-    tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
-        'gpt2', verbose=False, clean_up_tokenization_spaces=True
-    )
-    tokenizer.pad_token = tokenizer.eos_token  # Set the padding token to the end-of-sequence token.
-
     # Initialize the model.
     # For better performance on the validation system, we can adjust the model configuration.
-    model = LlamaForCausalLM(config=LlamaConfig(
-        vocab_size=tokenizer.vocab_size,
-        hidden_size=2040,  # Reduced hidden size to fit in memory if needed.
-        num_hidden_layers=12,
-        num_attention_heads=12,
-        intermediate_size=6144
-    ))
+    model = LlamaForCausalLM( config = MODEL_CONFIG )
 
     # Initialize the optimizer with appropriate hyperparameters.
     optimizer = optim.AdamW(
@@ -148,9 +126,9 @@ def main(config):
             for step in range(config.pages_per_epoch):
                 # Generate the current training window based on the subtensor block.
                 eval_pages: List[Tuple[str, int, str]] = SubsetFineWebEdu2Loader.next_pages(
-                    offset=subtensor.block * config.window_speed + 100,  # Offset into the future to avoid overlap with validators.
-                    n_pages=config.window_size,
-                    seed=my_uid  # Seed with miner's UID for consistency.
+                    offset = subtensor.block * WINDOW_SPEED + 100,  # Offset into the future to avoid overlap with validators.
+                    n_pages = WINDOW_SIZE,
+                    seed = my_uid  # Seed with miner's UID for consistency.
                 )
 
                 # Select a random page from the evaluation window for training.
@@ -158,10 +136,10 @@ def main(config):
 
                 # Create the dataset for the selected page.
                 dataset = SubsetFineWebEdu2Loader(
-                    batch_size=config.batch_size,
-                    sequence_length=2048,
-                    pages_info=[selected_page],
-                    tokenizer=tokenizer
+                    batch_size = config.batch_size,
+                    sequence_length = SEQUENCE_LENGTH,
+                    pages_info = [ selected_page ],
+                    tokenizer = TOKENIZER
                 )
 
                 # Training loop over batches in the dataset.
@@ -242,8 +220,6 @@ if __name__ == "__main__":
     parser.add_argument('--optimizer_beta1', type=float, default=0.9, help='Beta1 for the optimizer')
     parser.add_argument('--optimizer_beta2', type=float, default=0.95, help='Beta2 for the optimizer')
     parser.add_argument('--optimizer_weight_decay', type=float, default=0.1, help='Weight decay for the optimizer')
-    parser.add_argument('--window_size', type=int, default=5, help='Size of training window')
-    parser.add_argument('--window_speed', type=int, default=5, help='Speed at which the training window moves')
     parser.add_argument('--pages_per_epoch', type=int, default=5, help='Number of pages to train per epoch')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
