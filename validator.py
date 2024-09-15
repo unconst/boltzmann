@@ -94,7 +94,6 @@ def main(config):
             epoch = int((block / BLOCKS_PER_EPOCH))
             epoch_block = epoch * BLOCKS_PER_EPOCH
 
-            # If the epoch has changed, select the next UID to evaluate.
             # Skip the current UID until the epoch has changed.
             if epoch_block == last_epoch and skip_uid:
                 time.sleep(6)
@@ -111,9 +110,6 @@ def main(config):
                 skip_uid = False
                 last_epoch = epoch_block
                 
-                # Save the history to S3 at the end of the previous epoch.
-                save_history(wallet, history, config.bucket, CLIENT)
-
                 # Get the hash of the block at the start of the epoch.
                 epoch_hash = subtensor.get_block_hash(epoch_block)
 
@@ -265,9 +261,6 @@ def main(config):
                 # Log the event to Weights and Biases.
                 wandb.log(event)
                 
-            # Save the history to S3 at the end of the previous epoch.
-            print (history)
-            save_history(wallet, history, config.bucket, CLIENT)
                 
             ###############
             ## End Epoch ##
@@ -280,7 +273,9 @@ def main(config):
                 # The weights are normalized to be in the range [0,1], with lower losses resulting in higher weights.
                 # The weights are then combined using LOCAL_DOMINANCE and adjusted by a temperature factor.
                 # Finally, the weights are normalized to sum to 1 and set on the chain.
-                evals = load_history(my_uid, metagraph, subtensor, CLIENT)
+                # Save the history to S3 at the end of the previous epoch.
+                save_history( wallet, history, config.bucket, CLIENT )
+                evals = load_history( my_uid, metagraph, subtensor, CLIENT )
 
                 # Initialize tensors for local and global weights.
                 local_weights = torch.zeros(metagraph.uids.shape)
