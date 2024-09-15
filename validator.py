@@ -191,47 +191,47 @@ def main(config):
                 tokenizer.pad_token = tokenizer.eos_token  # Set the padding token.
 
                 # Generate evaluation pages based on the current epoch block and UID.
-                eval_pages: List[Tuple[str, int, str]] = SubsetFineWebEdu2Loader.next_pages(
-                    offset=epoch_block * config.window_speed,
-                    n_pages=config.window_size,
-                    seed=current_uid
+                local_pages: List[Tuple[str, int, str]] = SubsetFineWebEdu2Loader.next_pages(
+                    offset = epoch_block * config.window_speed,
+                    n_pages = config.window_size,
+                    seed = current_uid
                 )
 
-                # Generate holdout pages seeded by the epoch hash to prevent miners from knowing them in advance.
-                holdout_pages: List[Tuple[str, int, str]] = SubsetFineWebEdu2Loader.next_pages(
-                    offset=epoch_block * config.window_speed,
-                    n_pages=config.window_size,
-                    seed=epoch_hash
+                # Generate global pages seeded by the epoch hash to prevent miners from knowing them in advance.
+                global_pages: List[Tuple[str, int, str]] = SubsetFineWebEdu2Loader.next_pages(
+                    offset = epoch_block * config.window_speed,
+                    n_pages = config.window_size,
+                    seed = epoch_hash
                 )
 
                 # Continue evaluating the current UID until it changes.
                 while uid_for_block(subtensor.block) == current_uid:
 
-                    # Select random pages from the eval and holdout sets.
+                    # Select random pages from the local and global sets.
                     current_block = subtensor.block
-                    eval_page = random.choice(eval_pages)
-                    holdout_page = random.choice(holdout_pages)
+                    local_page = random.choice(local_pages)
+                    global_page = random.choice(global_pages)
 
-                    # Create datasets for the eval and holdout pages.
-                    eval_dataset = SubsetFineWebEdu2Loader(
+                    # Create datasets for the eval and global pages.
+                    local_dataset = SubsetFineWebEdu2Loader(
                         batch_size=config.batch_size,
                         sequence_length=2048,
-                        pages_info=[eval_page],
+                        pages_info=[local_page],
                         tokenizer=tokenizer
                     )
-                    holdout_dataset = SubsetFineWebEdu2Loader(
+                    global_dataset = SubsetFineWebEdu2Loader(
                         batch_size=config.batch_size,
                         sequence_length=2048,
-                        pages_info=[holdout_page],
+                        pages_info=[global_page],
                         tokenizer=tokenizer
                     )
 
                     # Initialize lists to store losses.
-                    eval_losses = []
-                    holdout_losses = []
+                    local_losses = []
+                    global_losses = []
 
-                    # Evaluate the model on the evaluation dataset.
-                    for batch in eval_dataset:
+                    # Evaluate the model on the local dataset.
+                    for batch in local_dataset:
                         # Convert the batch to tensors and move to the device.
                         input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
                         labels = input_ids.clone()  # Clone input_ids for labels.
@@ -241,19 +241,19 @@ def main(config):
                             # Forward pass through the model.
                             outputs = model(input_ids=input_ids, labels=labels)
                         # Append the loss to the list.
-                        eval_losses.append(outputs.loss.item())
+                        local_losses.append(outputs.loss.item())
                         # Clean up to free memory.
                         del input_ids, labels, outputs
                         torch.cuda.empty_cache()
 
-                    # Evaluate the model on the holdout dataset.
-                    for batch in holdout_dataset:
+                    # Evaluate the model on the global dataset.
+                    for batch in global_dataset:
                         input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
                         labels = input_ids.clone()
                         labels = torch.where(labels == tokenizer.pad_token_id, -100, labels)
                         with torch.no_grad():
                             outputs = model(input_ids=input_ids, labels=labels)
-                        holdout_losses.append(outputs.loss.item())
+                        global_losses.append(outputs.loss.item())
                         del input_ids, labels, outputs
                         torch.cuda.empty_cache()
 
@@ -269,10 +269,10 @@ def main(config):
                         'n_samples': n_samples,
                         'epoch_block': epoch_block,
                         'block': current_block,
-                        'eval_page': eval_page,
-                        'holdout_page': holdout_page,
-                        'eval_losses': eval_losses,
-                        'holdout_losses': holdout_losses,
+                        'local_page': local_page,
+                        'global_page': global_page,
+                        'local_losses': local_losses,
+                        'global_losses': global_losses,
                         'epoch_uids': epoch_uids,
                     }
                     # Append the event to the history.
@@ -299,69 +299,71 @@ def main(config):
             # Load the evaluation history from S3.
             evals = load_history(my_uid, metagraph, subtensor, CLIENT)
 
-            # Initialize tensors for eval and holdout weights.
-            eval_weights = torch.zeros(metagraph.uids.shape)
-            hold_weights = torch.zeros(metagraph.uids.shape)
+            # Initialize tensors for local and global weights.
+            local_weights = torch.zeros(metagraph.uids.shape)
+            global_weights = torch.zeros(metagraph.uids.shape)
 
             # For each UID in the evaluations, compute the moving average losses.
             for uid in evals.keys():
                 last_block = None
-                moving_hold_loss = 0
-                moving_eval_loss = 0
+                moving_global_loss = 0
+                moving_local_loss = 0
                 # Iterate over each sample/event for the UID.
                 for sample in evals[uid]:
                     block = int(sample['block'])
                     # Calculate the mean losses for the sample.
-                    next_eval_loss = float(np.mean(sample['eval_losses']))
-                    next_hold_loss = float(np.mean(sample['holdout_losses']))
+                    next_local_loss = float(np.mean(sample['local_losses']))
+                    next_global_loss = float(np.mean(sample['global_losses']))
                     # Calculate the smoothing factor alpha.
                     if last_block is not None:
                         alpha = config.base_alpha * (block - last_block)
                     else:
                         alpha = config.base_alpha
                     # Update the moving averages.
-                    moving_hold_loss = alpha * next_hold_loss + (1 - alpha) * moving_hold_loss
-                    moving_eval_loss = alpha * next_eval_loss + (1 - alpha) * moving_eval_loss
+                    moving_global_loss = alpha * next_global_loss + (1 - alpha) * moving_global_loss
+                    moving_local_loss = alpha * next_local_loss + (1 - alpha) * moving_local_loss
                     last_block = block  # Update last_block for the next iteration.
-                # Store the final moving averages in the weights tensors.
-                eval_weights[int(uid)] = -moving_eval_loss
-                hold_weights[int(uid)] = -moving_hold_loss
+                # Store the negative of the final moving averages in the weights tensors.
+                local_weights[int(uid)] = -moving_local_loss
+                global_weights[int(uid)] = -moving_global_loss
 
             # Normalize the weights to be in the range [0,1].
-            non_zero_eval_indices = eval_weights.nonzero()
-            non_zero_hold_indices = hold_weights.nonzero()
-            if len(non_zero_eval_indices[0]) > 0:
-                eval_min = eval_weights[non_zero_eval_indices].min()
-                eval_max = eval_weights[non_zero_eval_indices].max()
-                if eval_max != eval_min:
-                    eval_weights[non_zero_eval_indices] = (
-                        (eval_weights[non_zero_eval_indices] - eval_min) / (eval_max - eval_min)
+            # This means lower losses will have higher values in the normalization.
+            non_zero_local_indices = local_weights.nonzero()
+            non_zero_global_indices = global_weights.nonzero()
+            if len(non_zero_local_indices[0]) > 0:
+                local_min = local_weights[non_zero_local_indices].min()
+                local_max = local_weights[non_zero_local_indices].max()
+                if local_max != local_min:
+                    local_weights[non_zero_local_indices] = (
+                        (local_weights[non_zero_local_indices] - local_min) / (local_max - local_min)
                     )
                 else:
-                    eval_weights[non_zero_eval_indices] = 0.0  # Avoid division by zero.
+                    local_weights[non_zero_local_indices] = 0.0  # Avoid division by zero.
 
-            if len(non_zero_hold_indices[0]) > 0:
-                hold_min = hold_weights[non_zero_hold_indices].min()
-                hold_max = hold_weights[non_zero_hold_indices].max()
-                if hold_max != hold_min:
-                    hold_weights[non_zero_hold_indices] = (
-                        (hold_weights[non_zero_hold_indices] - hold_min) / (hold_max - hold_min)
+            if len(non_zero_global_indices[0]) > 0:
+                global_min = global_weights[non_zero_global_indices].min()
+                global_max = global_weights[non_zero_global_indices].max()
+                if global_max != global_min:
+                    global_weights[non_zero_global_indices] = (
+                        (global_weights[non_zero_global_indices] - global_min) / (global_max - global_min)
                     )
                 else:
-                    hold_weights[non_zero_hold_indices] = 0.0  # Avoid division by zero.
+                    global_weights[non_zero_global_indices] = 0.0  # Avoid division by zero.
 
             # Normalize the weights to sum to 1, handling division by zero.
-            if eval_weights.sum() > 0:
-                eval_weights = eval_weights / eval_weights.sum()
+            if local_weights.sum() > 0:
+                local_weights = local_weights / local_weights.sum()
             else:
-                eval_weights = torch.zeros_like(eval_weights)
-            if hold_weights.sum() > 0:
-                hold_weights = hold_weights / hold_weights.sum()
+                local_weights = torch.zeros_like(local_weights)
+            if global_weights.sum() > 0:
+                global_weights = global_weights / global_weights.sum()
             else:
-                hold_weights = torch.zeros_like(hold_weights)
+                global_weights = torch.zeros_like(global_weights)
 
-            # Combine the eval and holdout weights equally.
-            weights = 0.5 * eval_weights + 0.5 * hold_weights
+            # Combine the local and global weights equally.
+            # The miners must perform well on the global out and local sets.
+            weights = 0.5 * local_weights + 0.5 * global_weights
 
             # Set the computed weights on the chain using the wallet.
             subtensor.set_weights(
@@ -403,9 +405,9 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
     parser.add_argument('--base_alpha', type=float, default=0.001, help='Block-based moving alpha for setting weights.')
     parser.add_argument('--uids_per_epoch', type=int, default=3, help='Number of miners to evaluate in each epoch.')
-    parser.add_argument('--blocks_per_uid', type=int, default=10, help='Blocks spent evaluating each miner.')
-    parser.add_argument('--window_size', type=int, default=50, help='Size of the eval window used to evaluate the miner')
-    parser.add_argument('--window_speed', type=int, default=5, help='Speed that eval window moves forward across series.')
+    parser.add_argument('--blocks_per_uid', type=int, default=10, help='Blocks spent localuating each miner.')
+    parser.add_argument('--window_size', type=int, default=50, help='Size of the local window used to evaluate the miner')
+    parser.add_argument('--window_speed', type=int, default=5, help='Speed that local window moves forward across series.')
     parser.add_argument('--temperature', type=int, default=20, help='How steep the exponentiation is.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
