@@ -23,7 +23,6 @@ from transformers import LlamaForCausalLM, LlamaConfig, LlamaTokenizer
 from common import get_latest_metadata, download_model, load_history, save_history
 from dataset import SubsetFineWebEdu2Loader
 from constants import (
-    BLOCKS_PER_SET_WEIGHT,
     EPOCH_CLIFF,
     BASE_PROBABILITY,
     TEMPERATURE,
@@ -270,127 +269,125 @@ def main(config):
             ## End Epoch ##
             ###############
 
-            # Load the evaluation history from S3.
-            if subtensor.block % BLOCKS_PER_SET_WEIGHT == 0:
-                # This section calculates the weights for each UID based on their performance.
-                # It computes the moving average of local and global losses for each UID.
-                # The weights are normalized to be in the range [0,1], with lower losses resulting in higher weights.
-                # The weights are then combined using LOCAL_DOMINANCE and adjusted by a temperature factor.
-                # Finally, the weights are normalized to sum to 1 and set on the chain.
-                # Save the history to S3 at the end of the previous epoch.
-                save_history( wallet, history, config.bucket, CLIENT )
-                evals = load_history( my_uid, metagraph, subtensor, CLIENT )
+            # This section calculates the weights for each UID based on their performance.
+            # It computes the moving average of local and global losses for each UID.
+            # The weights are normalized to be in the range [0,1], with lower losses resulting in higher weights.
+            # The weights are then combined using LOCAL_DOMINANCE and adjusted by a temperature factor.
+            # Finally, the weights are normalized to sum to 1 and set on the chain.
+            # Save the history to S3 at the end of the previous epoch.
+            save_history( wallet, history, config.bucket, CLIENT )
+            evals = load_history( my_uid, metagraph, subtensor, CLIENT )
 
-                # Initialize tensors for local and global weights.
-                local_weights = torch.zeros(metagraph.uids.shape)
-                global_weights = torch.zeros(metagraph.uids.shape)
+            # Initialize tensors for local and global weights.
+            local_weights = torch.zeros(metagraph.uids.shape)
+            global_weights = torch.zeros(metagraph.uids.shape)
 
-                # For each UID in the evaluations, compute the moving average losses.
-                # The moving average is calculated using an exponential smoothing formula:
-                # moving_loss = alpha * next_loss + (1 - alpha) * moving_loss
-                # where alpha is the smoothing factor, which is adjusted based on the block difference.
-                # The final moving averages are stored as negative values in the weights tensors.
-                for uid in evals.keys():
-                    last_block = None
-                    moving_global_loss = 0.0
-                    moving_local_loss = 0.0
-                    # Iterate over each sample/event for the UID.
-                    for sample in evals[uid]:
-                        try:
-                            block = int(sample['block'])
-                            # Calculate the mean losses for the sample.
-                            next_local_loss = float(np.mean(sample['local_losses']))
-                            next_global_loss = float(np.mean(sample['global_losses']))
-                            # Calculate the smoothing factor alpha.
-                            alpha = BASE_ALPHA * (block - last_block) if last_block is not None else BASE_ALPHA
-                            # Update the moving averages.
-                            moving_global_loss = alpha * next_global_loss + (1 - alpha) * moving_global_loss
-                            moving_local_loss = alpha * next_local_loss + (1 - alpha) * moving_local_loss
-                            last_block = block  # Update last_block for the next iteration.
-                        except: continue
-                    # Store the negative of the final moving averages in the weights tensors.
-                    local_weights[int(uid)] = -moving_local_loss
-                    global_weights[int(uid)] = -moving_global_loss
+            # For each UID in the evaluations, compute the moving average losses.
+            # The moving average is calculated using an exponential smoothing formula:
+            # moving_loss = alpha * next_loss + (1 - alpha) * moving_loss
+            # where alpha is the smoothing factor, which is adjusted based on the block difference.
+            # The final moving averages are stored as negative values in the weights tensors.
+            for uid in evals.keys():
+                last_block = None
+                moving_global_loss = 0.0
+                moving_local_loss = 0.0
+                # Iterate over each sample/event for the UID.
+                for sample in evals[uid]:
+                    try:
+                        block = int(sample['block'])
+                        # Calculate the mean losses for the sample.
+                        next_local_loss = float(np.mean(sample['local_losses']))
+                        next_global_loss = float(np.mean(sample['global_losses']))
+                        # Calculate the smoothing factor alpha.
+                        alpha = BASE_ALPHA * (block - last_block) if last_block is not None else BASE_ALPHA
+                        # Update the moving averages.
+                        moving_global_loss = alpha * next_global_loss + (1 - alpha) * moving_global_loss
+                        moving_local_loss = alpha * next_local_loss + (1 - alpha) * moving_local_loss
+                        last_block = block  # Update last_block for the next iteration.
+                    except: continue
+                # Store the negative of the final moving averages in the weights tensors.
+                local_weights[int(uid)] = -moving_local_loss
+                global_weights[int(uid)] = -moving_global_loss
 
-                # This section normalizes the local and global weights to be in the range [0,1].
-                # The normalization process ensures that lower losses will have higher values after normalization.
-                # For each non-zero weight, the normalization is done using the formula:
-                # normalized_weight = (weight - min_weight) / (max_weight - min_weight)
-                # where min_weight and max_weight are the minimum and maximum weights in the non-zero weights.
-                # Find indices of non-zero local and global weights.
-                non_zero_local_indices = local_weights.nonzero(as_tuple=True)
-                non_zero_global_indices = global_weights.nonzero(as_tuple=True)
-                # Normalize local weights if there are non-zero weights.
-                if len(non_zero_local_indices[0]) > 0:
-                    local_min = local_weights[non_zero_local_indices].min()
-                    local_max = local_weights[non_zero_local_indices].max()
-                    if local_max != local_min:
-                        local_weights[non_zero_local_indices] = (
-                            (local_weights[non_zero_local_indices] - local_min) / (local_max - local_min)
-                        )
-                # Normalize global weights if there are non-zero weights.
-                if len(non_zero_global_indices[0]) > 0:
-                    global_min = global_weights[non_zero_global_indices].min()
-                    global_max = global_weights[non_zero_global_indices].max()
-                    if global_max != global_min:
-                        global_weights[non_zero_global_indices] = (
-                            (global_weights[non_zero_global_indices] - global_min) / (global_max - global_min)
-                        )
-                        
-                # Normalize the weights to sum to 1, handling division by zero.
-                # This section normalizes the local and global weights so that their sums equal 1.
-                # The normalization is done by dividing each weight by the total sum of weights.
-                # Mathematically, for a set of weights w_i, the normalized weight w'_i is calculated as:
-                # w'_i = w_i / sum(w_i)
-                # This ensures that the sum of all normalized weights is 1.
-                total_local_weight = local_weights.sum()
-                if total_local_weight > 0:
-                    local_weights = local_weights / total_local_weight
-                total_global_weight = global_weights.sum()
-                if total_global_weight > 0:
-                    global_weights = global_weights / total_global_weight
+            # This section normalizes the local and global weights to be in the range [0,1].
+            # The normalization process ensures that lower losses will have higher values after normalization.
+            # For each non-zero weight, the normalization is done using the formula:
+            # normalized_weight = (weight - min_weight) / (max_weight - min_weight)
+            # where min_weight and max_weight are the minimum and maximum weights in the non-zero weights.
+            # Find indices of non-zero local and global weights.
+            non_zero_local_indices = local_weights.nonzero(as_tuple=True)
+            non_zero_global_indices = global_weights.nonzero(as_tuple=True)
+            # Normalize local weights if there are non-zero weights.
+            if len(non_zero_local_indices[0]) > 0:
+                local_min = local_weights[non_zero_local_indices].min()
+                local_max = local_weights[non_zero_local_indices].max()
+                if local_max != local_min:
+                    local_weights[non_zero_local_indices] = (
+                        (local_weights[non_zero_local_indices] - local_min) / (local_max - local_min)
+                    )
+            # Normalize global weights if there are non-zero weights.
+            if len(non_zero_global_indices[0]) > 0:
+                global_min = global_weights[non_zero_global_indices].min()
+                global_max = global_weights[non_zero_global_indices].max()
+                if global_max != global_min:
+                    global_weights[non_zero_global_indices] = (
+                        (global_weights[non_zero_global_indices] - global_min) / (global_max - global_min)
+                    )
                     
-                # Combine the local and global weights using LOCAL_DOMINANCE.
-                # The miners must perform well on both the global and local sets.
-                weights = LOCAL_DOMINANCE * local_weights + (1 - LOCAL_DOMINANCE) * global_weights
-    
-                # This section calculates the "stale cliff" time, which is the global time at a specific block height.
-                # The block height is determined by subtracting the product of BLOCKS_PER_EPOCH and EPOCH_CLIFF from the current epoch block.
-                # Mathematically, this can be represented as:
-                # stale_cliff_block = epoch_block - (BLOCKS_PER_EPOCH * EPOCH_CLIFF)
-                # The global time at this block height is then queried from the blockchain.
-                stale_cliff = subtensor.substrate.query(
-                    module='Timestamp',
-                    storage_function='Now',
-                    block_hash = subtensor.get_block_hash( epoch_block - BLOCKS_PER_EPOCH * EPOCH_CLIFF )
-                )
-                # For each UID in the metagraph, the latest metadata is retrieved.
-                # If the metadata is non-existent or its last modification time is before the stale cliff time,
-                # the corresponding weight is set to zero, effectively ignoring stale or non-existent UIDs.
-                for uid in metagraph.uids:
-                    meta = get_latest_metadata( uid, metagraph, subtensor, CLIENT=CLIENT )
-                    if meta == None or meta.last_modified < stale_cliff:
-                        # Zero out non-existent or stale UIDS.
-                        weights[ uid ] = 0
-                        
-                # Skew higher scores by temperature.
-                weights = torch.exp(weights * TEMPERATURE)
+            # Normalize the weights to sum to 1, handling division by zero.
+            # This section normalizes the local and global weights so that their sums equal 1.
+            # The normalization is done by dividing each weight by the total sum of weights.
+            # Mathematically, for a set of weights w_i, the normalized weight w'_i is calculated as:
+            # w'_i = w_i / sum(w_i)
+            # This ensures that the sum of all normalized weights is 1.
+            total_local_weight = local_weights.sum()
+            if total_local_weight > 0:
+                local_weights = local_weights / total_local_weight
+            total_global_weight = global_weights.sum()
+            if total_global_weight > 0:
+                global_weights = global_weights / total_global_weight
+                
+            # Combine the local and global weights using LOCAL_DOMINANCE.
+            # The miners must perform well on both the global and local sets.
+            weights = LOCAL_DOMINANCE * local_weights + (1 - LOCAL_DOMINANCE) * global_weights
 
-                # Normalize the final weights to sum to 1.
-                total_weight = weights.sum()
-                if total_weight > 0:
-                    weights = weights / total_weight
+            # This section calculates the "stale cliff" time, which is the global time at a specific block height.
+            # The block height is determined by subtracting the product of BLOCKS_PER_EPOCH and EPOCH_CLIFF from the current epoch block.
+            # Mathematically, this can be represented as:
+            # stale_cliff_block = epoch_block - (BLOCKS_PER_EPOCH * EPOCH_CLIFF)
+            # The global time at this block height is then queried from the blockchain.
+            stale_cliff = subtensor.substrate.query(
+                module='Timestamp',
+                storage_function='Now',
+                block_hash = subtensor.get_block_hash( epoch_block - BLOCKS_PER_EPOCH * EPOCH_CLIFF )
+            )
+            # For each UID in the metagraph, the latest metadata is retrieved.
+            # If the metadata is non-existent or its last modification time is before the stale cliff time,
+            # the corresponding weight is set to zero, effectively ignoring stale or non-existent UIDs.
+            for uid in metagraph.uids:
+                meta = get_latest_metadata( uid, metagraph, subtensor, CLIENT=CLIENT )
+                if meta == None or meta.last_modified < stale_cliff:
+                    # Zero out non-existent or stale UIDS.
+                    weights[ uid ] = 0
+                    
+            # Skew higher scores by temperature.
+            weights = torch.exp(weights * TEMPERATURE)
 
-                # Set the computed weights on the chain using the wallet.
-                subtensor.set_weights(
-                    wallet=wallet,
-                    netuid=metagraph.netuid,
-                    uids=metagraph.uids.tolist(),
-                    weights=weights.tolist(),
-                    wait_for_inclusion=False,
-                    wait_for_finalization=False,
-                )
-                print('Weights:', weights.tolist())
+            # Normalize the final weights to sum to 1.
+            total_weight = weights.sum()
+            if total_weight > 0:
+                weights = weights / total_weight
+
+            # Set the computed weights on the chain using the wallet.
+            subtensor.set_weights(
+                wallet=wallet,
+                netuid=metagraph.netuid,
+                uids=metagraph.uids.tolist(),
+                weights=weights.tolist(),
+                wait_for_inclusion=False,
+                wait_for_finalization=False,
+            )
+            print('Weights:', weights.tolist())
 
         # Handle keyboard interrupts to allow graceful shutdown.
         except (KeyboardInterrupt, SystemExit):

@@ -167,7 +167,7 @@ def main(config):
                         optimizer.zero_grad()
     
                     # Log training progress to console.
-                    print(f"Batch: {idx + 1}, Loss: {loss.item():.4f}")
+                    print(f"Batch: {idx + 1}, Loss: {(loss.item() * accumulation_steps):.4f}")
     
                     # Log metrics to wandb if enabled.
                     if config.use_wandb:
@@ -175,14 +175,14 @@ def main(config):
                             "epoch": n_epochs,
                             "step": step + 1,
                             "batch": idx + 1,
-                            "loss": loss.item()
+                            "loss": loss.item() * accumulation_steps
                         })
                     
                     # TODO: Delete unnecessary tensors to free up GPU memory.
                     del input_ids, labels, outputs
                     torch.cuda.empty_cache()
     
-            After training, remove the previous model from S3 if it exists.
+            # After training, remove the previous model from S3 if it exists.
             if current_meta is not None:
                 CLIENT.delete_object(Bucket=config.bucket, Key=current_meta.filename)
                 CLIENT.delete_object(Bucket=config.bucket, Key=current_meta.metadata_filename)
@@ -220,7 +220,7 @@ if __name__ == "__main__":
     parser.add_argument('--name', type=str, default=None, help='Optional miner name')
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network UID.')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
-    parser.add_argument('--desired_batch_size', type=int, default=1, help='Desired total batch size for training')
+    parser.add_argument('--desired_batch_size', type=int, default=3, help='Desired total batch size for training')
     parser.add_argument('--actual_batch_size', type=int, default=1, help='Actual batch size per step')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate for the optimizer')
     parser.add_argument('--optimizer_beta1', type=float, default=0.9, help='Beta1 for the optimizer')
