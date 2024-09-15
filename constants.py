@@ -49,7 +49,7 @@ WINDOW_SIZE = 100
 WINDOW_SPEED = 10
 
 # Number of epochs before setting weights on chain.
-EPOCHS_PER_SET_WEIGHTS = 1
+BLOCKS_PER_SET_WEIGHT = 50
 
 # Instantiate the AWS S3 client.
 env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.

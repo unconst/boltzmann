@@ -23,7 +23,7 @@ from transformers import LlamaForCausalLM, LlamaConfig, LlamaTokenizer
 from common import get_latest_metadata, download_model, load_history, save_history
 from dataset import SubsetFineWebEdu2Loader
 from constants import (
-    EPOCHS_PER_SET_WEIGHTS,
+    BLOCKS_PER_SET_WEIGHT,
     EPOCH_CLIFF,
     BASE_PROBABILITY,
     TEMPERATURE,
@@ -274,7 +274,7 @@ def main(config):
             ###############
 
             # Load the evaluation history from S3.
-            if epoch % EPOCHS_PER_SET_WEIGHTS == 0:
+            if subtensor.block % BLOCKS_PER_SET_WEIGHT == 0:
                 # This section calculates the weights for each UID based on their performance.
                 # It computes the moving average of local and global losses for each UID.
                 # The weights are normalized to be in the range [0,1], with lower losses resulting in higher weights.
