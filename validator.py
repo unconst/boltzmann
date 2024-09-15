@@ -128,7 +128,7 @@ def main(config):
                 probabilities /= probabilities.sum()
 
                 # Sample a single UID to evaluate based on the block probabilities.
-                epoch_uid = np.argmax(np.random.multinomial(1, probabilities))
+                epoch_uid = int(np.argmax(np.random.multinomial(1, probabilities)))
 
                 # Initialize history for the UID if not present.
                 if epoch_uid not in history:
@@ -260,7 +260,7 @@ def main(config):
             }
             print ( 'uid', epoch_uid, 'block', block, 'local_page', int(local_page[1]), 'local_loss', float(np.mean(local_losses)), 'global_page', int(global_page[1]), 'global_loss', float(np.mean(global_losses)) )
             # Append the event to the history.
-            history[epoch_uid].append(event)
+            history[int(epoch_uid)].append(event)
             if config.use_wandb:
                 # Log the event to Weights and Biases.
                 wandb.log(event)
