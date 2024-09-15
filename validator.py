@@ -124,7 +124,6 @@ def main(config):
 
                 # Sample a single UID to evaluate based on the block probabilities.
                 epoch_uid = int(np.argmax(np.random.multinomial(1, probabilities)))
-                epoch_uid = 1
 
                 # Initialize history for the UID if not present.
                 if epoch_uid not in history:
