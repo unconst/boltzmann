@@ -4,6 +4,11 @@
 BISTRO – Bittensor Incentivized and Scalable Training with Reward Optimization. 
 ---
 
+# How it works
+
+Validators on Bistro 
+
+
 # Step 1.
   - Create an S3 <Bucket> on AWS and add export your AWS API Key.
   - `export AWS_SECRET_ACCESS_KEY=`

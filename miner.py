@@ -1,5 +1,5 @@
 # The MIT License (MIT)
-# Copyright © 2024 Chakana.tech
+# © 2024 Chakana.tech
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 # documentation files (the “Software”), to deal in the Software without restriction, including without limitation
@@ -15,8 +15,8 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-import io
 import os
+import io
 import copy
 import math
 import time
@@ -38,165 +38,225 @@ from typing import Dict, List, Optional, Tuple
 from transformers import GPT2Config, GPT2LMHeadModel
 from transformers import LlamaForCausalLM, LlamaConfig, LlamaTokenizer
 
-
 # Import common tooling.
 from common import upload_model, get_latest_metadata, download_model, hash_model
 from dataset import SubsetFineWebEdu2Loader
 
-# Instantiate my S3 client.
-env_config = {**dotenv_values(".env"), **os.environ}
-AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')
-AWS_SECRET_ACCESS_KEY = env_config.get('AWS_SECRET_ACCESS_KEY')
+# Instantiate the AWS S3 client.
+env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
+AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')  # AWS access key ID.
+AWS_SECRET_ACCESS_KEY = env_config.get('AWS_SECRET_ACCESS_KEY')  # AWS secret access key.
 CLIENT: boto3.client = boto3.client(
     's3',
-    region_name='us-east-1',
-    aws_access_key_id = AWS_ACCESS_KEY_ID,
-    aws_secret_access_key = AWS_SECRET_ACCESS_KEY
+    region_name='us-east-1',  # AWS region.
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY
 )
 
-# Main function.
-def main( config ):
-    print('\n', '-' * 40, 'Config', '-' * 40,)
-    print ( config )
-    
-    # Init Bittensor objects.
-    wallet = bt.wallet( config = config )
-    subtensor = bt.subtensor( config = config )
-    metagraph = subtensor.metagraph( netuid = config.netuid )
+def main(config):
+    """
+    Main function for the miner script.
+
+    This function initializes the model, sets up training parameters, and
+    enters the main training loop where the model is trained and periodically
+    uploaded to the S3 bucket for validation.
+
+    Args:
+        config: The configuration object containing training parameters and settings.
+    """
+    print('\n', '-' * 40, 'Config', '-' * 40)
+    print(config)  # Display the configuration settings.
+
+    # Initialize Bittensor objects.
+    wallet = bt.wallet(config=config)
+    subtensor = bt.subtensor(config=config)
+    metagraph = subtensor.metagraph(netuid=config.netuid)
+
+    # Ensure the wallet's hotkey is registered on the subnet.
     if wallet.hotkey.ss58_address not in metagraph.hotkeys:
         raise ValueError(f'Wallet {wallet} is not registered on subnet: {metagraph.netuid}')
-    my_uid = metagraph.hotkeys.index( wallet.hotkey.ss58_address )
-    print('\n', '-' * 40, 'Objects', '-' * 40,)
-    print ( f'Wallet: {wallet}\nSubtensor: {subtensor}\nMetagraph: {metagraph}\nUID: {my_uid}' )
-    
-    # Assert the chain commitment.
+
+    # Get the UID (unique identifier) for the wallet's hotkey.
+    my_uid = metagraph.hotkeys.index(wallet.hotkey.ss58_address)
+
+    print('\n', '-' * 40, 'Objects', '-' * 40)
+    print(f'Wallet: {wallet}\nSubtensor: {subtensor}\nMetagraph: {metagraph}\nUID: {my_uid}')
+
+    # Assert the chain commitment to ensure the miner's bucket is committed on the chain.
     try:
+        # Check if the bucket committed on-chain matches the configured bucket.
         if config.bucket != subtensor.get_commitment(config.netuid, my_uid):
             raise ValueError(f'Chain commitment does not match: {config.bucket}')
-    except Exception: 
-        subtensor.commit( wallet, config.netuid, config.bucket)
+    except Exception:
+        # If not committed, commit the bucket to the chain.
+        subtensor.commit(wallet, config.netuid, config.bucket)
     print('Bucket:', config.bucket)
-    
-    # Init the model.
-    tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained( 'gpt2', verbose=False, clean_up_tokenization_spaces=True )
-    tokenizer.pad_token = tokenizer.eos_token        
-    model = LlamaForCausalLM( config = LlamaConfig(
-        vocab_size = tokenizer.vocab_size,     
-        hidden_size = 2040,   
-        num_hidden_layers = 12,  
-        num_attention_heads = 12,
-        intermediate_size = 6144
+
+    # Initialize the tokenizer.
+    tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
+        'gpt2', verbose=False, clean_up_tokenization_spaces=True
+    )
+    tokenizer.pad_token = tokenizer.eos_token  # Set the padding token to the end-of-sequence token.
+
+    # Initialize the model.
+    # For better performance on the validation system, we can adjust the model configuration.
+    model = LlamaForCausalLM(config=LlamaConfig(
+        vocab_size=tokenizer.vocab_size,
+        hidden_size=2040,  # Reduced hidden size to fit in memory if needed.
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        intermediate_size=6144
     ))
+
+    # Initialize the optimizer with appropriate hyperparameters.
     optimizer = optim.AdamW(
         model.parameters(),
-        lr = config.learning_rate,  # Peak learning rate
-        betas = ( config.optimizer_beta1, config.optimizer_beta2 ), # B1 and B2
-        weight_decay = config.optimizer_weight_decay  # Weight decay
+        lr=config.learning_rate,  # Learning rate.
+        betas=(config.optimizer_beta1, config.optimizer_beta2),  # Beta1 and Beta2 for Adam optimizer.
+        weight_decay=config.optimizer_weight_decay  # Weight decay for regularization.
     )
-    print ('Optimizer', optimizer )
-    print ('Model', 'llama', '\n')
-    model.to(config.device)
-    model.train()
-                    
-    # Init weights and biases
+    print('Optimizer:', optimizer)
+    print('Model:', 'llama', '\n')
+
+    model.to(config.device)  # Move the model to the specified device (CPU or GPU).
+    model.train()  # Set the model to training mode.
+
+    # Initialize Weights and Biases (wandb) for experiment tracking if enabled.
     if config.use_wandb:
-        run = wandb.init( project='cont', resume = 'allow', name = f'M{my_uid}', config = config )
-    
+        run = wandb.init(project='cont', resume='allow', name=f'M{my_uid}', config=config)
+
+    # Main training loop variables.
+    n_epochs = 0  # Number of epochs completed.
+    current_meta = None  # Metadata of the current model version.
+
     # Main training loop.
-    n_epochs = 0
-    current_meta = None 
     while True:
-        
         try:
-            # Resync the chain state.
+            # Increment the epoch counter.
             n_epochs += 1
             print('\n', '=' * 40, f'Epoch: {n_epochs}', '=' * 40, '\n')
-            subtensor = bt.subtensor( config = config )
-            metagraph = subtensor.metagraph( netuid = config.netuid )
-            if config.use_wandb: wandb.log({ f"Incentive({my_uid})": float(metagraph.I[ my_uid ]) } )
 
-            # Iterate pages per epoch training on the next from my window.
+            # Resynchronize the chain state to get the latest metagraph.
+            subtensor = bt.subtensor(config=config)
+            metagraph = subtensor.metagraph(netuid=config.netuid)
+
+            # Log the miner's incentive value if wandb is enabled.
+            if config.use_wandb:
+                wandb.log({f"Incentive({my_uid})": float(metagraph.I[my_uid])})
+
+            # Iterate over the number of pages to train per epoch.
             for step in range(config.pages_per_epoch):
-                
-                # Get the current window.
-                eval_pages: Tuple[ str, int, str ] = SubsetFineWebEdu2Loader.next_pages( 
-                    offset = subtensor.block * config.window_speed + 100, # Sampling from the future.
-                    n_pages = config.window_size, 
-                    seed = my_uid 
+                # Generate the current training window based on the subtensor block.
+                eval_pages: List[Tuple[str, int, str]] = SubsetFineWebEdu2Loader.next_pages(
+                    offset=subtensor.block * config.window_speed + 100,  # Offset into the future to avoid overlap with validators.
+                    n_pages=config.window_size,
+                    seed=my_uid  # Seed with miner's UID for consistency.
                 )
-                
-                # Pull a random page from my eval window.
-                dataset = SubsetFineWebEdu2Loader(
-                    batch_size = config.batch_size,
-                    sequence_length = 2048,
-                    pages_info = [ random.choice( eval_pages ) ],
-                    tokenizer = tokenizer
-                )
-                    
-                # Train on the epoch.
-                for idx, batch in enumerate(dataset):
-                    
-                    # Forward pass
-                    input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
-                    labels = input_ids.clone()
-                    labels = torch.where( labels == tokenizer.pad_token_id, -100, labels )
-                    outputs = model( input_ids = input_ids, labels = labels )
-                    
-                    # Accumulate gradients.
-                    outputs.loss.backward()
-                    print ( "epoch:", n_epochs, "step:", f"{step}/{config.pages_per_epoch}", "batch:", f"{idx}", "loss:", outputs.loss.item() )
-                    if config.use_wandb: wandb.log({ "epoch": n_epochs, "step": step, "batch": idx, "loss": outputs.loss.item() } )
 
-                    # Step the optimizer.
+                # Select a random page from the evaluation window for training.
+                selected_page = random.choice(eval_pages)
+
+                # Create the dataset for the selected page.
+                dataset = SubsetFineWebEdu2Loader(
+                    batch_size=config.batch_size,
+                    sequence_length=2048,
+                    pages_info=[selected_page],
+                    tokenizer=tokenizer
+                )
+
+                # Training loop over batches in the dataset.
+                for idx, batch in enumerate(dataset):
+                    # Convert the batch to a PyTorch tensor and move to the device.
+                    input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
+                    labels = input_ids.clone()  # Clone input_ids for labels.
+
+                    # Mask the padding tokens in labels to ignore them in loss computation.
+                    labels = torch.where(labels == tokenizer.pad_token_id, -100, labels)
+
+                    # Forward pass through the model.
+                    outputs = model(input_ids=input_ids, labels=labels)
+                    loss = outputs.loss  # Get the loss value.
+
+                    # Backward pass to compute gradients.
+                    loss.backward()
+
+                    # Log training progress.
+                    print(f"Epoch: {n_epochs}, Step: {step + 1}/{config.pages_per_epoch}, Batch: {idx + 1}, Loss: {loss.item():.4f}")
+
+                    # Log metrics to wandb if enabled.
+                    if config.use_wandb:
+                        wandb.log({
+                            "epoch": n_epochs,
+                            "step": step + 1,
+                            "batch": idx + 1,
+                            "loss": loss.item()
+                        })
+
+                    # Optimizer step to update model parameters.
                     optimizer.step()
-                    optimizer.zero_grad()
-                    
-            # Delete the previous model.
-            if current_meta != None:
-                CLIENT.delete_object( Bucket = config.bucket, Key = current_meta.filename )
-                CLIENT.delete_object( Bucket = config.bucket, Key = current_meta.metadata_filename )
-                
-            # Upload the next to S3.
+                    optimizer.zero_grad()  # Reset gradients.
+
+            # After training, remove the previous model from S3 if it exists.
+            if current_meta is not None:
+                CLIENT.delete_object(Bucket=config.bucket, Key=current_meta.filename)
+                CLIENT.delete_object(Bucket=config.bucket, Key=current_meta.metadata_filename)
+
+            # Upload the current model to S3 for validation.
             current_meta = upload_model(
-                wallet = wallet,
-                model = model,
-                block = int(time.time()),
-                extras = {},
-                bucket = config.bucket,
-                CLIENT = CLIENT,
+                wallet=wallet,
+                model=model,
+                block=int(time.time()),  # Use current timestamp as block number.
+                extras={},  # Additional metadata can be added here.
+                bucket=config.bucket,
+                CLIENT=CLIENT,
             )
 
-        # Handle keyboard interrupts, stops training gracefully.
+            # Optionally, we can implement a mechanism to ensure the model is uploaded only when improved.
+            # For example, we can keep track of the validation loss and only upload if it decreases.
+
+        # Handle keyboard interrupts to allow graceful shutdown.
         except (KeyboardInterrupt, SystemExit):
-            if current_meta != None:
-                CLIENT.delete_object( Bucket = config.bucket, Key = current_meta.filename )
-                CLIENT.delete_object( Bucket = config.bucket, Key = current_meta.metadata_filename )
+            # Clean up by deleting the model from S3 if it exists.
+            if current_meta is not None:
+                CLIENT.delete_object(Bucket=config.bucket, Key=current_meta.filename)
+                CLIENT.delete_object(Bucket=config.bucket, Key=current_meta.metadata_filename)
+            print("Training interrupted. Exiting gracefully.")
             break
-        
-        # Handle unknown exceptions, continue training after 5 seconds.
+
+        # Handle any other exceptions, log the error, and continue after a short delay.
         except Exception as e:
-            print (f"Error: {e}")
+            print(f"Error: {e}")
             time.sleep(5)
             continue
 
-# Main function.
 if __name__ == "__main__":
+    # Create an argument parser for command-line options.
     parser = argparse.ArgumentParser(description='Miner script')
+
+    # Add command-line arguments with default values and help descriptions.
     parser.add_argument('--name', type=str, default=None, help='Optional miner name')
-    parser.add_argument('--netuid', type=int, default=212, help='Bittensor network uid.')
+    parser.add_argument('--netuid', type=int, default=212, help='Bittensor network UID.')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate for the optimizer')
     parser.add_argument('--optimizer_beta1', type=float, default=0.9, help='Beta1 for the optimizer')
     parser.add_argument('--optimizer_beta2', type=float, default=0.95, help='Beta2 for the optimizer')
     parser.add_argument('--optimizer_weight_decay', type=float, default=0.1, help='Weight decay for the optimizer')
-    parser.add_argument('--window_size', type=int, default=5, help='Size of eval window used to evaluate the miner')
-    parser.add_argument('--window_speed', type=int, default=5, help='Speed that eval window moves forward across series.')
-    parser.add_argument('--pages_per_epoch', type=int, default=5, help='Pages to train per epoch.')
-    parser.add_argument('--device', type=str, default='cuda', help='Device to use for training')
+    parser.add_argument('--window_size', type=int, default=5, help='Size of training window')
+    parser.add_argument('--window_speed', type=int, default=5, help='Speed at which the training window moves')
+    parser.add_argument('--pages_per_epoch', type=int, default=5, help='Number of pages to train per epoch')
+    parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
-    bt.wallet.add_args( parser )
-    bt.subtensor.add_args( parser )
-    config = bt.config( parser )   
-    config.subtensor.chain_endpoint = 'wss://test.finney.opentensor.ai:443/' # Fix this value.
-    main( config ) 
+
+    # Add arguments from Bittensor modules for wallet and subtensor configurations.
+    bt.wallet.add_args(parser)
+    bt.subtensor.add_args(parser)
+
+    # Parse the arguments to create a configuration object.
+    config = bt.config(parser)
+
+    # Set the chain endpoint for the subtensor (fixed value).
+    config.subtensor.chain_endpoint = 'wss://test.finney.opentensor.ai:443/'
+
+    # Call the main function with the parsed configuration.
+    main(config)
