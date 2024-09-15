@@ -347,7 +347,7 @@ def download_model(
         CLIENT.download_file(metadata.bucket, metadata.filename, unique_temp_file)
 
         # Load the model state dict from the temporary file.
-        new_model_state_dict = torch.load(unique_temp_file, map_location=torch.device(device))
+        new_model_state_dict = torch.load( unique_temp_file, map_location=torch.device(device), weights_only = True )
         
         # Load the state dict into the model.
         model.load_state_dict(new_model_state_dict)

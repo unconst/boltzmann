@@ -21,17 +21,23 @@ from dotenv import dotenv_values
 from transformers import AutoTokenizer
 from transformers import LlamaConfig
 
-# How much (out of 1) the local evaluation counts relative to global.
-LOCAL_DOMINANCE = 0.5
+# Number of epochs before a model becomes stale (and no longer considered active for incentive.)
+EPOCH_CLIFF = 256
 
-# Moving average alpha for the valdiator
+# Base sample probability
+BASE_PROBABILITY = 1
+
+# Skews higher weights by exponential factor with this temperature term.
+TEMPERATURE = 5
+
+# How much (out of 1) the local evaluation counts relative to global.
+LOCAL_DOMINANCE = 0.33
+
+# Moving average alpha for the validator
 BASE_ALPHA = 0.0001
 
-# Number of uids to eval per epoch.
-UIDS_PER_EPOCH = 4
-
 # Number of blocks to eval per uid.
-BLOCKS_PER_UID = 10
+BLOCKS_PER_EPOCH = 20
 
 # Global sequence length
 SEQUENCE_LENGTH = 2048
@@ -41,6 +47,9 @@ WINDOW_SIZE = 100
 
 # Number of new pages added to the local window every block.
 WINDOW_SPEED = 10
+
+# Number of epochs before setting weights on chain.
+EPOCHS_PER_SET_WEIGHTS = 1
 
 # Instantiate the AWS S3 client.
 env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
