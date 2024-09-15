@@ -324,8 +324,8 @@ def main(config):
                     moving_eval_loss = alpha * next_eval_loss + (1 - alpha) * moving_eval_loss
                     last_block = block  # Update last_block for the next iteration.
                 # Store the final moving averages in the weights tensors.
-                eval_weights[int(uid)] = moving_eval_loss
-                hold_weights[int(uid)] = moving_hold_loss
+                eval_weights[int(uid)] = -moving_eval_loss
+                hold_weights[int(uid)] = -moving_hold_loss
 
             # Normalize the weights to be in the range [0,1].
             non_zero_eval_indices = eval_weights.nonzero()
