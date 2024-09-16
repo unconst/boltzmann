@@ -108,6 +108,16 @@ def main(config):
             master_uid = int(metagraph.S.argmax())
             lastest_master_meta = get_latest_metadata( key = 'model', uid = master_uid, metagraph = metagraph, subtensor = subtensor, CLIENT = CLIENT)
             if lastest_master_meta == None:
+                # Check if we are infact the master. Then upload our state.
+                if master_uid == my_uid:
+                    current_meta = upload_model(
+                        wallet = wallet,
+                        model = master,
+                        block = int(time.time()),  # Use current timestamp as block number.
+                        extras = {},  # Additional metadata can be added here.
+                        bucket = config.bucket,
+                        CLIENT = CLIENT,
+                    )
                 print ('No Valid master waiting ...')
                 time.sleep(12)
                 continue

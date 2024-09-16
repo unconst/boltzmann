@@ -1,24 +1,33 @@
+# The MIT License (MIT)
+# © 2024 Chakana.tech
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
+# the Software.
+
+# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+
 import os
-import io
 import copy
 import math
 import time
-import boto3
 import torch
 import wandb
-import typer
 import random
 import argparse
-import tempfile
 import bittensor as bt
 import numpy as np
-from tqdm import tqdm
-import torch.optim as optim
-from dotenv import dotenv_values
 from types import SimpleNamespace
 from transformers import Adafactor
-from transformers import AutoTokenizer
-from typing import Dict, List, Optional, Tuple
+from typing import List, Tuple
 from transformers import LlamaForCausalLM 
 
 # Import constants and utility functions specific to the project.
@@ -83,25 +92,25 @@ def main(config):
             metagraph = subtensor.metagraph(netuid=config.netuid)
             
             # Get the master.
-            lastest_master_meta = get_latest_metadata( key = 'model', uid = int(metagraph.S.argmax()), metagraph = metagraph, subtensor = subtensor, CLIENT=CLIENT)
-            if lastest_master_meta == None:
+            latest_master_meta = get_latest_metadata( key = 'model', uid = int(metagraph.S.argmax()), metagraph = metagraph, subtensor = subtensor, CLIENT=CLIENT)
+            if latest_master_meta is None:
                 print ('No Valid master waiting ...')
                 time.sleep(12)
                 continue
                 
             # Update the master model
-            if current_master_meta == None or lastest_master_meta.model_hash != current_master_meta.model_hash:
+            if current_master_meta is None or latest_master_meta.model_hash != current_master_meta.model_hash:
                 print ('Loading the new master...')
-                current_master_meta = lastest_master_meta
+                current_master_meta = latest_master_meta
                 # We can update the model by loading the delta.
                 applied_delta = False
                 
                 # Attempt to load the master model via the delta.
-                if hasattr( lastest_master_meta, 'delta' ) and current_master_meta != None:
+                if hasattr( latest_master_meta, 'delta' ) and current_master_meta is not None:
                     print ('Applying delta....')
                     try:
                         # Apply delta from the latest master if exists.
-                        delta_meta = SimpleNamespace( **lastest_master_meta.delta ) 
+                        delta_meta = SimpleNamespace( **latest_master_meta.delta ) 
                         delta = download_model( metadata = delta_meta, device = 'cpu', CLIENT = CLIENT )
                         for (name, model_param), (_, delta_param) in zip( model.named_parameters(), delta.named_parameters() ):
                             model_param.data.add_( delta_param.data.to( model.device ) )
@@ -115,11 +124,11 @@ def main(config):
                         applied_delta = False
                         
                 # If we failed to apply the delta to update load the state from master.
-                # Or of the hashes are not correct.
-                if applied_delta == False or hash_model( master ) != lastest_master_meta.model_hash:
+                # Or if the hashes are not correct.
+                if applied_delta == False or hash_model( master ) != latest_master_meta.model_hash:
                     print ('Loading master model directly.')
-                    # Other wise just get the master directly.
-                    master = download_model( metadata = lastest_master_meta, device='cpu', CLIENT = CLIENT )    
+                    # Otherwise just get the master directly.
+                    master = download_model( metadata = latest_master_meta, device='cpu', CLIENT = CLIENT )    
                     model = copy.deepcopy( master )
                     scaler = torch.amp.GradScaler()            
                     optimizer = Adafactor(
@@ -247,6 +256,23 @@ if __name__ == "__main__":
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate for the optimizer')
     parser.add_argument('--optimizer_beta1', type=float, default=0.9, help='Beta1 for the optimizer')
     parser.add_argument('--optimizer_beta2', type=float, default=0.95, help='Beta2 for the optimizer')
+    parser.add_argument('--optimizer_weight_decay', type=float, default=0.1, help='Weight decay for the optimizer')
+    parser.add_argument('--pages_per_epoch', type=int, default=1, help='Number of pages to train per epoch')
+    parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
+    parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
+    
+    # Add arguments from Bittensor modules for wallet and subtensor configurations.
+    bt.wallet.add_args(parser)
+    bt.subtensor.add_args(parser)
+    
+    # Parse the arguments to create a configuration object.
+    config = bt.config(parser)
+    
+    # Set the chain endpoint for the subtensor (fixed value).
+    config.subtensor.chain_endpoint = 'wss://test.finney.opentensor.ai:443/'
+    
+    # Call the main function with the parsed configuration.
+    main(config)
     parser.add_argument('--optimizer_weight_decay', type=float, default=0.1, help='Weight decay for the optimizer')
     parser.add_argument('--pages_per_epoch', type=int, default=1, help='Number of pages to train per epoch')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
