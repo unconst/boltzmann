@@ -1,3 +1,20 @@
+# The MIT License (MIT)
+# © 2024 Chakana.tech
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
+# the Software.
+
+# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+
 import os
 import json
 import copy
@@ -16,9 +33,14 @@ from collections import deque
 from dotenv import dotenv_values
 from types import SimpleNamespace
 from typing import Dict, Optional, List, Tuple
-from transformers import AutoTokenizer
-from transformers import GPT2Config, GPT2LMHeadModel
-from transformers import LlamaForCausalLM, LlamaConfig, LlamaTokenizer
+from transformers import (
+    AutoTokenizer,
+    GPT2Config,
+    GPT2LMHeadModel,
+    LlamaConfig,
+    LlamaForCausalLM,
+    LlamaTokenizer,
+)
 
 from common import *
 from constants import *
@@ -74,24 +96,23 @@ def main(config):
         ) 
 
     # Remember the min moving global loss.
-    min_moving_global_loss = math.inf
+    upload_threshold = math.inf
     current_master_meta = None
     while True:
         try:
-            # Reconnect to the subtensor to ensure we have the latest state.
-            subtensor = bt.subtensor(config=config)
-            
-            # Sync the metagraph
+            # Sync the chain state.
+            subtensor = bt.subtensor(config=config)            
             metagraph = subtensor.metagraph(netuid=config.netuid)
             
-            # Get the master.
-            lastest_master_meta = get_latest_metadata( key = 'model', uid = int(metagraph.S.argmax()), metagraph = metagraph, subtensor = subtensor, CLIENT=CLIENT)
+            # Get the master metadata.
+            master_uid = int(metagraph.S.argmax())
+            lastest_master_meta = get_latest_metadata( key = 'model', uid = master_uid, metagraph = metagraph, subtensor = subtensor, CLIENT = CLIENT)
             if lastest_master_meta == None:
                 print ('No Valid master waiting ...')
                 time.sleep(12)
                 continue
                 
-            # Update the master model
+            # If the master has changed or is None, download it.
             if current_master_meta == None or lastest_master_meta.model_hash != current_master_meta.model_hash:
                 print ('Loading the new master...')
                 current_master_meta = lastest_master_meta
@@ -99,23 +120,21 @@ def main(config):
                 master.to( config.device )
                 master.eval()
 
-            # Sample the next uid based on incentive.
+            # Sample the next uid based on incentives.
             probabilities = metagraph.I + (BASE_PROBABILITY / float(metagraph.n))
             probabilities /= probabilities.sum()
             next_uid = int(np.argmax(np.random.multinomial(1, probabilities)))
             print (f'next_uid: {next_uid}')
 
-            # Retrieve the miner's metadata, which contains information about their model.
+            # Retrieve the miner's metadata, which contains information about their delta.
             metadata = get_latest_metadata( key = 'delta', uid = next_uid, metagraph = metagraph, subtensor = subtensor, CLIENT=CLIENT)
             if metadata is None:
                 # Start again.
-                print (f'{next_uid} has no valid delta metadata')
                 continue 
             
-            # Download the miner delta based on the metadata
+            # Download the miner delta based on the metadata.
             delta = download_model( metadata = metadata, device='cpu', CLIENT=CLIENT )
             if delta is None:
-                print (f'{next_uid} has no valid delta')
                 # Start again.
                 continue
             
@@ -187,7 +206,11 @@ def main(config):
                 'local_losses': [float(v) for v in local_losses],
                 'global_losses': [float(v) for v in global_losses],
             }
-            print ( 'uid', next_uid, 'block', subtensor.block, 'local_page', int(local_page[1]), 'local_loss', float(np.mean(local_losses)), 'global_page', int(global_page[1]), 'global_loss', float(np.mean(global_losses)) )
+            print(
+                f'UID {next_uid}, Block {subtensor.block}, '
+                f'Local Page {int(local_page[1])}, Local Loss {float(np.mean(local_losses))}, '
+                f'Global Page {int(global_page[1])}, Global Loss {float(np.mean(global_losses))}'
+            )
             # Append the event to the history.
             if next_uid not in history: history[next_uid] = [] 
             history[next_uid].append(event)
@@ -199,66 +222,51 @@ def main(config):
             save_history( wallet, history, config.bucket, CLIENT )
 
             # Initialize tensors for local and global weights.
-            local_moving_average = torch.zeros(metagraph.uids.shape)
-            global_moving_average = torch.zeros(metagraph.uids.shape)
+            local_loss = torch.zeros(metagraph.uids.shape)
+            global_loss = torch.zeros(metagraph.uids.shape)
 
             # Compute the moving average local and global losses.
-            for uid in history.keys():
-                last_block = None
-                moving_global_loss = 0
-                moving_local_loss = 0
-                # Iterate over each sample/event for the UID.
-                for sample in history[uid]:
+            for uid, samples in history.items():
+                last_block, moving_global_loss, moving_local_loss = None, 0, 0
+                for sample in samples:
                     block = int(sample['block'])
-                    # Calculate the mean losses for the sample.
                     next_local_loss = float(np.mean(sample['local_losses']))
                     next_global_loss = float(np.mean(sample['global_losses']))
-                    # Calculate the smoothing factor alpha.
                     alpha = BASE_ALPHA * (block - last_block) if last_block is not None else 1
-                    # Update the moving averages.
                     moving_global_loss = alpha * next_global_loss + (1 - alpha) * moving_global_loss
                     moving_local_loss = alpha * next_local_loss + (1 - alpha) * moving_local_loss
-                    last_block = block  # Update last_block for the next iteration.
-                # Store the negative of the final moving averages in the weights tensors.
-                local_moving_average[int(uid)] = moving_local_loss
-                global_moving_average[int(uid)] = moving_global_loss
+                    last_block = block
+                local_loss[int(uid)] = moving_local_loss
+                global_loss[int(uid)] = moving_global_loss
+            print('local_loss:', local_loss.tolist())
+            print('global_loss:', global_loss.tolist())
                 
-            print ('local_moving_average', local_moving_average)
-            print ('global_moving_average', global_moving_average)
-            global_weights = global_moving_average / global_moving_average.sum() if global_moving_average.sum() != 0 else global_moving_average
-            local_weights = local_moving_average / local_moving_average.sum() if local_moving_average.sum() != 0 else local_moving_average
-            print ('local_weights', local_weights)
-            print ('global_weights', global_weights)
-            
-            # Normalize the local and global weights.
-            non_zero_local_indices = local_weights.nonzero(as_tuple=True)
-            non_zero_global_indices = global_weights.nonzero(as_tuple=True)
-            # Normalize local weights if there are non-zero weights.
-            if len(non_zero_local_indices[0]) > 0:
-                local_min = local_weights[non_zero_local_indices].min()
-                local_max = local_weights[non_zero_local_indices].max()
-                if local_max != local_min:
-                    local_weights[non_zero_local_indices] = (
-                        (local_weights[non_zero_local_indices] - local_min) / (local_max - local_min)
-                    )
-            # Normalize global weights if there are non-zero weights.
-            if len(non_zero_global_indices[0]) > 0:
-                global_min = global_weights[non_zero_global_indices].min()
-                global_max = global_weights[non_zero_global_indices].max()
-                if global_max != global_min:
-                    global_weights[non_zero_global_indices] = (
-                        (global_weights[non_zero_global_indices] - global_min) / (global_max - global_min)
-                    )
-                
-            print ('normalized local_weights', local_weights)
-            print ('normalized global_weights', global_weights)
-                
-            # Combine the local and global weights using LOCAL_DOMINANCE.
-            # The miners must perform well on both the global and local sets.
+            # Compute scoring for local loss.
+            local_weights = torch.zeros(metagraph.uids.shape)
+            if local_loss.sum() > 0:
+                local_weights = -(local_loss / local_loss.sum())
+                non_zero = local_weights.nonzero(as_tuple=True)
+                local_min = local_weights[ non_zero ].min()
+                local_max = local_weights[ non_zero ].max()
+                local_weights[ non_zero ] = (local_weights[ non_zero ] - local_min) / (local_max - local_min)
+            print('local_weights:', local_weights.tolist())
+  
+            # Compute scoring for global loss.
+            global_weights = torch.zeros(metagraph.uids.shape)
+            if global_loss.sum() > 0:
+                global_weights = -(global_loss / global_loss.sum())
+                non_zero = global_weights.nonzero(as_tuple=True)
+                global_min = global_weights[ non_zero ].min()
+                global_max = global_weights[ non_zero ].max()
+                global_weights[ non_zero ] = (global_weights[ non_zero ] - global_min) / (global_max - global_min)
+            print('global_weights:', global_weights.tolist())
+                                
+            # Combine local and global loss scoring.
             weights = LOCAL_DOMINANCE * local_weights + (1 - LOCAL_DOMINANCE) * global_weights                    
             weights = torch.exp(weights * TEMPERATURE)
             weights = weights / weights.sum() if weights.sum() != 0 else weights
-                
+            print('Weights:', weights.tolist())
+
             # Set the computed weights on the chain using the wallet.
             subtensor.set_weights(
                 wallet=wallet,
@@ -267,16 +275,15 @@ def main(config):
                 weights=weights.tolist(),
                 wait_for_inclusion=False,
                 wait_for_finalization=False,
-            )
-            print('Weights:', weights.tolist())
+            )            
             
-            # Subtract the current delta from the master.
-            print ('score', global_moving_average[next_uid])
-            print ('threshold', min_moving_global_loss * 0.99 )
-            if global_moving_average[ next_uid ] < min_moving_global_loss * 0.99:
-                print ('new master.')
-                min_moving_global_loss = global_moving_average[ next_uid ]
-                wandb.log({ 'min_loss': min_moving_global_loss  })
+            # If we are the master validator, check if the latest model has beaten the 
+            # threshold for upload.
+            uid_score = global_loss[next_uid]
+            if uid_score < upload_threshold and my_uid == master_uid:
+                print ('New Master, uploading state.')
+                upload_threshold = uid_score * 0.999
+                wandb.log({ 'upload_threshold': upload_threshold  })
                 CLIENT.delete_object( Bucket=config.bucket, Key=current_master_meta.filename )
                 CLIENT.delete_object( Bucket=config.bucket, Key=current_master_meta.metadata_filename )
                 current_master_meta = upload_model(
@@ -284,13 +291,13 @@ def main(config):
                     wallet = wallet,
                     model = master,
                     block = int(time.time()),
-                    extras = { 'delta': metadata.__dict__ },
+                    extras = { 'delta': metadata.__dict__ }, # Record the delta we just applied.
                     bucket = config.bucket,
                     CLIENT = CLIENT,
                 ) 
+                
+            # Otherwise, simply remove the delta and continue
             else:
-                # Remove the delta and continue.
-                print ('removing delta.')
                 for (name, master_param), (_, delta_param) in zip( master.named_parameters(), delta.named_parameters() ):
                     master_param.data.sub_( delta_param.data.to( master.device ) )
 

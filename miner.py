@@ -77,43 +77,49 @@ def main(config):
     upload_history = []  # List of previous uploads
     while True:
         try:
-
     
             # Resynchronize the chain state to get the latest metagraph.
             subtensor = bt.subtensor(config=config)
             metagraph = subtensor.metagraph(netuid=config.netuid)
             
             # Get the master.
-            lastes_master_meta = get_latest_metadata( key = 'model', uid = int(metagraph.S.argmax()), metagraph = metagraph, subtensor = subtensor, CLIENT=CLIENT)
-            if lastes_master_meta == None:
+            lastest_master_meta = get_latest_metadata( key = 'model', uid = int(metagraph.S.argmax()), metagraph = metagraph, subtensor = subtensor, CLIENT=CLIENT)
+            if lastest_master_meta == None:
                 print ('No Valid master waiting ...')
                 time.sleep(12)
                 continue
                 
             # Update the master model
-            if current_master_meta == None or lastes_master_meta.model_hash != current_master_meta.model_hash:
+            if current_master_meta == None or lastest_master_meta.model_hash != current_master_meta.model_hash:
                 print ('Loading the new master...')
-                current_master_meta = lastes_master_meta
+                current_master_meta = lastest_master_meta
                 # We can update the model by loading the delta.
                 applied_delta = False
-                if hasattr( lastes_master_meta, 'delta' ) and current_master_meta != None:
+                
+                # Attempt to load the master model via the delta.
+                if hasattr( lastest_master_meta, 'delta' ) and current_master_meta != None:
                     print ('Applying delta....')
                     try:
                         # Apply delta from the latest master if exists.
-                        delta_meta = SimpleNamespace( **lastes_master_meta.delta ) 
+                        delta_meta = SimpleNamespace( **lastest_master_meta.delta ) 
                         delta = download_model( metadata = delta_meta, device = 'cpu', CLIENT = CLIENT )
                         for (name, model_param), (_, delta_param) in zip( model.named_parameters(), delta.named_parameters() ):
                             model_param.data.add_( delta_param.data.to( model.device ) )
-                        master = copy.deepcopy( model )
+                            delta_param.data = delta_param.data.cpu() # Remove from GPU here.
+                        master = copy.deepcopy( model ).to('cpu')
+                        torch.cuda.empty_cache()
                         applied_delta = True
                         print ('Successfully applied delta.')
                     except Exception as e:
                         print ( f'Failed to apply delta with error:{e}' )
                         applied_delta = False
-                if applied_delta == False:
+                        
+                # If we failed to apply the delta to update load the state from master.
+                # Or of the hashes are not correct.
+                if applied_delta == False or hash_model( master ) != lastest_master_meta.model_hash:
                     print ('Loading master model directly.')
                     # Other wise just get the master directly.
-                    master = download_model( metadata = lastes_master_meta, device='cpu', CLIENT = CLIENT )    
+                    master = download_model( metadata = lastest_master_meta, device='cpu', CLIENT = CLIENT )    
                     model = copy.deepcopy( master )
                     scaler = torch.amp.GradScaler()            
                     optimizer = Adafactor(
@@ -124,7 +130,8 @@ def main(config):
                     model.to(config.device)
                     model.train()
                     model.gradient_checkpointing_enable()
-                
+                    torch.cuda.empty_cache()
+
             # Iterate over the number of pages to train per epoch.
             for step in range(config.pages_per_epoch):
                 # Generate the current training window based on the subtensor block.
@@ -198,9 +205,9 @@ def main(config):
                 CLIENT.delete_object(Bucket=config.bucket, Key=to_delete.metadata_filename)
                 
             # Compute the delta between the current model and the master.
-            delta = copy.deepcopy(model).to('cpu')
-            for (name, model_param), (_, master_param) in zip(delta.named_parameters(), master.named_parameters()):
-                model_param.data.sub_(master_param.data)
+            delta = copy.deepcopy( model ).to('cpu')
+            for (name, delta_param), (_, master_param) in zip(delta.named_parameters(), master.named_parameters()):
+                delta_param.data.sub_( master_param.data.to('cpu') )
     
             # Upload the current delta to S3 for evaluation.
             upload_history.append( upload_model(
