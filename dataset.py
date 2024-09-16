@@ -189,6 +189,7 @@ class SubsetFineWebEdu2Loader(SubsetLoader):
     def _fetch( self, page_info: typing.Tuple[ str, int, str ] ):
         
         self.pages = page_info
+        attempts = 0
         for (config_name, page, split) in self.pages:
             # Create the request parameters
             params = dict(dataset=self.name,

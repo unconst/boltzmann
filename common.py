@@ -31,6 +31,8 @@ from transformers import LlamaForCausalLM, LlamaConfig, LlamaTokenizer
 from typing import Dict, List, Optional, Tuple, Any
 from botocore.exceptions import ClientError  # Import for handling S3 client errors
 
+from compression import topk_compress_gradients, topk_decompress_gradients
+
 def human_readable_size(size, decimal_places=2):
     """
     Converts a size in bytes to a human-readable string format.
@@ -51,7 +53,7 @@ def human_readable_size(size, decimal_places=2):
         # Otherwise, divide the size by 1024 and move to the next unit.
         size /= 1024.0
 
-def get_latest_metadata_block(hotkey: str, bucket: str, CLIENT) -> int:
+def get_latest_metadata_block(hotkey: str, bucket: str, CLIENT, key: str = 'model') -> int:
     """
     Retrieves the latest metadata block number for a given hotkey from the specified bucket.
 
@@ -80,7 +82,7 @@ def get_latest_metadata_block(hotkey: str, bucket: str, CLIENT) -> int:
     # Iterate over all filenames.
     for file_name in file_names:
         # Check if the filename matches the model pattern for the given hotkey.
-        if file_name.startswith(f'model-{hotkey}-') and file_name.endswith('.pt'):
+        if file_name.startswith(f'{key}-{hotkey}-') and file_name.endswith('.pt'):
             try:
                 # Extract the block number from the filename.
                 block = int(file_name.split('-')[-1].split('.')[0])
@@ -126,7 +128,8 @@ def hash_model(module: torch.nn.Module) -> str:
 def get_latest_metadata_for_hotkey_and_bucket(
         hotkey: str,
         bucket: str,
-        CLIENT
+        CLIENT,
+        key:str = 'model',
     ) -> Optional[SimpleNamespace]:
     """
     Retrieves the latest metadata for a given hotkey from a specified bucket.
@@ -144,35 +147,35 @@ def get_latest_metadata_for_hotkey_and_bucket(
                                    Returns None if no model is found for the given hotkey.
     """
     # Get the latest block number for the hotkey.
-    latest_block = get_latest_metadata_block(hotkey, bucket, CLIENT)
+    latest_block = get_latest_metadata_block( hotkey = hotkey, bucket = bucket, CLIENT = CLIENT, key = key )
     if latest_block == -1:
         # If no model files are found, return None.
         return None
     
-    # Define filenames for the model and its metadata based on the latest block.
-    filename = f"model-{hotkey}-{latest_block}.pt"
-    metadata_filename = f"model-{hotkey}-{latest_block}_metadata.json"
-    
-    # Get the metadata of the model file from the storage service.
-    response = CLIENT.head_object(Bucket=bucket, Key=filename)
-    
-    # Extract and calculate metadata information.
-    metadata = {}
-    metadata['last_modified'] = int(response['LastModified'].timestamp())
-    # Estimate blocks since modification assuming 12 seconds per block.
-    metadata['blocks_since_modified'] = int((time.time() - metadata['last_modified']) / 12)
-    metadata['size'] = response['ContentLength']
-    metadata['bucket'] = bucket
-    metadata['filename'] = filename
-    metadata['metadata_filename'] = metadata_filename
+    # Build the metadata filename from the block.
+    metadata_filename = f"{key}-{hotkey}-{latest_block}_metadata.json"
+    filename = f"{key}-{hotkey}-{latest_block}.pt"
 
     # Get the metadata file from the storage service.
     metadata_response = CLIENT.get_object(Bucket=bucket, Key=metadata_filename)
     
     # Read and update the metadata with the content of the metadata file.
+    metadata = {}
     metadata_json = json.loads(metadata_response['Body'].read().decode('utf-8'))
     metadata.update(metadata_json)
+    metadata['bucket'] = bucket
+    metadata['metadata_filename'] = metadata_filename
+
+    # Get the metadata of the model file from the storage service.
+    response = CLIENT.head_object(Bucket=bucket, Key=filename)
     
+    # Extract and calculate metadata information.
+    metadata['last_modified'] = int(response['LastModified'].timestamp())
+    # Estimate blocks since modification assuming 12 seconds per block.
+    metadata['blocks_since_modified'] = int((time.time() - metadata['last_modified']) / 12)
+    metadata['size'] = response['ContentLength']
+    metadata['filename'] = filename
+        
     # Return the metadata as a SimpleNamespace for easy attribute access.
     return SimpleNamespace(**metadata)
 
@@ -180,7 +183,8 @@ def get_latest_metadata(
         uid: int, 
         metagraph, 
         subtensor, 
-        CLIENT 
+        CLIENT, 
+        key: str = 'model'
     ) -> Optional[SimpleNamespace]:
     """
     Retrieves the latest metadata for a specified UID from the storage service.
@@ -203,7 +207,7 @@ def get_latest_metadata(
         # Get the hotkey associated with the UID from the metagraph.
         hotkey = metagraph.hotkeys[uid]
         # Retrieve the latest metadata for the hotkey and bucket.
-        metadata = get_latest_metadata_for_hotkey_and_bucket(hotkey=hotkey, bucket=bucket, CLIENT=CLIENT)
+        metadata = get_latest_metadata_for_hotkey_and_bucket(hotkey=hotkey, bucket=bucket, CLIENT=CLIENT, key = key )
         if metadata is not None:
             # Add the UID to the metadata.
             metadata.uid = int(uid)
@@ -216,7 +220,7 @@ def get_latest_metadata(
         print(e)
         # Return None if any exception occurs.
         return None
-
+    
 def upload_model( 
         wallet: 'bt.wallet',
         model: torch.nn.Module, 
@@ -224,6 +228,9 @@ def upload_model(
         extras: Dict[str, object],
         bucket: str,
         CLIENT,
+        key = 'model',
+        use_compression: bool = False,
+        compression_percent: float = 0.9,
     ) -> SimpleNamespace:
     """
     Uploads a model to a specified bucket along with its metadata.
@@ -261,10 +268,13 @@ def upload_model(
 
     # Add the hash of the model to the metadata.
     extras['model_hash'] = hash_model(model)
+    extras['compressed'] = use_compression
+    extras['compression_percent'] = compression_percent
+    extras['key'] = key
 
     # Generate filenames for the model and its metadata based on the hotkey and block number.
-    filename = f'model-{wallet.hotkey.ss58_address}-{block}.pt'  # Filename for the model.
-    metadata_filename = f"model-{wallet.hotkey.ss58_address}-{block}_metadata.json"  # Filename for the metadata.
+    filename = f'{key}-{wallet.hotkey.ss58_address}-{block}.pt'  # Filename for the model.
+    metadata_filename = f"{key}-{wallet.hotkey.ss58_address}-{block}_metadata.json"  # Filename for the metadata.
 
     # Upload the metadata to the storage service.
     # Convert the extras dictionary to JSON and encode it to bytes.
@@ -279,6 +289,11 @@ def upload_model(
         GrantRead='uri="http://acs.amazonaws.com/groups/global/AllUsers"',
         GrantReadACP='uri="http://acs.amazonaws.com/groups/global/AllUsers"'
     )
+    
+    # Compress the model.
+    if use_compression:
+        for mkey, param in model_state_dict.items():
+            model_state_dict[mkey] = topk_compress_gradients({mkey: param}, k=int( ( 1 - compression_percent ) * param.numel()))[mkey]
     
     # Upload the model to the storage service.
     with io.BytesIO() as module_buffer:
@@ -298,11 +313,12 @@ def upload_model(
 
     # Retrieve the metadata of the uploaded model.
     returned_metadata = get_latest_metadata_for_hotkey_and_bucket(
-        hotkey=wallet.hotkey.ss58_address, bucket=bucket, CLIENT=CLIENT
+        hotkey=wallet.hotkey.ss58_address, bucket=bucket, CLIENT=CLIENT, key = key,
     )
     # Log the completion of the upload process with the time taken.
-    print(f"Uploaded model to {filename}@{bucket} of size: {human_readable_size(returned_metadata.size)} in: {time.time() - start_time} seconds.")
+    print(f"Uploaded {key} to {filename}@{bucket} of size: {human_readable_size(returned_metadata.size)} in: {time.time() - start_time} seconds.")
     return returned_metadata
+
 
 def download_model( 
         metadata: SimpleNamespace, 
@@ -348,6 +364,15 @@ def download_model(
 
         # Load the model state dict from the temporary file.
         new_model_state_dict = torch.load( unique_temp_file, map_location=torch.device(device), weights_only = True )
+        
+        # Check if the model is compressed and decompress if necessary
+        if hasattr(metadata, 'compressed') and metadata.compressed:
+            original_shape_dict = {name: param.shape for name, param in model.named_parameters()}
+            for name, param in model.named_parameters():
+                if name in new_model_state_dict:
+                    compressed_data = new_model_state_dict[name]
+                    decompressed_data = topk_decompress_gradients({name: compressed_data}, {name: param.shape})
+                    new_model_state_dict[name] = decompressed_data[name]
         
         # Load the state dict into the model.
         model.load_state_dict(new_model_state_dict)

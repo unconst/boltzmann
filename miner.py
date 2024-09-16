@@ -22,8 +22,8 @@ from typing import Dict, List, Optional, Tuple
 from transformers import LlamaForCausalLM 
 
 # Import constants and utility functions specific to the project.
-from constants import WINDOW_SIZE, WINDOW_SPEED, SEQUENCE_LENGTH, TOKENIZER, MODEL_CONFIG, CLIENT
-from common import upload_model, get_latest_metadata, download_model, hash_model
+from common import *
+from constants import *
 from dataset import SubsetFineWebEdu2Loader
 
 def main(config):
@@ -67,60 +67,71 @@ def main(config):
         # If not committed or mismatch, commit the bucket to the chain.
         subtensor.commit(wallet, config.netuid, config.bucket)
     print('Bucket:', config.bucket)
-    
-    # Initialize a gradient scaler for mixed precision training.
-    scaler = torch.amp.GradScaler()
-    
-    # Initialize the model with the specified configuration.
-    model = LlamaForCausalLM(config=MODEL_CONFIG)
-    
-    # Initialize the optimizer (Adafactor) with appropriate hyperparameters.
-    optimizer = Adafactor(
-        model.parameters(),
-        lr=config.learning_rate,
-        relative_step=False
-    )
-    print('Optimizer:', optimizer)
-    print('Model:', 'llama', '\n')
-    
-    # Move the model to the specified device (e.g., 'cuda' or 'cpu').
-    model.to(config.device)
-    # Set the model to training mode.
-    model.train()
-    # Enable gradient checkpointing to reduce memory usage during backpropagation.
-    model.gradient_checkpointing_enable()
-    # TODO: Consider using DeepSpeed or FairScale for further memory optimizations.
-    
+
     # Initialize Weights and Biases (wandb) for experiment tracking if enabled.
     if config.use_wandb:
         run = wandb.init(project='cont', resume='allow', name=f'M{my_uid}', config=config)
     
-    # Initialize epoch counter and current model metadata.
-    n_epochs = 0  # Number of epochs completed.
-    current_meta = None  # Metadata of the current model version.
-    
-    # Start the main training loop.
+    # Train loop.       
+    current_master_meta = None
+    upload_history = []  # List of previous uploads
     while True:
         try:
-            # Increment the epoch counter.
-            n_epochs += 1
-            print('\n', '=' * 40, f'Epoch: {n_epochs}', '=' * 40, '\n')
+
     
             # Resynchronize the chain state to get the latest metagraph.
             subtensor = bt.subtensor(config=config)
             metagraph = subtensor.metagraph(netuid=config.netuid)
-    
-            # Log the miner's incentive value to wandb if enabled.
-            if config.use_wandb:
-                wandb.log({f"Incentive({my_uid})": float(metagraph.I[my_uid])})
-    
+            
+            # Get the master.
+            lastes_master_meta = get_latest_metadata( key = 'model', uid = int(metagraph.S.argmax()), metagraph = metagraph, subtensor = subtensor, CLIENT=CLIENT)
+            if lastes_master_meta == None:
+                print ('No Valid master waiting ...')
+                time.sleep(12)
+                continue
+                
+            # Update the master model
+            if current_master_meta == None or lastes_master_meta.model_hash != current_master_meta.model_hash:
+                print ('Loading the new master...')
+                current_master_meta = lastes_master_meta
+                # We can update the model by loading the delta.
+                applied_delta = False
+                if hasattr( lastes_master_meta, 'delta' ) and current_master_meta != None:
+                    print ('Applying delta....')
+                    try:
+                        # Apply delta from the latest master if exists.
+                        delta_meta = SimpleNamespace( **lastes_master_meta.delta ) 
+                        delta = download_model( metadata = delta_meta, device = 'cpu', CLIENT = CLIENT )
+                        for (name, model_param), (_, delta_param) in zip( model.named_parameters(), delta.named_parameters() ):
+                            model_param.data.add_( delta_param.data.to( model.device ) )
+                        master = copy.deepcopy( model )
+                        applied_delta = True
+                        print ('Successfully applied delta.')
+                    except Exception as e:
+                        print ( f'Failed to apply delta with error:{e}' )
+                        applied_delta = False
+                if applied_delta == False:
+                    print ('Loading master model directly.')
+                    # Other wise just get the master directly.
+                    master = download_model( metadata = lastes_master_meta, device='cpu', CLIENT = CLIENT )    
+                    model = copy.deepcopy( master )
+                    scaler = torch.amp.GradScaler()            
+                    optimizer = Adafactor(
+                        model.parameters(),
+                        lr = config.learning_rate,
+                        relative_step = False
+                    )
+                    model.to(config.device)
+                    model.train()
+                    model.gradient_checkpointing_enable()
+                
             # Iterate over the number of pages to train per epoch.
             for step in range(config.pages_per_epoch):
                 # Generate the current training window based on the subtensor block.
                 local_pages: List[Tuple[str, int, str]] = SubsetFineWebEdu2Loader.next_pages(
-                    offset=subtensor.block * WINDOW_SPEED + 100,  # Offset into the future to avoid overlap with validators.
-                    n_pages=WINDOW_SIZE,
-                    seed=my_uid  # Seed with miner's UID for consistency.
+                    offset = subtensor.block * WINDOW_SPEED + 100,  # Offset into the future to avoid overlap with validators.
+                    n_pages = WINDOW_SIZE,
+                    seed = my_uid  # Seed with miner's UID for consistency.
                 )
     
                 # Select a random page from the evaluation window for training.
@@ -167,14 +178,12 @@ def main(config):
                         optimizer.zero_grad()
     
                     # Log training progress to console.
-                    print(f"Batch: {idx + 1}, Loss: {(loss.item() * accumulation_steps):.4f}")
+                    print(f"Loss: {(loss.item() * accumulation_steps):.4f}")
     
                     # Log metrics to wandb if enabled.
                     if config.use_wandb:
                         wandb.log({
-                            "epoch": n_epochs,
-                            "step": step + 1,
-                            "batch": idx + 1,
+                            "incentive": float(metagraph.I[my_uid]),
                             "loss": loss.item() * accumulation_steps
                         })
                     
@@ -183,23 +192,29 @@ def main(config):
                     torch.cuda.empty_cache()
     
             # After training, remove the previous model from S3 if it exists.
-            if current_meta is not None:
-                CLIENT.delete_object(Bucket=config.bucket, Key=current_meta.filename)
-                CLIENT.delete_object(Bucket=config.bucket, Key=current_meta.metadata_filename)
+            if len(upload_history) > 10:
+                to_delete = upload_history.pop(0)
+                CLIENT.delete_object(Bucket=config.bucket, Key=to_delete.filename)
+                CLIENT.delete_object(Bucket=config.bucket, Key=to_delete.metadata_filename)
+                
+            # Compute the delta between the current model and the master.
+            delta = copy.deepcopy(model).to('cpu')
+            for (name, model_param), (_, master_param) in zip(delta.named_parameters(), master.named_parameters()):
+                model_param.data.sub_(master_param.data)
     
-            # Upload the current model to S3 for validation.
-            current_meta = upload_model(
-                wallet=wallet,
-                model=model,
-                block=int(time.time()),  # Use current timestamp as block number.
-                extras={},  # Additional metadata can be added here.
-                bucket=config.bucket,
-                CLIENT=CLIENT,
-            )
-    
-            # Optionally, implement a mechanism to ensure the model is uploaded only when improved.
-            # For example, keep track of validation loss and upload only if it decreases.
-    
+            # Upload the current delta to S3 for evaluation.
+            upload_history.append( upload_model(
+                key = 'delta',
+                wallet = wallet,
+                model = delta,
+                block = int(time.time()),  # Use current timestamp as block number.
+                extras = {},  # Additional metadata can be added here.
+                bucket = config.bucket,
+                CLIENT = CLIENT,
+                use_compression = True,
+                compression_percent = COMPRESSION,
+            ))
+        
         # Handle keyboard interrupts to allow graceful shutdown.
         except (KeyboardInterrupt, SystemExit):
             # Clean up by deleting the model from S3 if it exists.

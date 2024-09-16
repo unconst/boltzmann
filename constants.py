@@ -21,8 +21,8 @@ from dotenv import dotenv_values
 from transformers import AutoTokenizer
 from transformers import LlamaConfig
 
-# Number of epochs before a model becomes stale (and no longer considered active for incentive.)
-EPOCH_CLIFF = 512
+# Delta compression rate.
+COMPRESSION = 0.95
 
 # Base sample probability
 BASE_PROBABILITY = 1
@@ -36,9 +36,6 @@ LOCAL_DOMINANCE = 0.5
 # Moving average alpha for the validator
 BASE_ALPHA = 0.0001
 
-# Number of blocks to eval per uid.
-BLOCKS_PER_EPOCH = 20
-
 # Global sequence length
 SEQUENCE_LENGTH = 4096
 
@@ -47,15 +44,6 @@ WINDOW_SIZE = 100
 
 # Number of new pages added to the local window every block.
 WINDOW_SPEED = 4
-
-# Number of epochs before setting weights on chain.
-BLOCKS_PER_SET_WEIGHT = 100
-
-# Tokenizer to enforce.
-TOKENIZER_TYPE = 'gpt2'
-
-# Model architecture to enforce.
-MODEL_SIZE = '1B'
 
 # Instantiate the AWS S3 client.
 env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
@@ -69,6 +57,8 @@ CLIENT: boto3.client = boto3.client(
 )
 
 # Instantiate the global tokenizer.
+TOKENIZER_TYPE = 'gpt2'
+
 if TOKENIZER_TYPE == 'gpt2': 
     TOKENIZER: AutoTokenizer = AutoTokenizer.from_pretrained(
         'gpt2', verbose=False, clean_up_tokenization_spaces=True
@@ -83,6 +73,8 @@ elif TOKENIZER_TYPE == 'gpt4':
 else:
     raise ValueError(f'No tokenizer for type: {TOKENIZER_TYPE}')
 
+
+MODEL_SIZE = '7B'
 
 if MODEL_SIZE == '1B':
     # Instantiate the global config.
