@@ -25,7 +25,7 @@ pm2 start validator.py --interpreter python3 --name V2 -- --wallet.name Alice --
 pm2 start miner.py --interpreter python3 --name M1 -- --wallet.name Alice --wallet.hotkey Charlie --subtensor.network test --device cuda:2 --use_wandb
 pm2 start miner.py --interpreter python3 --name M2 -- --wallet.name Alice --wallet.hotkey Dave --subtensor.network test --device cuda:3 --use_wandb
 pm2 start miner.py --interpreter python3 --name M3 -- --wallet.name Alice --wallet.hotkey Eve --subtensor.network test --device cuda:5 --use_wandb
-pm2 start miner.py --interpreter python3 --name M4 -- --wallet.name Alice --wallet.hotkey Ferdie --subtensor.network test --device cuda:6 --use_wandb
+pm2 start miner.py --interpreter python3 --name M4 -- --wallet.name Alice --wallet.hotkey Bob --subtensor.network test --device cuda:6 --use_wandb
 
 # Watch the items
 watch python3 print.py

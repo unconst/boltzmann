@@ -37,7 +37,7 @@ LOCAL_DOMINANCE = 0.5
 BASE_ALPHA = 0.0001
 
 # Number of blocks to eval per uid.
-BLOCKS_PER_EPOCH = 60
+BLOCKS_PER_EPOCH = 20
 
 # Global sequence length
 SEQUENCE_LENGTH = 4096
@@ -51,6 +51,12 @@ WINDOW_SPEED = 4
 # Number of epochs before setting weights on chain.
 BLOCKS_PER_SET_WEIGHT = 100
 
+# Tokenizer to enforce.
+TOKENIZER_TYPE = 'gpt2'
+
+# Model architecture to enforce.
+MODEL_SIZE = '1B'
+
 # Instantiate the AWS S3 client.
 env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
 AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')  # AWS access key ID.
@@ -63,8 +69,6 @@ CLIENT: boto3.client = boto3.client(
 )
 
 # Instantiate the global tokenizer.
-TOKENIZER_TYPE = 'gpt4'
-
 if TOKENIZER_TYPE == 'gpt2': 
     TOKENIZER: AutoTokenizer = AutoTokenizer.from_pretrained(
         'gpt2', verbose=False, clean_up_tokenization_spaces=True
@@ -79,8 +83,6 @@ elif TOKENIZER_TYPE == 'gpt4':
 else:
     raise ValueError(f'No tokenizer for type: {TOKENIZER_TYPE}')
 
-
-MODEL_SIZE = '7B'
 
 if MODEL_SIZE == '1B':
     # Instantiate the global config.
