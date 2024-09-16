@@ -45,6 +45,12 @@ WINDOW_SIZE = 100
 # Number of new pages added to the local window every block.
 WINDOW_SPEED = 4
 
+# Instantiate the global tokenizer.
+TOKENIZER_TYPE = 'gpt2'
+
+# Model size constant.
+MODEL_SIZE = '1B'
+
 # Instantiate the AWS S3 client.
 env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
 AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')  # AWS access key ID.
@@ -55,9 +61,6 @@ CLIENT: boto3.client = boto3.client(
     aws_access_key_id=AWS_ACCESS_KEY_ID,
     aws_secret_access_key=AWS_SECRET_ACCESS_KEY
 )
-
-# Instantiate the global tokenizer.
-TOKENIZER_TYPE = 'gpt2'
 
 if TOKENIZER_TYPE == 'gpt2': 
     TOKENIZER: AutoTokenizer = AutoTokenizer.from_pretrained(
@@ -72,9 +75,6 @@ elif TOKENIZER_TYPE == 'gpt4':
     TOKENIZER.pad_token = TOKENIZER.eos_token  # Set the padding token.
 else:
     raise ValueError(f'No tokenizer for type: {TOKENIZER_TYPE}')
-
-
-MODEL_SIZE = '7B'
 
 if MODEL_SIZE == '1B':
     # Instantiate the global config.

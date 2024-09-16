@@ -134,7 +134,6 @@ def main(config):
             probabilities = metagraph.I + (BASE_PROBABILITY / float(metagraph.n))
             probabilities /= probabilities.sum()
             next_uid = int(np.argmax(np.random.multinomial(1, probabilities)))
-            print (f'next_uid: {next_uid}')
 
             # Retrieve the miner's metadata, which contains information about their delta.
             metadata = get_latest_metadata( key = 'delta', uid = next_uid, metagraph = metagraph, subtensor = subtensor, CLIENT=CLIENT)
@@ -255,10 +254,10 @@ def main(config):
             local_weights = torch.zeros(metagraph.uids.shape)
             if local_loss.sum() > 0:
                 local_weights = -(local_loss / local_loss.sum())
-                non_zero = local_weights.nonzero(as_tuple=True)
-                local_min = local_weights[ non_zero ].min()
-                local_max = local_weights[ non_zero ].max()
-                local_weights[ non_zero ] = (local_weights[ non_zero ] - local_min) / (local_max - local_min)
+                non_zero = local_loss.nonzero(as_tuple=True)
+                local_min = local_loss[ non_zero ].min()
+                local_max = local_loss[ non_zero ].max()
+                local_loss[ non_zero ] = (local_loss[ non_zero ] - local_min) / (local_max - local_min + 1e-10)
             print('local_weights:', local_weights.tolist())
   
             # Compute scoring for global loss.
@@ -268,7 +267,7 @@ def main(config):
                 non_zero = global_weights.nonzero(as_tuple=True)
                 global_min = global_weights[ non_zero ].min()
                 global_max = global_weights[ non_zero ].max()
-                global_weights[ non_zero ] = (global_weights[ non_zero ] - global_min) / (global_max - global_min)
+                global_weights[ non_zero ] = (global_weights[ non_zero ] - global_min) / (global_max - global_min + 1e-10)
             print('global_weights:', global_weights.tolist())
                                 
             # Combine local and global loss scoring.
@@ -290,6 +289,8 @@ def main(config):
             # If we are the master validator, check if the latest model has beaten the 
             # threshold for upload.
             uid_score = global_loss[next_uid]
+            print ('uid_score', uid_score)
+            print ('upload_threshold', upload_threshold)
             if uid_score < upload_threshold and my_uid == master_uid:
                 print ('New Master, uploading state.')
                 upload_threshold = uid_score * 0.999

@@ -27,8 +27,5 @@ pm2 start miner.py --interpreter python3 --name M2 -- --wallet.name Alice --wall
 pm2 start miner.py --interpreter python3 --name M3 -- --wallet.name Alice --wallet.hotkey Eve --subtensor.network test --device cuda:5 --use_wandb
 pm2 start miner.py --interpreter python3 --name M4 -- --wallet.name Alice --wallet.hotkey Alice --subtensor.network test --device cuda:6 --use_wandb
 
-# Watch the items
-watch python3 print.py
-
 
 

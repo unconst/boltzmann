@@ -106,7 +106,7 @@ def main(config):
                 applied_delta = False
                 
                 # Attempt to load the master model via the delta.
-                if hasattr( latest_master_meta, 'delta' ) and current_master_meta is not None:
+                if hasattr( latest_master_meta, 'delta' ) and current_master_meta is not None and model is not None:
                     print ('Applying delta....')
                     try:
                         # Apply delta from the latest master if exists.
