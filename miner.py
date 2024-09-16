@@ -101,7 +101,6 @@ def main(config):
             # Update the master model
             if current_master_meta is None or latest_master_meta.model_hash != current_master_meta.model_hash:
                 print ('Loading the new master...')
-                current_master_meta = latest_master_meta
                 # We can update the model by loading the delta.
                 applied_delta = False
                 
@@ -118,6 +117,7 @@ def main(config):
                         master = copy.deepcopy( model ).to('cpu')
                         torch.cuda.empty_cache()
                         applied_delta = True
+                        del delta
                         print ('Successfully applied delta.')
                     except Exception as e:
                         print ( f'Failed to apply delta with error:{e}' )
@@ -140,6 +140,10 @@ def main(config):
                     model.train()
                     model.gradient_checkpointing_enable()
                     torch.cuda.empty_cache()
+                
+                # Update the master    
+                current_master_meta = latest_master_meta
+
 
             # Iterate over the number of pages to train per epoch.
             for step in range(config.pages_per_epoch):
@@ -230,6 +234,7 @@ def main(config):
                 use_compression = True,
                 compression_percent = COMPRESSION,
             ))
+            del delta
         
         # Handle keyboard interrupts to allow graceful shutdown.
         except (KeyboardInterrupt, SystemExit):
@@ -251,28 +256,11 @@ if __name__ == "__main__":
     parser.add_argument('--name', type=str, default=None, help='Optional miner name')
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network UID.')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
-    parser.add_argument('--desired_batch_size', type=int, default=3, help='Desired total batch size for training')
+    parser.add_argument('--desired_batch_size', type=int, default=1, help='Desired total batch size for training')
     parser.add_argument('--actual_batch_size', type=int, default=1, help='Actual batch size per step')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate for the optimizer')
     parser.add_argument('--optimizer_beta1', type=float, default=0.9, help='Beta1 for the optimizer')
     parser.add_argument('--optimizer_beta2', type=float, default=0.95, help='Beta2 for the optimizer')
-    parser.add_argument('--optimizer_weight_decay', type=float, default=0.1, help='Weight decay for the optimizer')
-    parser.add_argument('--pages_per_epoch', type=int, default=1, help='Number of pages to train per epoch')
-    parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
-    parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
-    
-    # Add arguments from Bittensor modules for wallet and subtensor configurations.
-    bt.wallet.add_args(parser)
-    bt.subtensor.add_args(parser)
-    
-    # Parse the arguments to create a configuration object.
-    config = bt.config(parser)
-    
-    # Set the chain endpoint for the subtensor (fixed value).
-    config.subtensor.chain_endpoint = 'wss://test.finney.opentensor.ai:443/'
-    
-    # Call the main function with the parsed configuration.
-    main(config)
     parser.add_argument('--optimizer_weight_decay', type=float, default=0.1, help='Weight decay for the optimizer')
     parser.add_argument('--pages_per_epoch', type=int, default=1, help='Number of pages to train per epoch')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
