@@ -264,10 +264,10 @@ def main(config):
             global_weights = torch.zeros(metagraph.uids.shape)
             if global_loss.sum() > 0:
                 global_weights = -(global_loss / global_loss.sum())
-                non_zero = global_weights.nonzero(as_tuple=True)
-                global_min = global_weights[ non_zero ].min()
-                global_max = global_weights[ non_zero ].max()
-                global_weights[ non_zero ] = (global_weights[ non_zero ] - global_min) / (global_max - global_min + 1e-10)
+                non_zero = global_loss.nonzero(as_tuple=True)
+                global_min = global_loss[ non_zero ].min()
+                global_max = global_loss[ non_zero ].max()
+                global_loss[ non_zero ] = (global_loss[ non_zero ] - global_min) / (global_max - global_min + 1e-10)
             print('global_weights:', global_weights.tolist())
                                 
             # Combine local and global loss scoring.

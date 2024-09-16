@@ -49,7 +49,7 @@ WINDOW_SPEED = 4
 TOKENIZER_TYPE = 'gpt2'
 
 # Model size constant.
-MODEL_SIZE = '1B'
+MODEL_SIZE = '7B'
 
 # Instantiate the AWS S3 client.
 env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
