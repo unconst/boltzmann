@@ -6,6 +6,7 @@ BISTRO – Bittensor Incentivized and Scalable Training with Reward Optimization
 
 # Mechanism
 
+Validation design explained in pseudo-code:
 ```markdown
 
 # Init the model
@@ -17,47 +18,50 @@ upload( master )
 # Loop forever.
 loop:
 
-  # miner uids on the network.
-  for uid in uids:
+  # Select a random uid to sample.
+  uid = random.choice( metagraph.uids )
 
-      # Get the latest delta uploaded by the miner. 
-      delta = get_delta()
+  # Get the latest delta uploaded by the miner. 
+  delta = get_delta( uid )
 
-      # Add the delta to the master model
-      add_delta( master, delta )
+  # Add the delta to the master model
+  add_delta( master, delta )
 
-      # Eval the master on the miner's current local pages
-      local_pages = get_pages( block, uid)
-      local_loss = eval( local_pages, master )
+  # Eval the master on the miner's current local pages.
+  local_pages = get_pages( subtensor.block, uid )
+  local_loss = eval( local_pages, master )
 
-      # Eval the master on random pages
-      global_pages = get_random_pages()
-      global_loss = eval( global_pages, master )
+  # Eval the master on random pages from global.
+  global_pages = get_random_pages()
+  global_loss = eval( global_pages, master )
 
-      # Check if moving average produces reasonable update.
-      if moving_average( global_loss, uid ) > 
+  # Set weights on chain
+  weights[ uid ] = (1/2) * moving_average( -local_loss ) + (1/2) * moving_average( -global_loss )
 
+  # Softmax weights: smaller negative losses getting higher scores.
+  weights = softmax( weights * temperature )
 
-while True:
+  # Set weights on chain
+  subtensor.set_weights( weights )
 
-  metagraph = metagraph.sync()
-  uid = random_uid( metagraph )
-  delta = downdload( uid )
+  # Check if moving average produces a reasonable update.
+  if global_loss < min_loss:
+      # Update min loss.
+      min_loss = global_loss
 
+      # Upload the new master (gossip the UID so miners can pull it)
+      upload( master, delta = uid ) 
+  
+  # Otherwise, loop.
+  else:
+      remove_delta( master, delta )
+```
 
-
-  for uid in uids:
-
-
-
-Validators on Bistro evaluate gradients (or model deltas) that miners submit to intermediate S3 buckets.
-At any block, deltas are evaluated on two sets of pages that are pulled from RefinedWeb: local and global.
-Local pages are randomly sampled pulled from within a window of pages (unique to each miner) but deterministic based on the block and 
-global pages are pulled at random from the full dataset. The miners must maximize their performance on their unique window of pages while regulating their performance
-on the global. The incentives are designed to force miners to train mergable models and to make them available in a high bandwidth environment.
+Validators on Bistro evaluate gradients (or model deltas) that miners submit to intermediate S3 buckets. At any block miner deltas are evaluated 'local' and 'global' pages pulled from the dataset. Local pages are randomly sampled pages pulled from within a window of pages (unique to each miner) but deterministic based on the block, global pages are pulled at random from the full dataset. Miners must maximize their performance on their unique window of pages while regulating their performance on the global. The incentives are designed to force miners to train mergable models and to make them available in a high bandwidth environment. As the training progresses the master model updates as deltas show case reduced losses.
 
 # Step 1.
   - Create an S3 <Bucket> on AWS and add export your AWS API Key.
+  - Make sure to set the most permissive access to your bucket.
   - `export AWS_SECRET_ACCESS_KEY=`
   - `export AWS_ACCESS_KEY_ID=`
 
