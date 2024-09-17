@@ -32,7 +32,6 @@ from transformers import LlamaForCausalLM
 
 # Import constants and utility functions specific to the project.
 from common import *
-from constants import load_hparams
 from dataset import SubsetFineWebEdu2Loader
 
 # Instantiate the AWS S3 client.
@@ -143,6 +142,10 @@ def main(config):
                     print ('Loading master model directly.')
                     # Otherwise just get the master directly.
                     master = download_model( metadata = latest_master_meta, device='cpu', CLIENT = CLIENT )    
+                    if master == None:
+                        print ('Waiting for master...')
+                        time.sleep(12)
+                        continue
                     model = copy.deepcopy( master )
                     scaler = torch.amp.GradScaler()            
                     optimizer = Adafactor(
@@ -288,6 +291,7 @@ if __name__ == "__main__":
     config = bt.config(parser)
     
     # Set the chain endpoint for the subtensor (fixed value).
+    config.subtensor.network = 'test'
     config.subtensor.chain_endpoint = 'wss://test.finney.opentensor.ai:443/'
     
     # Call the main function with the parsed configuration.

@@ -72,6 +72,7 @@ def load_hparams() -> SimpleNamespace:
         hparams_ns = SimpleNamespace(**hparams_dict)
         # Load the tokenizer.
         hparams_ns.tokenizer = AutoTokenizer.from_pretrained( hparams_ns.tokenizer_name, verbose=False, clean_up_tokenization_spaces=True )
+        hparams_ns.tokenizer.pad_token = hparams_ns.tokenizer.eos_token
         # Get the model config.
         hparams_ns.model_config = LlamaConfig(
             vocab_size = hparams_ns.tokenizer.vocab_size,
