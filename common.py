@@ -37,54 +37,59 @@ from botocore.exceptions import ClientError  # Import for handling S3 client err
 
 from compression import topk_compress_gradients, topk_decompress_gradients
 
+# Instantiate the AWS S3 client.
+env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
+AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')  # AWS access key ID.
+AWS_SECRET_ACCESS_KEY = env_config.get('AWS_SECRET_ACCESS_KEY')  # AWS secret access key.
+CLIENT: boto3.client = boto3.client(
+    's3',
+    region_name='us-east-1',  # AWS region.
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+)
+
 def load_hparams() -> SimpleNamespace:
-    # Your GitHub username
-    username = 'unconst'
-    # GitHub API URL to fetch user's gists
-    gists_api_url = f'https://api.github.com/users/{username}/gists'
-    # Fetch the list of gists
-    response = requests.get(gists_api_url)
-    gists = response.json()
-    # Find the hparams gist.
-    for gist in gists:
-        if list(gists[0]['files'].keys())[0] == 'hparams':
-            break
-        
-    # URL of the gist
-    gist_url = gist['files']['hparams']['raw_url']
-
-    # Modify the URL to get the raw content
-    raw_gist_url = gist_url + '/raw'
-
-    # Fetch the raw gist content
-    response = requests.get(raw_gist_url)
-    hparams_code = response.text
-
-    # Extract the hparams dictionary from the code
-    # Since the code defines hparams as: hparams = { ... }
-    # We'll split the string to get the part after '='
-    try:
-        # Split the code at the first occurrence of '='
-        _, hparams_str = hparams_code.split('=', 1)
-        # Use ast.literal_eval to safely evaluate the dictionary string
-        hparams_dict = ast.literal_eval(hparams_str.strip())
-        # Convert the dictionary to a SimpleNamespace
-        hparams_ns = SimpleNamespace(**hparams_dict)
-        # Load the tokenizer.
-        hparams_ns.tokenizer = AutoTokenizer.from_pretrained( hparams_ns.tokenizer_name, verbose=False, clean_up_tokenization_spaces=True )
-        hparams_ns.tokenizer.pad_token = hparams_ns.tokenizer.eos_token
-        # Get the model config.
-        hparams_ns.model_config = LlamaConfig(
-            vocab_size = hparams_ns.tokenizer.vocab_size,
-            hidden_size = hparams_ns.hidden_size,
-            num_hidden_layers = hparams_ns.num_hidden_layers,
-            num_attention_heads = hparams_ns.num_attention_heads,
-            intermediate_size = hparams_ns.intermediate_size,
-        )
-        # Access hparams as attributes
-        return hparams_ns
-    except Exception as e:
-        print('An error occurred:', e)
+    hparams = {
+        # Delta compression rate.
+        'compression': 0.95,
+        # Base sample probability
+        'base_probability': 1,
+        # Skews higher weights by exponential factor with this temperature term.
+        'temperature': 5,
+        # How much (out of 1) the local evaluation counts relative to global.
+        'local_dominance': 0.5,
+        # Moving average alpha for the validator
+        'base_alpha': 0.0001,
+        # Global sequence length
+        'sequence_length': 4096,
+        # Size of the local eval window.
+        'window_size': 100,
+        # Number of new pages added to the local window every block.
+        'window_speed': 4,
+        # Improvement epsilon requirement.
+        'epsilon': 0.99,
+        # AutoTokenizer name.
+        'tokenizer_name': 'gpt2',
+        # Model arch.
+        'hidden_size': 4096,
+        'num_hidden_layers': 32,
+        'num_attention_heads': 32,
+        'intermediate_size': 11008
+    }
+    # Convert the dictionary to a SimpleNamespace
+    hparams_ns = SimpleNamespace(**hparams)
+    # Load the tokenizer.
+    hparams_ns.tokenizer = AutoTokenizer.from_pretrained( hparams_ns.tokenizer_name, verbose=False, clean_up_tokenization_spaces=True )
+    hparams_ns.tokenizer.pad_token = hparams_ns.tokenizer.eos_token
+    # Get the model config.
+    hparams_ns.model_config = LlamaConfig(
+        vocab_size = hparams_ns.tokenizer.vocab_size,
+        hidden_size = hparams_ns.hidden_size,
+        num_hidden_layers = hparams_ns.num_hidden_layers,
+        num_attention_heads = hparams_ns.num_attention_heads,
+        intermediate_size = hparams_ns.intermediate_size,
+    )
+    return hparams_ns
 
 def human_readable_size(size, decimal_places=2):
     """
@@ -181,7 +186,7 @@ def hash_model(module: torch.nn.Module) -> str:
 def get_latest_metadata_for_hotkey_and_bucket(
         hotkey: str,
         bucket: str,
-        CLIENT,
+        CLIENT = CLIENT,
         key:str = 'model',
     ) -> Optional[SimpleNamespace]:
     """
@@ -236,7 +241,7 @@ def get_latest_metadata(
         uid: int, 
         metagraph, 
         subtensor, 
-        CLIENT, 
+        CLIENT = CLIENT,
         key: str = 'model'
     ) -> Optional[SimpleNamespace]:
     """
@@ -280,7 +285,7 @@ def upload_model(
         block: int,
         extras: Dict[str, object],
         bucket: str,
-        CLIENT,
+        CLIENT = CLIENT,
         key = 'model',
         use_compression: bool = False,
         compression_percent: float = 0.9,
@@ -376,7 +381,7 @@ def upload_model(
 def download_model( 
         metadata: SimpleNamespace, 
         device: str, 
-        CLIENT,
+        CLIENT = CLIENT,
     ) -> Optional[torch.nn.Module]:
     """
     Downloads a model from a specified bucket and loads it onto the specified device.
@@ -448,7 +453,7 @@ def save_history(
     wallet: 'bt.wallet',
     history: Dict[str, Any],
     bucket: str,
-    CLIENT,
+    CLIENT = CLIENT,
 ) -> None:
     """
     Saves the history JSON object to a specified S3 bucket.
@@ -493,7 +498,7 @@ def load_history(
         uid: int, 
         metagraph, 
         subtensor, 
-        CLIENT 
+        CLIENT = CLIENT,
     ) -> Dict[str, Any]:
     """
     Loads the history JSON object associated with the latest model from a specified S3 bucket.

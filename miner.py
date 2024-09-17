@@ -34,17 +34,6 @@ from transformers import LlamaForCausalLM
 from common import *
 from dataset import SubsetFineWebEdu2Loader
 
-# Instantiate the AWS S3 client.
-env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
-AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')  # AWS access key ID.
-AWS_SECRET_ACCESS_KEY = env_config.get('AWS_SECRET_ACCESS_KEY')  # AWS secret access key.
-CLIENT: boto3.client = boto3.client(
-    's3',
-    region_name='us-east-1',  # AWS region.
-    aws_access_key_id=AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY
-)
-
 def main(config):
     """
     Main function for the miner script.
@@ -94,6 +83,7 @@ def main(config):
     # Train loop.       
     current_master_meta = None
     upload_history = []  # List of previous uploads
+    update_block = subtensor.block
     while True:
         try:
     
@@ -160,7 +150,7 @@ def main(config):
                 
                 # Update the master    
                 current_master_meta = latest_master_meta
-
+                update_block = subtensor.block
 
             # Iterate over the number of pages to train per epoch.
             for step in range(config.pages_per_epoch):
@@ -240,6 +230,9 @@ def main(config):
                 delta_param.data.sub_( master_param.data.to('cpu') )
     
             # Upload the current delta to S3 for evaluation.
+            compression = 1 - min( 0.99, (subtensor.block - update_block) / 1000 )
+            use_compression = False if compression < 0.05 else True
+            if config.use_wandb: wandb.log({'compression': compression} )
             upload_history.append( upload_model(
                 key = 'delta',
                 wallet = wallet,
@@ -248,8 +241,8 @@ def main(config):
                 extras = {},  # Additional metadata can be added here.
                 bucket = config.bucket,
                 CLIENT = CLIENT,
-                use_compression = True,
-                compression_percent = hparams.compression,
+                use_compression = use_compression,
+                compression_percent = compression,
             ))
             del delta
         

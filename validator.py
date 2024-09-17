@@ -270,21 +270,23 @@ def main(config):
             # Compute scoring for local loss.
             local_weights = torch.zeros(metagraph.uids.shape)
             if local_loss.sum() > 0:
-                local_weights = -(local_loss / local_loss.sum())
-                non_zero = local_loss.nonzero(as_tuple=True)
-                local_min = local_loss[ non_zero ].min()
-                local_max = local_loss[ non_zero ].max()
-                local_weights[ non_zero ] = (local_loss[ non_zero ] - local_min) / (local_max - local_min + 1e-10)
+                local_weights = -local_loss.clone()
+                non_zero = local_weights.nonzero(as_tuple=True)
+                local_min = local_weights[ non_zero ].min()
+                local_max = local_weights[ non_zero ].max()
+                local_weights[ non_zero ] = (local_weights[ non_zero ] - local_min) / (local_max - local_min + 1e-10)
+                local_weights = local_weights/(local_weights.sum() + 1e-10)
             print('local_weights:', local_weights.tolist())
   
             # Compute scoring for global loss.
             global_weights = torch.zeros(metagraph.uids.shape)
             if global_loss.sum() > 0:
-                global_weights = -(global_loss / global_loss.sum())
-                non_zero = global_loss.nonzero(as_tuple=True)
-                global_min = global_loss[ non_zero ].min()
-                global_max = global_loss[ non_zero ].max()
-                global_weights[ non_zero ] = (global_loss[ non_zero ] - global_min) / (global_max - global_min + 1e-10)
+                global_weights = -global_loss.clone()
+                non_zero = global_weights.nonzero(as_tuple=True)
+                global_min = global_weights[ non_zero ].min()
+                global_max = global_weights[ non_zero ].max()
+                global_weights[ non_zero ] = (global_weights[ non_zero ] - global_min) / (global_max - global_min + 1e-10)
+                global_weights = global_weights/(global_weights.sum() + 1e-10)
             print('global_weights:', global_weights.tolist())
                                 
             # Combine local and global loss scoring.
@@ -307,6 +309,7 @@ def main(config):
             # threshold for upload.
             uid_score = global_loss[next_uid]
             if config.use_wandb: wandb.log({ 'uid_score': uid_score, 'upload_threshold': upload_threshold  })
+            print ( 'uid_score', uid_score, 'upload_threshold', upload_threshold )
             if uid_score < upload_threshold and my_uid == master_uid:
                 print ('New Master, uploading state.')
                 upload_threshold = uid_score * hparams.epsilon
