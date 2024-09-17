@@ -59,7 +59,7 @@ def load_hparams() -> SimpleNamespace:
         # How much (out of 1) the local evaluation counts relative to global.
         'local_dominance': 0.5,
         # Moving average alpha for the validator
-        'base_alpha': 0.0001,
+        'base_alpha': 0.001,
         # Global sequence length
         'sequence_length': 4096,
         # Size of the local eval window.
