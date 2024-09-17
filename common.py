@@ -17,21 +17,73 @@
 
 import io
 import os
+import ast
 import uuid
 import math
 import time
 import json
 import torch
 import hashlib
+import boto3
+import requests
 import tempfile
 import bittensor as bt
+from dotenv import dotenv_values
 from types import SimpleNamespace
-from transformers import GPT2Config, GPT2LMHeadModel
+from transformers import AutoTokenizer, GPT2Config, GPT2LMHeadModel
 from transformers import LlamaForCausalLM, LlamaConfig, LlamaTokenizer
 from typing import Dict, List, Optional, Tuple, Any
 from botocore.exceptions import ClientError  # Import for handling S3 client errors
 
 from compression import topk_compress_gradients, topk_decompress_gradients
+
+def load_hparams() -> SimpleNamespace:
+    # Your GitHub username
+    username = 'unconst'
+    # GitHub API URL to fetch user's gists
+    gists_api_url = f'https://api.github.com/users/{username}/gists'
+    # Fetch the list of gists
+    response = requests.get(gists_api_url)
+    gists = response.json()
+    # Find the hparams gist.
+    for gist in gists:
+        if list(gists[0]['files'].keys())[0] == 'hparams':
+            break
+        
+    # URL of the gist
+    gist_url = gist['files']['hparams']['raw_url']
+
+    # Modify the URL to get the raw content
+    raw_gist_url = gist_url + '/raw'
+
+    # Fetch the raw gist content
+    response = requests.get(raw_gist_url)
+    hparams_code = response.text
+
+    # Extract the hparams dictionary from the code
+    # Since the code defines hparams as: hparams = { ... }
+    # We'll split the string to get the part after '='
+    try:
+        # Split the code at the first occurrence of '='
+        _, hparams_str = hparams_code.split('=', 1)
+        # Use ast.literal_eval to safely evaluate the dictionary string
+        hparams_dict = ast.literal_eval(hparams_str.strip())
+        # Convert the dictionary to a SimpleNamespace
+        hparams_ns = SimpleNamespace(**hparams_dict)
+        # Load the tokenizer.
+        hparams_ns.tokenizer = AutoTokenizer.from_pretrained( hparams_ns.tokenizer_name, verbose=False, clean_up_tokenization_spaces=True )
+        # Get the model config.
+        hparams_ns.model_config = LlamaConfig(
+            vocab_size = hparams_ns.tokenizer.vocab_size,
+            hidden_size = hparams_ns.hidden_size,
+            num_hidden_layers = hparams_ns.num_hidden_layers,
+            num_attention_heads = hparams_ns.num_attention_heads,
+            intermediate_size = hparams_ns.intermediate_size,
+        )
+        # Access hparams as attributes
+        return hparams_ns
+    except Exception as e:
+        print('An error occurred:', e)
 
 def human_readable_size(size, decimal_places=2):
     """

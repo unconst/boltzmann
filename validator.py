@@ -43,8 +43,18 @@ from transformers import (
 )
 
 from common import *
-from constants import *
 from dataset import SubsetFineWebEdu2Loader
+
+# Instantiate the AWS S3 client.
+env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
+AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')  # AWS access key ID.
+AWS_SECRET_ACCESS_KEY = env_config.get('AWS_SECRET_ACCESS_KEY')  # AWS secret access key.
+CLIENT: boto3.client = boto3.client(
+    's3',
+    region_name='us-east-1',  # AWS region.
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+)
 
 # Main function that runs the validator script.
 def main(config):
@@ -78,14 +88,16 @@ def main(config):
     # Initialize Weights and Biases (wandb) for experiment tracking if enabled.
     if config.use_wandb:
         run = wandb.init(project='cont', resume='allow', name=f'V{my_uid}', config=config)
-
+        
+    # Load running hparams.
+    hparams = load_hparams()
     # Load the evaluation history from S3 storage.
     history = load_history(my_uid, metagraph, subtensor, CLIENT)
     # Optionally clear history on restart.
     if config.restart:
         history = {}
         save_history(wallet, history, config.bucket, CLIENT)        
-        master = LlamaForCausalLM(config=MODEL_CONFIG)
+        master = LlamaForCausalLM( config = hparams.model_config )
         current_meta = upload_model(
             wallet = wallet,
             model = master,
@@ -103,6 +115,9 @@ def main(config):
             # Sync the chain state.
             subtensor = bt.subtensor(config=config)            
             metagraph = subtensor.metagraph(netuid=config.netuid)
+            
+            # Sync the latest hparams from the global training state gist.
+            hparams = load_hparams()
             
             # Get the master metadata.
             master_uid = int(metagraph.S.argmax())
@@ -131,7 +146,7 @@ def main(config):
                 master.eval()
 
             # Sample the next uid based on incentives.
-            probabilities = metagraph.I + (BASE_PROBABILITY / float(metagraph.n))
+            probabilities = metagraph.I + (hparams.base_probability / float(metagraph.n))
             probabilities /= probabilities.sum()
             next_uid = int(np.argmax(np.random.multinomial(1, probabilities)))
 
@@ -155,21 +170,21 @@ def main(config):
             local_losses = []
             global_losses = []
             local_page = random.choice(SubsetFineWebEdu2Loader.next_pages(
-                offset = subtensor.block * WINDOW_SPEED,
-                n_pages = WINDOW_SIZE,
+                offset = subtensor.block * hparams.window_speed,
+                n_pages = hparams.window_size,
                 seed = next_uid
             ))
             local_dataset = SubsetFineWebEdu2Loader(
                 batch_size = config.batch_size,
-                sequence_length = SEQUENCE_LENGTH,
+                sequence_length = hparams.sequence_length,
                 pages_info = [local_page],
-                tokenizer = TOKENIZER
+                tokenizer = hparams.tokenizer
             )
             global_dataset = SubsetFineWebEdu2Loader(
                 batch_size = config.batch_size,
-                sequence_length = SEQUENCE_LENGTH,
+                sequence_length = hparams.sequence_length,
                 num_pages = 1,
-                tokenizer = TOKENIZER
+                tokenizer = hparams.tokenizer
             )
             global_page = global_dataset.pages[0]
             
@@ -179,7 +194,7 @@ def main(config):
                 input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
                 labels = input_ids.clone()  # Clone input_ids for labels.
                 # Mask the padding tokens.
-                labels = torch.where(labels == TOKENIZER.pad_token_id, -100, labels)
+                labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
                 with torch.no_grad():
                     # Forward pass through the model with scaling.
                     with torch.amp.autocast(config.device, dtype=torch.bfloat16):
@@ -194,7 +209,7 @@ def main(config):
             for batch in global_dataset:
                 input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
                 labels = input_ids.clone()
-                labels = torch.where(labels == TOKENIZER.pad_token_id, -100, labels)
+                labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
                 with torch.no_grad():
                     # Forward pass through the model with scaling.
                     with torch.amp.autocast(config.device, dtype=torch.bfloat16):
@@ -238,10 +253,12 @@ def main(config):
             for uid, samples in history.items():
                 last_block, moving_global_loss, moving_local_loss = None, 0, 0
                 for sample in samples:
-                    block = int(sample['block'])
                     next_local_loss = float(np.mean(sample['local_losses']))
                     next_global_loss = float(np.mean(sample['global_losses']))
-                    alpha = BASE_ALPHA * (block - last_block) if last_block is not None else 1
+                    if np.isnan(next_local_loss) or np.isnan(next_global_loss):
+                        continue # Skip NaN values.
+                    block = int(sample['block'])
+                    alpha = hparams.base_alpha * (block - last_block) if last_block is not None else 1
                     moving_global_loss = alpha * next_global_loss + (1 - alpha) * moving_global_loss
                     moving_local_loss = alpha * next_local_loss + (1 - alpha) * moving_local_loss
                     last_block = block
@@ -257,7 +274,7 @@ def main(config):
                 non_zero = local_loss.nonzero(as_tuple=True)
                 local_min = local_loss[ non_zero ].min()
                 local_max = local_loss[ non_zero ].max()
-                local_loss[ non_zero ] = (local_loss[ non_zero ] - local_min) / (local_max - local_min + 1e-10)
+                local_weights[ non_zero ] = (local_loss[ non_zero ] - local_min) / (local_max - local_min + 1e-10)
             print('local_weights:', local_weights.tolist())
   
             # Compute scoring for global loss.
@@ -267,12 +284,12 @@ def main(config):
                 non_zero = global_loss.nonzero(as_tuple=True)
                 global_min = global_loss[ non_zero ].min()
                 global_max = global_loss[ non_zero ].max()
-                global_loss[ non_zero ] = (global_loss[ non_zero ] - global_min) / (global_max - global_min + 1e-10)
+                global_weights[ non_zero ] = (global_loss[ non_zero ] - global_min) / (global_max - global_min + 1e-10)
             print('global_weights:', global_weights.tolist())
                                 
             # Combine local and global loss scoring.
-            weights = LOCAL_DOMINANCE * local_weights + (1 - LOCAL_DOMINANCE) * global_weights                    
-            weights = torch.exp(weights * TEMPERATURE)
+            weights = hparams.local_dominance * local_weights + (1 - hparams.local_dominance) * global_weights                    
+            weights = torch.exp(weights * hparams.temperature)
             weights = weights / weights.sum() if weights.sum() != 0 else weights
             print('Weights:', weights.tolist())
 
@@ -289,12 +306,10 @@ def main(config):
             # If we are the master validator, check if the latest model has beaten the 
             # threshold for upload.
             uid_score = global_loss[next_uid]
-            print ('uid_score', uid_score)
-            print ('upload_threshold', upload_threshold)
+            if config.use_wandb: wandb.log({ 'uid_score': uid_score, 'upload_threshold': upload_threshold  })
             if uid_score < upload_threshold and my_uid == master_uid:
                 print ('New Master, uploading state.')
-                upload_threshold = uid_score * 0.999
-                wandb.log({ 'upload_threshold': upload_threshold  })
+                upload_threshold = uid_score * hparams.epsilon
                 CLIENT.delete_object( Bucket=config.bucket, Key=current_master_meta.filename )
                 CLIENT.delete_object( Bucket=config.bucket, Key=current_master_meta.metadata_filename )
                 current_master_meta = upload_model(

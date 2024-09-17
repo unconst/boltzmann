@@ -32,8 +32,19 @@ from transformers import LlamaForCausalLM
 
 # Import constants and utility functions specific to the project.
 from common import *
-from constants import *
+from constants import load_hparams
 from dataset import SubsetFineWebEdu2Loader
+
+# Instantiate the AWS S3 client.
+env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
+AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')  # AWS access key ID.
+AWS_SECRET_ACCESS_KEY = env_config.get('AWS_SECRET_ACCESS_KEY')  # AWS secret access key.
+CLIENT: boto3.client = boto3.client(
+    's3',
+    region_name='us-east-1',  # AWS region.
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+)
 
 def main(config):
     """
@@ -90,6 +101,9 @@ def main(config):
             # Resynchronize the chain state to get the latest metagraph.
             subtensor = bt.subtensor(config=config)
             metagraph = subtensor.metagraph(netuid=config.netuid)
+            
+            # Sync the latest hparams from the global training state gist.
+            hparams = load_hparams()
             
             # Get the master.
             latest_master_meta = get_latest_metadata( key = 'model', uid = int(metagraph.S.argmax()), metagraph = metagraph, subtensor = subtensor, CLIENT=CLIENT)
@@ -149,8 +163,8 @@ def main(config):
             for step in range(config.pages_per_epoch):
                 # Generate the current training window based on the subtensor block.
                 local_pages: List[Tuple[str, int, str]] = SubsetFineWebEdu2Loader.next_pages(
-                    offset = subtensor.block * WINDOW_SPEED + 100,  # Offset into the future to avoid overlap with validators.
-                    n_pages = WINDOW_SIZE,
+                    offset = subtensor.block * hparams.window_speed + 100,  # Offset into the future to avoid overlap with validators.
+                    n_pages = hparams.window_size,
                     seed = my_uid  # Seed with miner's UID for consistency.
                 )
     
@@ -160,9 +174,9 @@ def main(config):
                 # Create the dataset for the selected page.
                 dataset = SubsetFineWebEdu2Loader(
                     batch_size = config.actual_batch_size,
-                    sequence_length = SEQUENCE_LENGTH,
+                    sequence_length = hparams.sequence_length,
                     pages_info = [ local_page ],
-                    tokenizer = TOKENIZER
+                    tokenizer = hparams.tokenizer
                 )
     
                 # Calculate the number of gradient accumulation steps to achieve desired batch size.
@@ -178,7 +192,7 @@ def main(config):
     
                     # Mask the padding tokens in labels by setting them to -100.
                     # This tells the loss function to ignore these positions.
-                    labels = torch.where(labels == TOKENIZER.pad_token_id, -100, labels)
+                    labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
     
                     # Forward pass with mixed precision.
                     with torch.amp.autocast( config.device, dtype = torch.bfloat16 ):
@@ -232,7 +246,7 @@ def main(config):
                 bucket = config.bucket,
                 CLIENT = CLIENT,
                 use_compression = True,
-                compression_percent = COMPRESSION,
+                compression_percent = hparams.compression,
             ))
             del delta
         
