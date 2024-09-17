@@ -307,7 +307,7 @@ def main(config):
             
             # If we are the master validator, check if the latest model has beaten the 
             # threshold for upload.
-            uid_score = global_loss[next_uid]
+            uid_score = float(np.mean(global_losses))
             if config.use_wandb: wandb.log({ 'uid_score': uid_score, 'upload_threshold': upload_threshold  })
             print ( 'uid_score', uid_score, 'upload_threshold', upload_threshold )
             if uid_score < upload_threshold and my_uid == master_uid:

@@ -4,14 +4,57 @@
 BISTRO – Bittensor Incentivized and Scalable Training with Reward Optimization. 
 ---
 
-# How it works
+# Mechanism
 
-Validators on Bistro evaluate the models that miners upload to the S3 buckets attached to their keys on the chain. 
-At any block model are evaluated on pages that are pulled from two sets of pages from the dataset eval and holdout.
-Eval pages are random pages pulled from within a window of pages (unique to each miner) but deterministic based on the block and 
-Holdout pages, random pages pulled from the full dataset. The miners must maximize their performance on their unique window of pages while still maximizing
-their performance on the holdout set. The incentives are designed to force miners to train models which can be merged with each other stimulating 
-inter model communication as a nessecity under the reward landscape.
+```markdown
+
+# Init the model
+master = init_model()
+
+# Upload the model to S3
+upload( master )
+
+# Loop forever.
+loop:
+
+  # miner uids on the network.
+  for uid in uids:
+
+      # Get the latest delta uploaded by the miner. 
+      delta = get_delta()
+
+      # Add the delta to the master model
+      add_delta( master, delta )
+
+      # Eval the master on the miner's current local pages
+      local_pages = get_pages( block, uid)
+      local_loss = eval( local_pages, master )
+
+      # Eval the master on random pages
+      global_pages = get_random_pages()
+      global_loss = eval( global_pages, master )
+
+      # Check if moving average produces reasonable update.
+      if moving_average( global_loss, uid ) > 
+
+
+while True:
+
+  metagraph = metagraph.sync()
+  uid = random_uid( metagraph )
+  delta = downdload( uid )
+
+
+
+  for uid in uids:
+
+
+
+Validators on Bistro evaluate gradients (or model deltas) that miners submit to intermediate S3 buckets.
+At any block, deltas are evaluated on two sets of pages that are pulled from RefinedWeb: local and global.
+Local pages are randomly sampled pulled from within a window of pages (unique to each miner) but deterministic based on the block and 
+global pages are pulled at random from the full dataset. The miners must maximize their performance on their unique window of pages while regulating their performance
+on the global. The incentives are designed to force miners to train mergable models and to make them available in a high bandwidth environment.
 
 # Step 1.
   - Create an S3 <Bucket> on AWS and add export your AWS API Key.
@@ -28,9 +71,9 @@ inter model communication as a nessecity under the reward landscape.
 
 # Step 4.
   - Run your miner.
-  - `python3 miner.py --wallet.name <> --wallet.hotkey <> --subtensor.network test --netuid 212 --bucket <Bucket>`
+  - `python3 miner.py --wallet.name <> --wallet.hotkey <> --subtensor.network test --netuid 212 --bucket <Bucket> --device <>`
 
 # Step 5.
   - Run your validator.
-  - `python3 validator.py --wallet.name <> --wallet.hotkey <> --subtensor.network test --netuid 212 --bucket <Bucket>`
+  - `python3 validator.py --wallet.name <> --wallet.hotkey <> --subtensor.network test --netuid 212 --bucket <Bucket> --device`
 
