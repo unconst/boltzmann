@@ -154,10 +154,10 @@ def main(config):
             allowed_compression = 1 # min( 1, (subtensor.block - update_block) / hparams.compression_window )
             allowed_size = lastest_master_meta.size * allowed_compression
             if config.use_wandb: wandb.log({ 'metadata.size': metadata.size, 'allowed_size': allowed_size, 'allowed_compression': allowed_compression })
-            if metadata.size > allowed_size:
-                print (f'metadata is too large {metadata.size} > {allowed_size}:')
-                # Delta is too large.
-                continue
+            # if metadata.size > allowed_size:
+            #     print (f'metadata is too large {metadata.size} > {allowed_size}:')
+            #     # Delta is too large.
+            #     continue
             
             # Download the miner delta based on the metadata.
             delta = download_model( metadata = metadata, device='cpu', CLIENT=CLIENT )
@@ -308,7 +308,6 @@ def main(config):
                     bucket = config.bucket,
                     CLIENT = CLIENT,
                 ) 
-                time.sleep(30)
                 
             # Otherwise, simply remove the delta and continue
             else:

@@ -291,8 +291,7 @@ def upload_model(
         bucket: str,
         CLIENT = CLIENT,
         key = 'model',
-        use_compression: bool = False,
-        compression_percent: float = 0.9,
+        mask: Dict[str, object] = None,
     ) -> SimpleNamespace:
     """
     Uploads a model to a specified bucket along with its metadata.
@@ -330,9 +329,11 @@ def upload_model(
 
     # Add the hash of the model to the metadata.
     extras['model_hash'] = hash_model(model)
-    extras['compressed'] = use_compression
-    extras['compression_percent'] = compression_percent
     extras['key'] = key
+    if mask != None:
+        extras['compressed'] = True
+    else:
+        extras['compressed'] = False
 
     # Generate filenames for the model and its metadata based on the hotkey and block number.
     filename = f'{key}-{wallet.hotkey.ss58_address}-{block}.pt'  # Filename for the model.
@@ -352,11 +353,16 @@ def upload_model(
         GrantReadACP='uri="http://acs.amazonaws.com/groups/global/AllUsers"'
     )
     
-    # Compress the model.
-    if use_compression:
-        for mkey, param in model_state_dict.items():
-            model_state_dict[mkey] = topk_compress_gradients({mkey: param}, k=int( ( 1 - compression_percent ) * param.numel()))[mkey]
-    
+    # Decompress from the mask.
+    if mask != None:
+        for name, param in model.named_parameters():
+            param_mask = mask[name].to(param.device)
+            param_flat = param.flatten()
+            mask_flat = param_mask.flatten()
+            unmasked_indices = mask_flat.nonzero(as_tuple=False).flatten()
+            unmasked_params = param_flat[unmasked_indices]
+            model_state_dict[name] = {'indices': unmasked_indices, 'values': unmasked_params}
+            
     # Upload the model to the storage service.
     with io.BytesIO() as module_buffer:
         # Save the model state dictionary to the buffer.
@@ -426,15 +432,17 @@ def download_model(
 
         # Load the model state dict from the temporary file.
         new_model_state_dict = torch.load( unique_temp_file, map_location=torch.device(device), weights_only = True )
-        
+
         # Check if the model is compressed and decompress if necessary
         if hasattr(metadata, 'compressed') and metadata.compressed:
-            original_shape_dict = {name: param.shape for name, param in model.named_parameters()}
             for name, param in model.named_parameters():
                 if name in new_model_state_dict:
-                    compressed_data = new_model_state_dict[name]
-                    decompressed_data = topk_decompress_gradients({name: compressed_data}, {name: param.shape})
-                    new_model_state_dict[name] = decompressed_data[name]
+                    param_shape = param.shape
+                    decompressed = torch.zeros(param_shape, device=param.device).flatten()
+                    indices = new_model_state_dict[name]['indices']
+                    values = new_model_state_dict[name]['values']
+                    decompressed[indices] = values
+                    new_model_state_dict[name] = decompressed.view(param.shape)
         
         # Load the state dict into the model.
         model.load_state_dict(new_model_state_dict)

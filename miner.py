@@ -139,7 +139,14 @@ def main(config):
                 model.gradient_checkpointing_enable()
                 torch.cuda.empty_cache()
                 update_block = subtensor.block
-
+                
+                # Build this models current compression mask.
+                mask = {}
+                compression_factor = 10
+                for name, param in model.named_parameters():
+                    # Create a mask with (1 - 1/compression_factor) zeros and 1/compression_factor ones, same shape as param
+                    next_mask = (torch.rand_like(param) < (1 / compression_factor)).float()  # 1/compression_factor chance to be True (1.0)
+                    mask[name] = next_mask
 
             # Iterate over the number of pages to train per epoch.
             print ('Training ...')
@@ -187,6 +194,13 @@ def main(config):
                     scaler.scale(loss).backward()
                     # Perform optimizer step after accumulating gradients.
                     if (idx + 1) % accumulation_steps == 0:
+                        # Apply the masks to gradients making these params not trainable.
+                        for name, param in model.named_parameters():
+                            if param.grad is not None:
+                                # Ensure mask is on the same device and dtype as the gradient
+                                next_mask = mask[ name] 
+                                next_mask = next_mask.to(param.grad.device).to(param.grad.dtype)
+                                param.grad.mul_( next_mask )  # In-place multiplication to zero out gradients based on compression_ratio
                         # Unscale the gradients and perform optimizer step.
                         scaler.step(optimizer)
                         # Update the scaler for next iteration.
@@ -207,6 +221,7 @@ def main(config):
                     # TODO: Delete unnecessary tensors to free up GPU memory.
                     del input_ids, labels, outputs
                     torch.cuda.empty_cache()
+                    break
     
             # After training, remove the previous model from S3 if it exists.
             if len(upload_history) > 3:
@@ -221,10 +236,6 @@ def main(config):
                 delta_param.data.sub_( master_param.data.to('cpu') )
     
             # Upload the current delta to S3 for evaluation.
-            compression = 1 - max( 0.05, (subtensor.block - update_block) / (hparams.compression_window * 2))
-            print ('Compression:', compression)
-            use_compression = False if compression < 0.05 else True
-            if config.use_wandb: wandb.log({'compression': compression} )
             print ('Uploading the delta...')
             upload_history.append( upload_model(
                 key = 'delta',
@@ -234,8 +245,7 @@ def main(config):
                 extras = {},  # Additional metadata can be added here.
                 bucket = config.bucket,
                 CLIENT = CLIENT,
-                use_compression = use_compression,
-                compression_percent = compression,
+                mask = mask,
             ))
             del delta
         
