@@ -37,8 +37,6 @@ from transformers import LlamaForCausalLM, LlamaConfig, LlamaTokenizer
 from typing import Dict, List, Optional, Tuple, Any
 from botocore.exceptions import ClientError  # Import for handling S3 client errors
 
-from compression import topk_compress_gradients, topk_decompress_gradients
-
 # Instantiate the AWS S3 client.
 env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
 AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')  # AWS access key ID.
@@ -53,7 +51,7 @@ CLIENT: boto3.client = boto3.client(
 def load_hparams() -> SimpleNamespace:
     hparams = {
         # Delta compression rate.
-        'compression': 0.95,
+        'compression': 10,
         # Base sample probability
         'base_probability': 1,
         # Skews higher weights by exponential factor with this temperature term.
@@ -70,15 +68,13 @@ def load_hparams() -> SimpleNamespace:
         'window_speed': 4,
         # Improvement epsilon requirement.
         'epsilon': 0.999,
-        # Compression window
-        'compression_window': 60 * 60 * 3, # 3 hour.
         # AutoTokenizer name.
         'tokenizer_name': 'gpt2',
         # Model arch.
         'hidden_size': 2040,
-        'num_hidden_layers': 6,
-        'num_attention_heads': 6,
-        'intermediate_size': 3000
+        'num_hidden_layers': 12,
+        'num_attention_heads': 12,
+        'intermediate_size': 6144
     }
     # Convert the dictionary to a SimpleNamespace
     hparams_ns = SimpleNamespace(**hparams)

@@ -151,9 +151,8 @@ def main(config):
                 continue 
             
             # Check the compression.
-            allowed_compression = 1 # min( 1, (subtensor.block - update_block) / hparams.compression_window )
-            allowed_size = lastest_master_meta.size * allowed_compression
-            if config.use_wandb: wandb.log({ 'metadata.size': metadata.size, 'allowed_size': allowed_size, 'allowed_compression': allowed_compression })
+            # allowed_size = 3 * (lastest_master_meta.size / hparams.compression) 
+            # if config.use_wandb: wandb.log({ 'metadata.size': metadata.size, 'allowed_size': allowed_size })
             # if metadata.size > allowed_size:
             #     print (f'metadata is too large {metadata.size} > {allowed_size}:')
             #     # Delta is too large.

@@ -142,7 +142,7 @@ def main(config):
                 
                 # Build this models current compression mask.
                 mask = {}
-                compression_factor = 10
+                compression_factor = hparams.compression
                 for name, param in model.named_parameters():
                     # Create a mask with (1 - 1/compression_factor) zeros and 1/compression_factor ones, same shape as param
                     next_mask = (torch.rand_like(param) < (1 / compression_factor)).float()  # 1/compression_factor chance to be True (1.0)
@@ -198,7 +198,7 @@ def main(config):
                         for name, param in model.named_parameters():
                             if param.grad is not None:
                                 # Ensure mask is on the same device and dtype as the gradient
-                                next_mask = mask[ name] 
+                                next_mask = mask[ name]
                                 next_mask = next_mask.to(param.grad.device).to(param.grad.dtype)
                                 param.grad.mul_( next_mask )  # In-place multiplication to zero out gradients based on compression_ratio
                         # Unscale the gradients and perform optimizer step.
@@ -221,7 +221,6 @@ def main(config):
                     # TODO: Delete unnecessary tensors to free up GPU memory.
                     del input_ids, labels, outputs
                     torch.cuda.empty_cache()
-                    break
     
             # After training, remove the previous model from S3 if it exists.
             if len(upload_history) > 3:
