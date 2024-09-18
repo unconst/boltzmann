@@ -15,14 +15,9 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-import os
-import copy
-import math
-import time
-import torch
 import wandb
-import random
 import argparse
+import traceback
 import bittensor as bt
 import numpy as np
 from types import SimpleNamespace
@@ -81,7 +76,9 @@ def main(config):
         run = wandb.init(project='cont', resume='allow', name=f'M{my_uid}', config=config)
     
     # Train loop.       
-    current_master_meta = None
+    master = None
+    n_failed_sync = 0
+    n_success_sync = 0
     upload_history = []  # List of previous uploads
     update_block = subtensor.block
     while True:
@@ -94,65 +91,58 @@ def main(config):
             # Sync the latest hparams from the global training state gist.
             hparams = load_hparams()
             
-            # Get the master.
-            latest_master_meta = get_latest_metadata( key = 'model', uid = int(metagraph.S.argmax()), metagraph = metagraph, subtensor = subtensor, CLIENT=CLIENT)
-            if latest_master_meta is None:
-                print ('No Valid master waiting ...')
+            # Get the master metadata.
+            master_metadata = get_latest_metadata( key = 'model', uid = int(metagraph.S.argmax()), metagraph = metagraph, subtensor = subtensor, CLIENT=CLIENT)
+            if master_metadata is None:
+                print ('No valid master, waiting ...')
                 time.sleep(12)
                 continue
+            
+            # Check to see if the master is not the same as remote.
+            if master_metadata.model_hash != hash_model( master ):
                 
-            # Update the master model
-            if current_master_meta is None or latest_master_meta.model_hash != current_master_meta.model_hash:
-                print ('Loading the new master...')
-                # We can update the model by loading the delta.
-                applied_delta = False
-                
-                # Attempt to load the master model via the delta.
-                if hasattr( latest_master_meta, 'delta' ) and current_master_meta is not None and model is not None:
-                    print ('Applying delta....')
-                    try:
-                        # Apply delta from the latest master if exists.
-                        delta_meta = SimpleNamespace( **latest_master_meta.delta ) 
-                        delta = download_model( metadata = delta_meta, device = 'cpu', CLIENT = CLIENT )
-                        for (name, model_param), (_, delta_param) in zip( model.named_parameters(), delta.named_parameters() ):
-                            model_param.data.add_( delta_param.data.to( model.device ) )
-                            delta_param.data = delta_param.data.cpu() # Remove from GPU here.
-                        master = copy.deepcopy( model ).to('cpu')
-                        torch.cuda.empty_cache()
-                        applied_delta = True
-                        del delta
-                        print ('Successfully applied delta.')
-                    except Exception as e:
-                        print ( f'Failed to apply delta with error:{e}' )
-                        applied_delta = False
-                        
-                # If we failed to apply the delta to update load the state from master.
-                # Or if the hashes are not correct.
-                if applied_delta == False or hash_model( master ) != latest_master_meta.model_hash:
-                    print ('Loading master model directly.')
-                    # Otherwise just get the master directly.
-                    master = download_model( metadata = latest_master_meta, device='cpu', CLIENT = CLIENT )    
-                    if master == None:
-                        print ('Waiting for master...')
-                        time.sleep(12)
-                        continue
-                    model = copy.deepcopy( master )
-                    scaler = torch.amp.GradScaler()            
-                    optimizer = Adafactor(
-                        model.parameters(),
-                        lr = config.learning_rate,
-                        relative_step = False
-                    )
-                    model.to(config.device)
-                    model.train()
-                    model.gradient_checkpointing_enable()
-                    torch.cuda.empty_cache()
-                
-                # Update the master    
-                current_master_meta = latest_master_meta
+                # Updating master from the delta applied to it.
+                if master != None and hasattr( master_metadata, 'delta' ):
+                    # Apply remote delta.
+                    print (f'Applying delta to update master ...')
+                    delta_meta = SimpleNamespace( **master_metadata.delta ) 
+                    delta = download_model( metadata = delta_meta, device = 'cpu', CLIENT = CLIENT )
+                    for (name, master_param), (_, delta_param) in zip( master.named_parameters(), delta.named_parameters() ):
+                        master_param.data.add_( delta_param.data.to( master.device ) )
+                    del delta
+                    
+                # If the master is None or the hash is different (even after delta application.)
+                if master == None or hash_model( master ) != master_metadata.model_hash:
+                    # Download the master directly.
+                    print (f'Local:{hash_model( master )} != Remote:{master_metadata.model_hash}.\nDownloading full state...')
+                    master = download_model( metadata = master_metadata, device='cpu', CLIENT = CLIENT ) 
+                    n_failed_sync += 1
+                    if config.use_wandb: wandb.log({'n_failed_sync': n_failed_sync} )
+                else:
+                    print ('Master state synced correctly.')
+                    n_success_sync += 1
+                    if config.use_wandb: wandb.log({'n_success_sync': n_success_sync} )
+                    
+                # Finally load the model and init it for training.
+                print ('Loading model state to train ...')
+                if 'model' in locals(): 
+                    del model;
+                model = copy.deepcopy( master )    
+                scaler = torch.amp.GradScaler()            
+                optimizer = Adafactor(
+                    model.parameters(),
+                    lr = config.learning_rate,
+                    relative_step = False
+                )
+                model.to(config.device)
+                model.train()
+                model.gradient_checkpointing_enable()
+                torch.cuda.empty_cache()
                 update_block = subtensor.block
 
+
             # Iterate over the number of pages to train per epoch.
+            print ('Training ...')
             for step in range(config.pages_per_epoch):
                 # Generate the current training window based on the subtensor block.
                 local_pages: List[Tuple[str, int, str]] = SubsetFineWebEdu2Loader.next_pages(
@@ -219,20 +209,23 @@ def main(config):
                     torch.cuda.empty_cache()
     
             # After training, remove the previous model from S3 if it exists.
-            if len(upload_history) > 10:
+            if len(upload_history) > 3:
                 to_delete = upload_history.pop(0)
                 CLIENT.delete_object(Bucket=config.bucket, Key=to_delete.filename)
                 CLIENT.delete_object(Bucket=config.bucket, Key=to_delete.metadata_filename)
                 
             # Compute the delta between the current model and the master.
+            print ('Computing the delta...')
             delta = copy.deepcopy( model ).to('cpu')
             for (name, delta_param), (_, master_param) in zip(delta.named_parameters(), master.named_parameters()):
                 delta_param.data.sub_( master_param.data.to('cpu') )
     
             # Upload the current delta to S3 for evaluation.
-            compression = 1 - min( 0.99, (subtensor.block - update_block) / 1000 )
+            compression = 1 - max( 0.05, (subtensor.block - update_block) / (hparams.compression_window * 2))
+            print ('Compression:', compression)
             use_compression = False if compression < 0.05 else True
             if config.use_wandb: wandb.log({'compression': compression} )
+            print ('Uploading the delta...')
             upload_history.append( upload_model(
                 key = 'delta',
                 wallet = wallet,
@@ -255,6 +248,7 @@ def main(config):
         # Handle any other exceptions, log the error, and continue after a short delay.
         except Exception as e:
             print(f"Error: {e}")
+            traceback.print_exc()
             time.sleep(5)
             continue
 

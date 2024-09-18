@@ -18,13 +18,15 @@
 import io
 import os
 import ast
+import copy
 import uuid
 import math
 import time
 import json
 import torch
-import hashlib
 import boto3
+import random
+import hashlib
 import requests
 import tempfile
 import bittensor as bt
@@ -59,7 +61,7 @@ def load_hparams() -> SimpleNamespace:
         # How much (out of 1) the local evaluation counts relative to global.
         'local_dominance': 0.5,
         # Moving average alpha for the validator
-        'base_alpha': 0.001,
+        'base_alpha': 0.01,
         # Global sequence length
         'sequence_length': 4096,
         # Size of the local eval window.
@@ -67,14 +69,16 @@ def load_hparams() -> SimpleNamespace:
         # Number of new pages added to the local window every block.
         'window_speed': 4,
         # Improvement epsilon requirement.
-        'epsilon': 0.99,
+        'epsilon': 0.999,
+        # Compression window
+        'compression_window': 60 * 60 * 3, # 3 hour.
         # AutoTokenizer name.
         'tokenizer_name': 'gpt2',
         # Model arch.
-        'hidden_size': 4096,
-        'num_hidden_layers': 32,
-        'num_attention_heads': 32,
-        'intermediate_size': 11008
+        'hidden_size': 2040,
+        'num_hidden_layers': 6,
+        'num_attention_heads': 6,
+        'intermediate_size': 3000
     }
     # Convert the dictionary to a SimpleNamespace
     hparams_ns = SimpleNamespace(**hparams)
@@ -396,7 +400,7 @@ def download_model(
     """
     try:
         # Log the start of the download process.
-        print(f'Downloading model from {metadata.filename}@{metadata.bucket}')
+        print(f'Downloading {metadata.key} from {metadata.filename}@{metadata.bucket}')
         start_time = time.time()  # Record the start time for the download.
 
         # Check the model type and initialize the appropriate model configuration and model.
@@ -446,7 +450,7 @@ def download_model(
         return model
     except Exception as e:
         # Log any exceptions that occur during the download.
-        print(f'Error while downloading model from {metadata.filename}@{metadata.bucket} with error {e}.')
+        print(f'Error while downloading {metadata.key} from {metadata.filename}@{metadata.bucket} with error {e}.')
         return None
 
 def save_history(

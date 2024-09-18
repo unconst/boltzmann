@@ -45,17 +45,6 @@ from transformers import (
 from common import *
 from dataset import SubsetFineWebEdu2Loader
 
-# Instantiate the AWS S3 client.
-env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
-AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')  # AWS access key ID.
-AWS_SECRET_ACCESS_KEY = env_config.get('AWS_SECRET_ACCESS_KEY')  # AWS secret access key.
-CLIENT: boto3.client = boto3.client(
-    's3',
-    region_name='us-east-1',  # AWS region.
-    aws_access_key_id=AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY
-)
-
 # Main function that runs the validator script.
 def main(config):
     # Print the configuration for debugging.
@@ -110,6 +99,7 @@ def main(config):
     # Remember the min moving global loss.
     upload_threshold = math.inf
     current_master_meta = None
+    update_block = subtensor.block
     while True:
         try:
             # Sync the chain state.
@@ -148,23 +138,38 @@ def main(config):
             # Sample the next uid based on incentives.
             probabilities = metagraph.I + (hparams.base_probability / float(metagraph.n))
             probabilities /= probabilities.sum()
-            next_uid = int(np.argmax(np.random.multinomial(1, probabilities)))
+            print ( 'Probabilities', probabilities )
+            # next_uid = int(np.argmax(np.random.multinomial(1, probabilities)))
+            next_uid = int(random.choice( metagraph.uids ))
+            print ( 'next_uid', next_uid )
 
             # Retrieve the miner's metadata, which contains information about their delta.
             metadata = get_latest_metadata( key = 'delta', uid = next_uid, metagraph = metagraph, subtensor = subtensor, CLIENT=CLIENT)
             if metadata is None:
+                print (f'Metadata is None for uid: {next_uid}. continue ...')
                 # Start again.
                 continue 
+            
+            # Check the compression.
+            allowed_compression = 1 # min( 1, (subtensor.block - update_block) / hparams.compression_window )
+            allowed_size = lastest_master_meta.size * allowed_compression
+            if config.use_wandb: wandb.log({ 'metadata.size': metadata.size, 'allowed_size': allowed_size, 'allowed_compression': allowed_compression })
+            if metadata.size > allowed_size:
+                print (f'metadata is too large {metadata.size} > {allowed_size}:')
+                # Delta is too large.
+                continue
             
             # Download the miner delta based on the metadata.
             delta = download_model( metadata = metadata, device='cpu', CLIENT=CLIENT )
             if delta is None:
+                print (f'model is None after download for uid: {next_uid}. continue ...)')
                 # Start again.
                 continue
             
             # Apply the delta to the master model.
             for (name, master_param), (_, delta_param) in zip( master.named_parameters(), delta.named_parameters() ):
                 master_param.data.add_( delta_param.data.to( master.device ) )
+            print (f'Applied delta to model.')
                 
             # Select local and global pages to eval the model on.
             local_losses = []
@@ -189,6 +194,7 @@ def main(config):
             global_page = global_dataset.pages[0]
             
             # Evaluate the model on the local dataset.
+            print (f'Evaling local...')
             for batch in local_dataset:
                 # Convert the batch to tensors and move to the device.
                 input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
@@ -206,6 +212,7 @@ def main(config):
                 torch.cuda.empty_cache()
 
             # Evaluate the model on the global dataset.
+            print (f'Evalling global...')
             for batch in global_dataset:
                 input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
                 labels = input_ids.clone()
@@ -258,42 +265,18 @@ def main(config):
                     if np.isnan(next_local_loss) or np.isnan(next_global_loss):
                         continue # Skip NaN values.
                     block = int(sample['block'])
-                    alpha = hparams.base_alpha * (block - last_block) if last_block is not None else 1
+                    alpha = min( 1, hparams.base_alpha * (block - last_block) ) if last_block is not None else 1
                     moving_global_loss = alpha * next_global_loss + (1 - alpha) * moving_global_loss
                     moving_local_loss = alpha * next_local_loss + (1 - alpha) * moving_local_loss
                     last_block = block
                 local_loss[int(uid)] = moving_local_loss
                 global_loss[int(uid)] = moving_global_loss
+
             print('local_loss:', local_loss.tolist())
-            print('global_loss:', global_loss.tolist())
-                
-            # Compute scoring for local loss.
-            local_weights = torch.zeros(metagraph.uids.shape)
-            if local_loss.sum() > 0:
-                local_weights = -local_loss.clone()
-                non_zero = local_weights.nonzero(as_tuple=True)
-                local_min = local_weights[ non_zero ].min()
-                local_max = local_weights[ non_zero ].max()
-                local_weights[ non_zero ] = (local_weights[ non_zero ] - local_min) / (local_max - local_min + 1e-10)
-                local_weights = local_weights/(local_weights.sum() + 1e-10)
-            print('local_weights:', local_weights.tolist())
-  
-            # Compute scoring for global loss.
-            global_weights = torch.zeros(metagraph.uids.shape)
-            if global_loss.sum() > 0:
-                global_weights = -global_loss.clone()
-                non_zero = global_weights.nonzero(as_tuple=True)
-                global_min = global_weights[ non_zero ].min()
-                global_max = global_weights[ non_zero ].max()
-                global_weights[ non_zero ] = (global_weights[ non_zero ] - global_min) / (global_max - global_min + 1e-10)
-                global_weights = global_weights/(global_weights.sum() + 1e-10)
-            print('global_weights:', global_weights.tolist())
-                                
-            # Combine local and global loss scoring.
-            weights = hparams.local_dominance * local_weights + (1 - hparams.local_dominance) * global_weights                    
-            weights = torch.exp(weights * hparams.temperature)
-            weights = weights / weights.sum() if weights.sum() != 0 else weights
-            print('Weights:', weights.tolist())
+            print('global_loss:', global_loss.tolist())                
+            weights = hparams.local_dominance * (-local_loss) + (1 - hparams.local_dominance) * (-global_loss)    
+            weights[weights.nonzero(as_tuple=True)] = torch.softmax(weights[weights.nonzero(as_tuple=True)] * hparams.temperature , dim=0)       
+            print('weights:', weights.tolist())                
 
             # Set the computed weights on the chain using the wallet.
             subtensor.set_weights(
@@ -313,6 +296,7 @@ def main(config):
             if uid_score < upload_threshold and my_uid == master_uid:
                 print ('New Master, uploading state.')
                 upload_threshold = uid_score * hparams.epsilon
+                update_block = subtensor.block
                 CLIENT.delete_object( Bucket=config.bucket, Key=current_master_meta.filename )
                 CLIENT.delete_object( Bucket=config.bucket, Key=current_master_meta.metadata_filename )
                 current_master_meta = upload_model(
@@ -324,6 +308,7 @@ def main(config):
                     bucket = config.bucket,
                     CLIENT = CLIENT,
                 ) 
+                time.sleep(30)
                 
             # Otherwise, simply remove the delta and continue
             else:
