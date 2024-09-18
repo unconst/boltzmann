@@ -51,7 +51,7 @@ CLIENT: boto3.client = boto3.client(
 def load_hparams() -> SimpleNamespace:
     hparams = {
         # Delta compression rate.
-        'compression': 10,
+        'compression': 1000,
         # Base sample probability
         'base_probability': 1,
         # Skews higher weights by exponential factor with this temperature term.
@@ -71,10 +71,10 @@ def load_hparams() -> SimpleNamespace:
         # AutoTokenizer name.
         'tokenizer_name': 'gpt2',
         # Model arch.
-        'hidden_size': 2040,
-        'num_hidden_layers': 12,
-        'num_attention_heads': 12,
-        'intermediate_size': 6144
+        'hidden_size': 4096,
+        'num_hidden_layers': 32,
+        'num_attention_heads': 32,
+        'intermediate_size': 11008
     }
     # Convert the dictionary to a SimpleNamespace
     hparams_ns = SimpleNamespace(**hparams)

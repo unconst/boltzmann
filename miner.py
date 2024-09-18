@@ -145,7 +145,8 @@ def main(config):
                 compression_factor = hparams.compression
                 for name, param in model.named_parameters():
                     # Create a mask with (1 - 1/compression_factor) zeros and 1/compression_factor ones, same shape as param
-                    next_mask = (torch.rand_like(param) < (1 / compression_factor)).float()  # 1/compression_factor chance to be True (1.0)
+                    cpu_param = param.to('cpu')
+                    next_mask = (torch.rand_like(cpu_param) < (1 / compression_factor)).float()  # 1/compression_factor chance to be True (1.0)
                     mask[name] = next_mask
 
             # Iterate over the number of pages to train per epoch.
@@ -198,8 +199,8 @@ def main(config):
                         for name, param in model.named_parameters():
                             if param.grad is not None:
                                 # Ensure mask is on the same device and dtype as the gradient
-                                next_mask = mask[ name]
-                                next_mask = next_mask.to(param.grad.device).to(param.grad.dtype)
+                                next_mask = mask[ name ]
+                                next_mask = next_mask.to( param.grad.device ).to(param.grad.dtype)
                                 param.grad.mul_( next_mask )  # In-place multiplication to zero out gradients based on compression_ratio
                         # Unscale the gradients and perform optimizer step.
                         scaler.step(optimizer)

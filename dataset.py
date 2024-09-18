@@ -190,6 +190,7 @@ class SubsetFineWebEdu2Loader(SubsetLoader):
         
         self.pages = page_info
         attempts = 0
+        num_pages = len(self.pages)
         for (config_name, page, split) in self.pages:
             # Create the request parameters
             params = dict(dataset=self.name,
