@@ -281,6 +281,8 @@ def main(config):
                 torch.cuda.empty_cache()  
             optimizer.step()
             if config.use_wandb: wandb.log( { "step_loss": float( avg_loss / (idx+1) ) })
+            if config.use_wandb: wandb.log( { f"incentive{ my_uid }": float( metagraph.I[my_uid] ) })
+
             print(f'Training completed in {time.time() - start_time} seconds')
             
             # Get the proper mask for my upload block + page.
