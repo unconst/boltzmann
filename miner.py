@@ -18,11 +18,12 @@
 import wandb
 import argparse
 import traceback
-import bittensor as bt
 import numpy as np
+import bittensor as bt
+import torch.optim as optim
+from typing import List, Tuple
 from types import SimpleNamespace
 from transformers import Adafactor
-from typing import List, Tuple
 from transformers import LlamaForCausalLM 
 
 # Import constants and utility functions specific to the project.
@@ -125,17 +126,17 @@ def main(config):
                 # Get the mask for the sync block.
                 mask_indices = {}
                 compression_factor = hparams.compression
-                print(f'Creating Mask with compression: {compression_factor}X')
+                print(f'Creating {compression_factor}X compression mask for block: {sync_block}')
                 # We seed the mask from the block height.
                 np.random.seed( sync_block ) 
                 for name, param in model.named_parameters():
                     next_mask = torch.from_numpy(np.random.rand(*param.shape) < (1 / compression_factor)).float()
-                    indices = next_mask.nonzero(as_tuple=False).flatten()
+                    indices = next_mask.flatten().nonzero(as_tuple=False).flatten()
                     mask_indices[ name ] = indices
                 
                 # Sync and average all the masks from peers on the sync block.
                 masks_dicts_values = {}
-                mask_counts = {}
+                mask_count = 0
                 for uid in metagraph.uids:
                     metadata = get_metadata_for_block( 
                         key = 'mask', 
@@ -148,6 +149,7 @@ def main(config):
                     # Download the compressed state_dict.
                     mask = download_model( metadata = metadata, device='cpu', CLIENT=CLIENT, state_dict = True )
                     if mask == None: continue
+                    mask_count += 1
                     for name in mask.keys():
                         param_shape = model.get_parameter(name).shape
                         mask_values = mask[name]['values']
@@ -156,20 +158,20 @@ def main(config):
                         decompressed[indices] = mask_values
                         if name not in masks_dicts_values:
                             masks_dicts_values[name] = decompressed.view(param_shape)
-                            mask_counts[name] = 1
                         else:
                             masks_dicts_values[name] += decompressed.view(param_shape)
-                            mask_counts[name] += 1
+                print (f'Pulled {mask_count} masks')
 
                 # Average the mask values
+                print (f'Averaging {mask_count} masks')
                 for key in masks_dicts_values:
-                    masks_dicts_values[key] /= mask_counts[key]
+                    masks_dicts_values[key] /= mask_count
                     
                 # Set these values into the model
+                print (f'Applyling {mask_count} masks')
                 for name, param in model.named_parameters():
                     if name in masks_dicts_values:
-                        with torch.no_grad():
-                            param.copy_(masks_dicts_values[name].to(model.device))
+                        param.copy_(masks_dicts_values[name].to(model.device))
                             
             # Sync the state from all peers.
             sync_state(next_sync_block)
@@ -190,7 +192,7 @@ def main(config):
             # Train model on page.
             for idx, batch in enumerate( dataset ):
                 # Break the training if we are past the training block.
-                if subtensor.block > next_upload_block - 1:
+                if subtensor.block > next_sync_block + 1:
                     break
                 input_ids = torch.tensor(batch, dtype=torch.long).to(model.device)
                 labels = input_ids.clone()
@@ -206,7 +208,7 @@ def main(config):
             # Get mask for the upload block.
             upload_block_mask = {}
             compression_factor = hparams.compression
-            print(f'Creating Mask with compression: {compression_factor}')
+            print(f'Creating {compression_factor}X compression mask for block: {next_upload_block}')
             np.random.seed( next_upload_block )  # Seed numpy's random generator with the upload block.
             for name, param in model.named_parameters():
                 upload_block_mask[name] = torch.from_numpy(np.random.rand(*param.shape) < (1 / compression_factor)).float()
