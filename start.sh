@@ -27,9 +27,4 @@ pm2 start miner.py --interpreter python3 --name M3 -- --wallet.name Alice --wall
 pm2 start miner.py --interpreter python3 --name M4 -- --wallet.name Alice --wallet.hotkey Eve --subtensor.network test --device cuda:5 --use_wandb
 
 
-# 
-# python3 validator.py --wallet.name Alice --wallet.hotkey Alice --device cuda:0 --restart
-# python3 miner.py --wallet.name Alice --wallet.hotkey Bob --device cuda:1 
-
-
 
