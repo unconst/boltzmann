@@ -88,34 +88,34 @@ def main(config):
     # Load the model from bucket if exists.
     hparams = load_hparams()
     upload_history = []
-    model = LlamaForCausalLM( config = hparams.model_config ) 
+    model = LlamaForCausalLM(config=hparams.model_config) 
     if not config.restart: 
         try:
             master_filename = f'master-{wallet.hotkey.ss58_address}.pt'
             unique_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
             CLIENT.download_file(config.bucket, master_filename, unique_temp_file)
-            master_state_dict = torch.load( unique_temp_file, map_location = 'cpu', weights_only = True )
-            model.load_state_dict( master_state_dict )
-            upload_history.append( master_filename )
+            master_state_dict = torch.load(unique_temp_file, map_location='cpu', weights_only=True)
+            model.load_state_dict(master_state_dict)
+            upload_history.append(master_filename)
         except Exception as e:
             raise ValueError("There is no master to continue from. Run with --restart")
-    model.to(device)
+    model.to(config.device)  # TODO: Ensure 'device' is defined in config
         
     # Start.
     last_mask_sync = 0
     while True:
         try:
-            print ('Loading chain state:')
+            print('Loading chain state:')
             start_time = time.time()
             hparams = load_hparams()
             subtensor = bt.subtensor(config=config)
             metagraph = subtensor.metagraph(netuid=config.netuid)
             print(f'Loading chain state completed in {time.time() - start_time} seconds') 
             
-            print(f'Getting blocks to sync:')
+            print('Getting blocks to sync:')
             start_time = time.time() 
             block = subtensor.block
-            all_sync_blocks = [ last_mask_sync + i + 1 for i in range( block - last_mask_sync )]
+            all_sync_blocks = [last_mask_sync + i + 1 for i in range(block - last_mask_sync)]
             last_mask_sync = block
             print(f'Getting blocks to sync completed in {time.time() - start_time} seconds')  # Print timing after this step
         
@@ -124,22 +124,22 @@ def main(config):
             full_sync_start_time = time.time()
             for blk in all_sync_blocks:
                 
-                print (f'Getting filenames for blk: {blk}...')
+                print(f'Getting filenames for blk: {blk}...')
                 start_time = time.time()
                 if 'buckets' not in locals():
                     buckets = []
                     for uid in metagraph.uids:
-                        buckets.append( subtensor.get_commitment(config.netuid, uid) )
+                        buckets.append(subtensor.get_commitment(config.netuid, uid))
                 mask_filenames = []
                 for uid in metagraph.uids:
-                    mask_filenames.append( f"mask-{str(metagraph.hotkeys[uid])}-{blk}.pt" )
+                    mask_filenames.append(f"mask-{str(metagraph.hotkeys[uid])}-{blk}.pt")
                 print(f'Get filenames completed in {time.time() - start_time} seconds')
             
                 print(f'Downloading mask for blk: {blk}:')
                 start_time = time.time()
                 temp_files = []
                 n_downloaded = 0
-                def download_file( bucket, filename ):
+                def download_file(bucket, filename):
                     try:
                         unique_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
                         CLIENT.download_file(bucket, filename, unique_temp_file)
@@ -161,7 +161,7 @@ def main(config):
                 
                 print(f'Creating sync mask for block: {blk}')
                 mask_indices = {}
-                torch.manual_seed( blk )
+                torch.manual_seed(blk)
                 start_time = time.time()
                 for name, param in model.named_parameters():
                     param = param.to(config.device)
@@ -171,12 +171,12 @@ def main(config):
                 print(f'Creating sync block mask completed in {time.time() - start_time} seconds')  # Print timing after this step
             
                 # Loading state dicts
-                print (f'Loading state dicts for block: {blk}:')
+                print(f'Loading state dicts for block: {blk}:')
                 start_time = time.time()
                 mask_count = 0
                 masks_dicts_values = {}
                 for file in temp_files:
-                    mask = torch.load( file, map_location='cpu', weights_only = True )
+                    mask = torch.load(file, map_location='cpu', weights_only=True)
                     mask_count += 1
                     for name in mask.keys():
                         mask_values = mask[name]['values']
@@ -193,7 +193,7 @@ def main(config):
                 print(f'Loading state dicts completed in {time.time() - start_time} seconds')
                 
                 # Average the mask values
-                print (f'Averaging {mask_count} masks for block: {blk}')
+                print(f'Averaging {mask_count} masks for block: {blk}')
                 start_time = time.time()
                 for key in masks_dicts_values.keys():
                     masks_dicts_values[key] /= mask_count
@@ -218,7 +218,7 @@ def main(config):
                 print(f'Applying {mask_count} masks completed in {time.time() - start_time} seconds')  # Print timing after this step
                 
                 # Delete files.
-                print (f'Deleting files for block: {blk}.')
+                print(f'Deleting files for block: {blk}.')
                 start_time = time.time()
                 for file in temp_files:
                     os.remove(file)
@@ -249,7 +249,7 @@ def main(config):
             print('Deleting history:')
             start_time = time.time()
             if len(upload_history) > 5:
-                CLIENT.delete_object(Bucket = config.bucket, Key = upload_history.pop(0))
+                CLIENT.delete_object(Bucket=config.bucket, Key=upload_history.pop(0))
             print(f'Deleting history completed in {time.time() - start_time} seconds')
                  
         # Handle keyboard interrupts to allow graceful shutdown.
