@@ -96,6 +96,7 @@ def main(config):
                         raise ValueError('No Master...') 
                 except Exception as e:
                     # Upload the new master
+                    print ('Uploading clean master...')
                     master = LlamaForCausalLM( config = hparams.model_config ) 
                     upload_history.append( upload_model(
                         key = 'model',

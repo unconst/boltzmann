@@ -116,6 +116,28 @@ def main(config):
             step_size = hparams.blocks_per_step
             next_sync_block = (int(subtensor.block / step_size) * step_size) + step_size
             next_upload_block = (int(subtensor.block / step_size) * step_size)+ (step_size * 2)
+            # [ sync = 100, upload = 100 + step_size ]
+            
+            # Get the mask for the sync block.
+            mask_indices = {}
+            compression_factor = hparams.compression
+            print(f'Creating {compression_factor}X compression mask for block: {next_sync_block}')
+            # We seed the mask from the block height.
+            np.random.seed( next_sync_block ) 
+            for name, param in model.named_parameters():
+                next_mask = torch.from_numpy(np.random.rand(*param.shape) < (1 / compression_factor)).float()
+                indices = next_mask.flatten().nonzero(as_tuple=False).flatten()
+                mask_indices[ name ] = indices
+                
+            # Get mask for the upload block.
+            upload_block_mask = {}
+            compression_factor = hparams.compression
+            print(f'Creating {compression_factor}X compression mask for block: {next_upload_block}')
+            np.random.seed( next_upload_block )  # Seed numpy's random generator with the upload block.
+            for name, param in model.named_parameters():
+                upload_block_mask[name] = torch.from_numpy(np.random.rand(*param.shape) < (1 / compression_factor)).float()    
+                
+            # Wait until uploads.
             while True:
                 block = subtensor.block
                 if block >= next_sync_block:
@@ -124,73 +146,59 @@ def main(config):
                 time.sleep(4)
                 continue
             
-            def sync_state( sync_block: int ):
-                # Get the mask for the sync block.
-                mask_indices = {}
-                compression_factor = hparams.compression
-                print(f'Creating {compression_factor}X compression mask for block: {sync_block}')
-                # We seed the mask from the block height.
-                np.random.seed( sync_block ) 
-                for name, param in model.named_parameters():
-                    next_mask = torch.from_numpy(np.random.rand(*param.shape) < (1 / compression_factor)).float()
-                    indices = next_mask.flatten().nonzero(as_tuple=False).flatten()
-                    mask_indices[ name ] = indices
-                
-                # Sync and average all the masks from peers on the sync block.
-                masks_dicts_values = {}
-                mask_count = 0
-                for uid in metagraph.uids:
-                    metadata = get_metadata_for_block( 
-                        key = 'mask', 
-                        uid = uid, 
-                        block = sync_block,
-                        metagraph = metagraph, 
-                        subtensor = subtensor,
-                    )
-                    if metadata == None: continue
-                    # Download the compressed state_dict.
-                    mask = download_model( metadata = metadata, device='cpu', CLIENT=CLIENT, state_dict = True )
-                    if mask == None: continue
-                    mask_count += 1
-                    for name in mask.keys():
-                        param_shape = model.get_parameter(name).shape
-                        mask_values = mask[name]['values']
-                        indices = mask_indices[name] 
-                        decompressed = torch.zeros(param_shape, device='cpu').flatten() 
-                        decompressed[indices] = mask_values
-                        if name not in masks_dicts_values:
-                            masks_dicts_values[name] = decompressed.view(param_shape)
-                        else:
-                            masks_dicts_values[name] += decompressed.view(param_shape)
-                print (f'Pulled {mask_count} masks')
+            # Sync and average all the masks from peers on the sync block.
+            masks_dicts_values = {}
+            mask_count = 0
+            for uid in metagraph.uids:
+                metadata = get_metadata_for_block( 
+                    key = 'mask', 
+                    uid = uid, 
+                    block = next_sync_block,
+                    metagraph = metagraph, 
+                    subtensor = subtensor,
+                )
+                if metadata == None: continue
+                # Download the compressed state_dict.
+                mask = download_model( metadata = metadata, device='cpu', CLIENT=CLIENT, state_dict = True )
+                if mask == None: continue
+                mask_count += 1
+                for name in mask.keys():
+                    param_shape = model.get_parameter(name).shape
+                    mask_values = mask[name]['values']
+                    indices = mask_indices[name] 
+                    decompressed = torch.zeros(param_shape, device='cpu').flatten() 
+                    decompressed[indices] = mask_values
+                    if name not in masks_dicts_values:
+                        masks_dicts_values[name] = decompressed.view(param_shape)
+                    else:
+                        masks_dicts_values[name] += decompressed.view(param_shape)
+            print (f'Pulled {mask_count} masks')
 
-                # Average the mask values
-                print (f'Averaging {mask_count} masks')
-                for key in masks_dicts_values.keys():
-                    masks_dicts_values[key] /= mask_count
-                    # TODO: Check for division by zero in case mask_count is zero
-                    # TODO: Ensure that masks_dicts_values[key] is not None before performing division
-                    
-                # Set these values into the model
-                print(f'Applying {mask_count} masks')
-                for name, param in model.named_parameters():
-                    indices = mask_indices[name]
-                    if name in masks_dicts_values:
-                        if masks_dicts_values[name].shape == param.shape:
-                            # Apply the mask values to the flattened param data.
-                            on_device = masks_dicts_values[name].to(model.device).flatten()
-                            param_flat = param.data.flatten()
-                            param_flat[indices] = on_device[indices]
-                            param.data.copy_(param_flat.view(param.shape))
-                            del on_device, param_flat
-                        else:
-                            print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
-                            print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
-                del masks_dicts_values
-                torch.cuda.empty_cache()
+            # Average the mask values
+            print (f'Averaging {mask_count} masks')
+            for key in masks_dicts_values.keys():
+                masks_dicts_values[key] /= mask_count
+                # TODO: Check for division by zero in case mask_count is zero
+                # TODO: Ensure that masks_dicts_values[key] is not None before performing division
+                
+            # Set these values into the model
+            print(f'Applying {mask_count} masks')
+            for name, param in model.named_parameters():
+                indices = mask_indices[name]
+                if name in masks_dicts_values:
+                    if masks_dicts_values[name].shape == param.shape:
+                        # Apply the mask values to the flattened param data.
+                        on_device = masks_dicts_values[name].to(model.device).flatten()
+                        param_flat = param.data.flatten()
+                        param_flat[indices] = on_device[indices]
+                        param.data.copy_(param_flat.view(param.shape))
+                        del on_device, param_flat
+                    else:
+                        print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
+            del masks_dicts_values
+            torch.cuda.empty_cache()
                             
             # Sync the state from all peers.
-            sync_state(next_sync_block)
             print (f'Synced state by {subtensor.block} with upload in {next_upload_block}')
             
             # Get current block page for miner.
@@ -230,19 +238,10 @@ def main(config):
                     del input_ids, labels, outputs
                     torch.cuda.empty_cache()  
             # dont even upload we didnt train.
-            if idx == 0:
-                continue
-            if config.use_wandb: wandb.log( { "step_loss": float( avg_loss / idx ) })
-
-            # Get mask for the upload block.
-            upload_block_mask = {}
-            compression_factor = hparams.compression
-            print(f'Creating {compression_factor}X compression mask for block: {next_upload_block}')
-            np.random.seed( next_upload_block )  # Seed numpy's random generator with the upload block.
-            for name, param in model.named_parameters():
-                upload_block_mask[name] = torch.from_numpy(np.random.rand(*param.shape) < (1 / compression_factor)).float()
+            if config.use_wandb: wandb.log( { "step_loss": float( avg_loss / (idx+1) ) })
                 
             # Upload the masked weights.
+            print ('Uploading mask.')
             upload_history.append( upload_model(
                 key = 'mask',
                 wallet = wallet,
