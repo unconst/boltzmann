@@ -82,14 +82,13 @@ def main(config):
     last_master_sync = 0
     while True:
         try:    
-            
             # Load chain state.
             hparams = load_hparams()
             subtensor = bt.subtensor(config=config)
             metagraph = subtensor.metagraph(netuid=config.netuid)
             
             # Sync the full model state if we have gone further than the epoch.
-            if subtensor.block - last_master_sync > 100:
+            if subtensor.block - last_master_sync > hparams.epoch_length:
                 print ('Resyncing full training state.')
                 try:
                     master_uid = int(metagraph.S.argmax())
@@ -105,6 +104,7 @@ def main(config):
                         betas = ( config.optimizer_beta1, config.optimizer_beta2 ), # B1 and B2
                         weight_decay = config.optimizer_weight_decay  # Weight decay
                     )
+                    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=hparams.epoch_length, gamma=0.1) 
                 except Exception as e:
                     print (f'Error getting master: {e} Waiting ...')
                     time.sleep(12)
@@ -172,16 +172,19 @@ def main(config):
                     # TODO: Ensure that masks_dicts_values[key] is not None before performing division
                     
                 # Set these values into the model
-                print (f'Applying {mask_count} masks')
+                print(f'Applying {mask_count} masks')
                 for name, param in model.named_parameters():
                     indices = mask_indices[name]
                     if name in masks_dicts_values:
                         if masks_dicts_values[name].shape == param.shape:
-                            # Overload the indicies from the mask.
-                            on_device = masks_dicts_values[name].to(model.device)
-                            param.data[indices] = on_device[indices]
-                            del on_device
+                            # Apply the mask values to the flattened param data.
+                            on_device = masks_dicts_values[name].to(model.device).flatten()
+                            param_flat = param.data.flatten()
+                            param_flat[indices] = on_device[indices]
+                            param.data.copy_(param_flat.view(param.shape))
+                            del on_device, param_flat
                         else:
+                            print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
                             print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
                 del masks_dicts_values
                 torch.cuda.empty_cache()
@@ -204,6 +207,9 @@ def main(config):
             )
             
             # Train model on page.
+            optimizer.zero_grad()
+            avg_loss = 0
+            n_batches = int( len(dataset.buffer) / (hparams.sequence_length * config.batch_size) )
             for idx, batch in enumerate( dataset ):
                 # Break the training if we are past the training block.
                 block = subtensor.block
@@ -211,15 +217,22 @@ def main(config):
                 labels = input_ids.clone()
                 labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
                 outputs = model(input_ids = input_ids, labels=labels)
-                outputs.loss.backward()
-                optimizer.step()
-                if config.use_wandb: wandb.log( { "loss": outputs.loss.item(), f'Incentive{my_uid}': float(metagraph.I[ my_uid ]) })
-                print ( 'block', block, 'Loss', outputs.loss.item() )
-                del input_ids, labels, outputs
-                torch.cuda.empty_cache()  
+                loss = outputs.loss / n_batches
+                loss.backward()
+                avg_loss += outputs.loss.item()
+                if config.use_wandb: wandb.log( { "training_loss": float(outputs.loss.item()) })
+                print ( 'batch', f'{idx}/{n_batches}', 'block', block, 'Loss', outputs.loss.item() )
                 if block >= next_upload_block - 2:
+                    optimizer.step()
                     print (f'Break training on {block} with next upload: {next_upload_block}')
                     break
+                else:
+                    del input_ids, labels, outputs
+                    torch.cuda.empty_cache()  
+            # dont even upload we didnt train.
+            if idx == 0:
+                continue
+            if config.use_wandb: wandb.log( { "step_loss": float( avg_loss / idx ) })
 
             # Get mask for the upload block.
             upload_block_mask = {}
@@ -270,7 +283,7 @@ if __name__ == "__main__":
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network UID.')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
     parser.add_argument('--batch_size', type=int, default=1, help='Training batch size')
-    parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate for the optimizer')
+    parser.add_argument('--learning_rate', type=float, default=0.00001, help='Learning rate for the optimizer')
     parser.add_argument('--optimizer_beta1', type=float, default=0.9, help='Beta1 for the optimizer')
     parser.add_argument('--optimizer_beta2', type=float, default=0.95, help='Beta2 for the optimizer')
     parser.add_argument('--optimizer_weight_decay', type=float, default=0.1, help='Weight decay for the optimizer')

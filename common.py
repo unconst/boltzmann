@@ -50,25 +50,16 @@ CLIENT: boto3.client = boto3.client(
 
 def load_hparams() -> SimpleNamespace:
     hparams = {
-        'blocks_per_step': 6,
+        'epoch_length': 6 * 20,
+        'blocks_per_step': 4,
         # Delta compression rate.
         'compression': 300,
-        # Base sample probability
-        'base_probability': 1,
-        # Skews higher weights by exponential factor with this temperature term.
-        'temperature': 5,
-        # How much (out of 1) the local evaluation counts relative to global.
-        'local_dominance': 0.5,
-        # Moving average alpha for the validator
-        'base_alpha': 0.01,
         # Global sequence length
-        'sequence_length': 4096,
+        'sequence_length': 1024,
         # Size of the local eval window.
         'window_size': 100,
         # Number of new pages added to the local window every block.
         'window_speed': 4,
-        # Improvement epsilon requirement.
-        'epsilon': 0.99,
         # AutoTokenizer name.
         'tokenizer_name': 'gpt2',
         # Model arch.

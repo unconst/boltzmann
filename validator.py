@@ -86,7 +86,7 @@ def main(config):
             metagraph = subtensor.metagraph(netuid=config.netuid)  
             
             # Sync the full model state if we have gone further than the epoch.
-            if subtensor.block - last_master_sync > 100:
+            if subtensor.block - last_master_sync > hparams.epoch_length:
                 print ('Resyncing full training state.')
                 try:
                     master_uid = int(metagraph.S.argmax())

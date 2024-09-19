@@ -17,7 +17,7 @@ pm2 sendSignal SIGINT all
 pm2 delete all
 
 # Delete items from bucket
-# python3 clean.py
+python3 clean.py
 
 # Start all the processes again.
 pm2 start validator.py --interpreter python3 --name V1 -- --wallet.name Alice --wallet.hotkey Alice --subtensor.network test --device cuda:0 --use_wandb
