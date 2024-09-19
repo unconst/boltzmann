@@ -4,6 +4,7 @@
 BISTRO – Bittensor Incentivized and Scalable Training with Reward Optimization. 
 ---
 
+
 # Step 1.
   - Create an S3 <Bucket> on AWS and add export your AWS API Key.
   - Make sure to set the most permissive access to your bucket.
@@ -26,3 +27,6 @@ BISTRO – Bittensor Incentivized and Scalable Training with Reward Optimization
   - Run your validator.
   - `python3 validator.py --wallet.name <> --wallet.hotkey <> --subtensor.network test --netuid 212 --bucket <Bucket> --device`
 
+TODO:
+-- implement the validation system.
+-- make miner masks more robust
