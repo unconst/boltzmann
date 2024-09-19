@@ -16,8 +16,10 @@
 # DEALINGS IN THE SOFTWARE.
 
 import io
+import os
 import uuid
 import wandb
+import boto3
 import argparse
 import traceback
 import numpy as np
@@ -25,25 +27,24 @@ import bittensor as bt
 import concurrent.futures  
 import torch.optim as optim
 from typing import List, Tuple
-from types import SimpleNamespace
-from transformers import Adafactor
+from dotenv import dotenv_values
 from transformers import LlamaForCausalLM 
 
-# Import constants and utility functions specific to the project.
-from common import *
+from hparams import load_hparams
 from dataset import SubsetFineWebEdu2Loader
 
+# Instantiate the AWS S3 client.
+env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
+AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')  # AWS access key ID.
+AWS_SECRET_ACCESS_KEY = env_config.get('AWS_SECRET_ACCESS_KEY')  # AWS secret access key.
+CLIENT: boto3.client = boto3.client(
+    's3',
+    region_name='us-east-1',  # AWS region.
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+)
+
 def main(config):
-    """
-    Main function for the miner script.
-
-    This function initializes the model, sets up training parameters, and
-    enters the main training loop where the model is trained and periodically
-    uploaded to the S3 bucket for validation.
-
-    Args:
-        config: The configuration object containing training parameters and settings.
-    """
     # Print the configuration settings.
     print('\n', '-' * 40, 'Config', '-' * 40)
     print(config)
@@ -76,7 +77,6 @@ def main(config):
     last_master_sync = 0
     while True:
         try:    
-            
             print ('Loading chain state:')
             start_time = time.time()
             hparams = load_hparams()
@@ -332,10 +332,7 @@ def main(config):
             continue
 
 if __name__ == "__main__":
-    # Create an argument parser for command-line options.
-    parser = argparse.ArgumentParser(description='Miner script')
-    
-    # Add command-line arguments with default values and help descriptions.
+    parser = argparse.ArgumentParser(description='Miner script')    
     parser.add_argument('--name', type=str, default=None, help='Optional miner name')
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network UID.')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')

@@ -28,21 +28,11 @@ import argparse
 import traceback
 import numpy as np
 import bittensor as bt
-from tqdm import tqdm
-from collections import deque
 from dotenv import dotenv_values
-from types import SimpleNamespace
 from typing import Dict, Optional, List, Tuple
-from transformers import (
-    AutoTokenizer,
-    GPT2Config,
-    GPT2LMHeadModel,
-    LlamaConfig,
-    LlamaForCausalLM,
-    LlamaTokenizer,
-)
+from transformers import LlamaForCausalLM 
 
-from common import *
+from hparams import load_hparams
 from dataset import SubsetFineWebEdu2Loader
 
 # Instantiate the AWS S3 client.
