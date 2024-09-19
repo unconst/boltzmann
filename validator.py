@@ -137,7 +137,7 @@ def main(config):
                     seed = meta.uid 
                 ))]
                 dataset = SubsetFineWebEdu2Loader(
-                    batch_size = config,batch_size,
+                    batch_size = config.batch_size,
                     sequence_length = hparams.sequence_length,
                     pages_info = pages,
                     tokenizer = hparams.tokenizer
