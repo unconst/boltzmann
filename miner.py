@@ -21,6 +21,7 @@ import uuid
 import time
 import wandb
 import boto3
+import torch
 import tempfile
 import argparse
 import traceback
@@ -115,8 +116,9 @@ def main(config):
                     )
                     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=hparams.epoch_length, gamma=0.1)
                     last_master_sync = subtensor.block 
+                    last_mask_sync = last_master_sync
                 except Exception as e:
-                    print (f'Error getting master: {e} Waiting ...')
+                    print (f'No master. Waiting ...')
                     time.sleep(12)
                     continue
             print(f'Checking epoch sync: completed in {time.time() - start_time} seconds') 
@@ -274,8 +276,6 @@ def main(config):
                 loss = outputs.loss / n_batches
                 loss.backward()
                 avg_loss += outputs.loss.item()
-                if config.use_wandb: wandb.log( { "training_loss": float(outputs.loss.item()) })
-                print ( 'block', block, 'Loss', outputs.loss.item() )
                 del input_ids, labels, outputs
                 torch.cuda.empty_cache()  
             optimizer.step()
