@@ -7,7 +7,7 @@ BISTRO – Bittensor Incentivized and Scalable Training with Reward Optimization
 Miner are rewarded for training the master model on the page sequence determined by the loader in dataset.py.
 Miners upload masks of their models using a distro distributed training regime style with 300x compression by default.
 The valdiators measure the loss difference between the model with these updates applied and withe the updates removed.
-There are various corner cases remaining to make this work but generally the structure is here.
+There are various corner cases remaining to make this work but generally the structure is here. Good luck!
 
 # Step 1.
   - Create an S3 <Bucket> on AWS and add export your AWS API Key.
