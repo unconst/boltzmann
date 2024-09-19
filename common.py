@@ -51,7 +51,7 @@ CLIENT: boto3.client = boto3.client(
 def load_hparams() -> SimpleNamespace:
     hparams = {
         'epoch_length': 1_000_000,
-        'blocks_per_step': 4,
+        'blocks_per_step': 3,
         # Delta compression rate.
         'compression': 300,
         # Global sequence length
