@@ -21,7 +21,7 @@ from transformers import AutoTokenizer, LlamaConfig
 def load_hparams() -> SimpleNamespace:
     hparams = {
         # Steps between full state syncing
-        'epoch_length': 1_000_000,
+        'epoch_length': 2_000,
         # Delta compression rate.
         'compression': 300,
         # Global sequence length
