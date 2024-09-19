@@ -6,7 +6,8 @@ BISTRO – Bittensor Incentivized and Scalable Training with Reward Optimization
 
 Miner are rewarded for training the master model on the page sequence determined by the loader in dataset.py.
 Miners upload masks of their models using a distro distributed training regime style with 300x compression by default.
-The valdiators measure the loss difference between the model with these updates applied and withe the updates removed.
+The valdiators measure the loss difference between the model with these updates applied and with the updates removed.
+This difference becomes the raw score for the miner submitted to the chain after softmax.
 There are various corner cases remaining to make this work but generally the structure is here. Good luck!
 
 NOTE: you need a fairly large machine (H100 recommended) to run either the validator or miner.
