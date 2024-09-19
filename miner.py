@@ -122,7 +122,9 @@ def main(config):
                     try:
                         delta = download_model( metadata = meta, device='cpu', CLIENT=CLIENT )
                         for (name, master_param), (_, delta_param) in zip( master.named_parameters(), delta.named_parameters() ):
-                            master_param.data.add_( (meta.n_pages/total_pages) * delta_param.data.to( master.device ) )
+                            on_device = delta_param.data.to(master.device)
+                            master_param.data.add_( metagraph.I[ meta.uid ] * on_device )
+                            delta_param.data.to( 'cpu' )
                         print ('Applied delta.')
                     except Exception as e:
                         print (f'Failed to apply deltas with error: {e}')
