@@ -178,9 +178,13 @@ def main(config):
                     if name in masks_dicts_values:
                         if masks_dicts_values[name].shape == param.shape:
                             # Overload the indicies from the mask.
-                            param.data[indices] = masks_dicts_values[name].to(model.device)[indices]
+                            on_device = masks_dicts_values[name].to(model.device)
+                            param.data[indices] = on_device[indices]
+                            del on_device
                         else:
                             print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
+                del masks_dicts_values
+                torch.cuda.empty_cache()
                             
             # Sync the state from all peers.
             sync_state(next_sync_block)
@@ -265,7 +269,7 @@ if __name__ == "__main__":
     parser.add_argument('--name', type=str, default=None, help='Optional miner name')
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network UID.')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
-    parser.add_argument('--batch_size', type=int, default=10, help='Training batch size')
+    parser.add_argument('--batch_size', type=int, default=4, help='Training batch size')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate for the optimizer')
     parser.add_argument('--optimizer_beta1', type=float, default=0.9, help='Beta1 for the optimizer')
     parser.add_argument('--optimizer_beta2', type=float, default=0.95, help='Beta2 for the optimizer')
