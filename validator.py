@@ -179,7 +179,7 @@ def main(config):
                 scores[ meta.uid ] = total_loss_without_delta - total_loss_with_delta
                 
             # Set weights.
-            print ( 'scores', scores )
+            print ( 'scores', scores.tolist() )
             non_zero_scores = scores[scores != 0]
             non_zero_weights = torch.softmax(non_zero_scores, dim=0)
             next_weights = torch.zeros_like(scores)

@@ -259,18 +259,10 @@ if __name__ == "__main__":
     parser.add_argument('--optimizer_weight_decay', type=float, default=0.1, help='Weight decay for the optimizer')
     parser.add_argument('--pages_per_epoch', type=int, default=1, help='Number of pages to train per epoch')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
-    parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
-    
-    # Add arguments from Bittensor modules for wallet and subtensor configurations.
+    parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')    
     bt.wallet.add_args(parser)
-    bt.subtensor.add_args(parser)
-    
-    # Parse the arguments to create a configuration object.
-    config = bt.config(parser)
-    
-    # Set the chain endpoint for the subtensor (fixed value).
+    bt.subtensor.add_args(parser)    
+    config = bt.config(parser)    
     config.subtensor.network = 'test'
-    config.subtensor.chain_endpoint = 'wss://test.finney.opentensor.ai:443/'
-    
-    # Call the main function with the parsed configuration.
+    config.subtensor.chain_endpoint = 'wss://test.finney.opentensor.ai:443/'    
     main(config)
