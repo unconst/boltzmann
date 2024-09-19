@@ -233,37 +233,37 @@ def main(config):
                 continue
             
             # Selecting a random UID to eval.
-            block_to_eval = max( list(masks_per_block_per_uid.keys()) )
-            uid_to_eval = random.choice( masks_per_block_per_uid[block_to_eval].keys() )
-            mask_count = mask_count_per_block[ block_to_eval ]
-            mask = masks_per_block_per_uid[ block_to_eval ][ uid_to_eval ]
+            block_to_eval = max(list(masks_per_block_per_uid.keys()))
+            uid_to_eval = random.choice(list(masks_per_block_per_uid[block_to_eval].keys()))
+            mask_count = mask_count_per_block[block_to_eval]
+            mask = masks_per_block_per_uid[block_to_eval][uid_to_eval]
             del masks_per_block_per_uid
             
             # Get the pages for this block and my_uid.
             # This is global and deterministic
-            print ('Loading page for eval:')
+            print('Loading page for eval:')
             start_time = time.time()  # Start timing
             pages = SubsetFineWebEdu2Loader.next_pages(
-                offset = block_to_eval,
-                n_pages = 1,
-                seed = uid_to_eval 
+                offset=block_to_eval,
+                n_pages=1,
+                seed=uid_to_eval
             )
             dataset = SubsetFineWebEdu2Loader(
-                batch_size = config.batch_size,
-                sequence_length = hparams.sequence_length,
-                pages_info = pages,
-                tokenizer = hparams.tokenizer
+                batch_size=config.batch_size,
+                sequence_length=hparams.sequence_length,
+                pages_info=pages,
+                tokenizer=hparams.tokenizer
             )
             print(f'Loading page for eval completed in {time.time() - start_time} seconds')
             
             # Remove the mask from the model.
-            print ('Removing the mask:')
+            print('Removing the mask:')
             for name, param in model.named_parameters():
-                param.data.sub_( mask[name].to( model.device ) / mask_count )
+                param.data.sub_(mask[name].to(model.device) / mask_count)
             print(f'Removing the mask completed in {time.time() - start_time} seconds')
             
-            # Train my model on the current page.
-            print ('Evaling without mask:')
+            # Evaluate my model on the current page.
+            print('Evaluating without mask:')
             start_time = time.time()
             model.eval()
             without_avg_loss = 0
@@ -271,20 +271,21 @@ def main(config):
                 input_ids = torch.tensor(batch, dtype=torch.long).to(model.device)
                 labels = input_ids.clone()
                 labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
-                outputs = model(input_ids = input_ids, labels=labels)
-                without_avg_loss = outputs.loss.item()
+                outputs = model(input_ids=input_ids, labels=labels)
+                without_avg_loss += outputs.loss.item()
                 del input_ids, labels, outputs
-                torch.cuda.empty_cache()  
-            print(f'Evaling with mask completed in {time.time() - start_time} seconds')
+                torch.cuda.empty_cache()
+            without_avg_loss /= (idx + 1)
+            print(f'Evaluating without mask completed in {time.time() - start_time} seconds')
             
-            # Remove the mask from the model.
-            print ('Adding the mask:')
+            # Add the mask back to the model.
+            print('Adding the mask:')
             for name, param in model.named_parameters():
-                param.data.add_( mask[name].to( model.device ) / mask_count )
-            print(f'Evaling with mask completed in {time.time() - start_time} seconds')
+                param.data.add_(mask[name].to(model.device) / mask_count)
+            print(f'Adding the mask completed in {time.time() - start_time} seconds')
             
-            # Train my model on the current page.
-            print ('Evaling with mask:')
+            # Evaluate my model on the current page.
+            print('Evaluating with mask:')
             start_time = time.time()
             model.eval()
             with_avg_loss = 0
@@ -292,31 +293,32 @@ def main(config):
                 input_ids = torch.tensor(batch, dtype=torch.long).to(model.device)
                 labels = input_ids.clone()
                 labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
-                outputs = model(input_ids = input_ids, labels=labels)
-                with_avg_loss = outputs.loss.item()
+                outputs = model(input_ids=input_ids, labels=labels)
+                with_avg_loss += outputs.loss.item()
                 del input_ids, labels, outputs
-                torch.cuda.empty_cache()  
-            print(f'Evaling with mask completed in {time.time() - start_time} seconds')
+                torch.cuda.empty_cache()
+            with_avg_loss /= (idx + 1)
+            print(f'Evaluating with mask completed in {time.time() - start_time} seconds')
             
             # Compute the miner score for their mask.
             if uid_to_eval in scores:
-                scores[ uid_to_eval ] = 0.1 * (with_avg_loss - without_avg_loss) + 0.9 * scores[ uid_to_eval ]
+                scores[uid_to_eval] = 0.1 * (with_avg_loss - without_avg_loss) + 0.9 * scores[uid_to_eval]
             else:
-                scores[ uid_to_eval ] = 0.1 * (with_avg_loss - without_avg_loss) 
+                scores[uid_to_eval] = 0.1 * (with_avg_loss - without_avg_loss)
                 
             # Compute the weights
             non_zero_scores = scores[scores != 0]
-            weights = torch.zeros_like( scores, dtype = torch.float32 )
-            weights[ non_zero_scores ] = torch.softmax( non_zero_scores, dim=0)
+            weights = torch.zeros_like(scores, dtype=torch.float32)
+            weights[non_zero_scores] = torch.softmax(non_zero_scores, dim=0)
             
             # Set weights on chain based on moving scores.
             subtensor.set_weights(
-                wallet = wallet,
-                netuid = config.netuid,
-                uids = metagraph.uids.tolist(),
-                weights = weights.tolist(),
-                wait_for_inclusion = False,
-                wait_for_finalization = False,
+                wallet=wallet,
+                netuid=config.netuid,
+                uids=metagraph.uids.tolist(),
+                weights=weights.tolist(),
+                wait_for_inclusion=False,
+                wait_for_finalization=False,
             )
 
             # Upload a full copy of the model weights to master
