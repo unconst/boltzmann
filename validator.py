@@ -45,6 +45,17 @@ from transformers import (
 from common import *
 from dataset import SubsetFineWebEdu2Loader
 
+# Instantiate the AWS S3 client.
+env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
+AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')  # AWS access key ID.
+AWS_SECRET_ACCESS_KEY = env_config.get('AWS_SECRET_ACCESS_KEY')  # AWS secret access key.
+CLIENT: boto3.client = boto3.client(
+    's3',
+    region_name='us-east-1',  # AWS region.
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+)
+
 # Main function that runs the validator script.
 def main(config):
     # Print the configuration for debugging.
@@ -73,135 +84,174 @@ def main(config):
     # Initialize Weights and Biases (wandb) for experiment tracking if enabled.
     if config.use_wandb:
         run = wandb.init(project='cont', resume='allow', name=f'V{my_uid}', config=config)
-         
-    # Init empty weights.
-    last_master_sync = 0
+        
+    # Load the model from bucket if exists.
+    hparams = load_hparams()
     upload_history = []
-    weights = torch.zeros( metagraph.S.shape, dtype = torch.float32 )
+    model = LlamaForCausalLM( config = hparams.model_config ) 
+    if not config.restart: 
+        try:
+            master_filename = f'master-{wallet.hotkey.ss58_address}.pt'
+            unique_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
+            CLIENT.download_file(config.bucket, master_filename, unique_temp_file)
+            master_state_dict = torch.load( unique_temp_file, map_location = 'cpu', weights_only = True )
+            model.load_state_dict( master_state_dict )
+            upload_history.append( master_filename )
+        except Exception as e:
+            raise ValueError("There is no master to continue from. Run with --restart")
+    model.to(device)
+        
+    # Start.
+    last_mask_sync = 0
     while True:
         try:
-            # Sync the chain state.
+            print ('Loading chain state:')
+            start_time = time.time()
             hparams = load_hparams()
-            subtensor = bt.subtensor(config=config)            
-            metagraph = subtensor.metagraph(netuid=config.netuid)  
+            subtensor = bt.subtensor(config=config)
+            metagraph = subtensor.metagraph(netuid=config.netuid)
+            print(f'Loading chain state completed in {time.time() - start_time} seconds') 
             
-            # Sync the full model state if we have gone further than the epoch.
-            if subtensor.block - last_master_sync > hparams.epoch_length:
-                print ('Resyncing full training state.')
-                try:
-                    master_uid = int(metagraph.S.argmax())
-                    master_meta = get_latest_metadata( key = 'model', uid = master_uid, metagraph = metagraph, subtensor = subtensor )
-                    master = download_model( metadata = master_meta, device='cpu', CLIENT = CLIENT )
-                    if master == None:
-                        raise ValueError('No Master...') 
-                except Exception as e:
-                    # Upload the new master
-                    print ('Uploading clean master...')
-                    master = LlamaForCausalLM( config = hparams.model_config ) 
-                    upload_history.append( upload_model(
-                        key = 'model',
-                        wallet = wallet,
-                        model = master,
-                        block = subtensor.block,
-                        extras = {},
-                        bucket = config.bucket,
-                        CLIENT = CLIENT,
-                    ) )
-                    time.sleep(12)
-                    continue
-                last_master_sync = subtensor.block    
-            
-            # Get block.
+            print(f'Getting blocks to sync:')
+            start_time = time.time() 
             block = subtensor.block
-            step_size = hparams.blocks_per_step
-            next_sync_block = (int(subtensor.block / step_size) * step_size) + step_size
-            while True:
-                block = subtensor.block
-                if block >= next_sync_block:
-                    break
-                print (f'Waiting for sync block: {next_sync_block} current: {block}')
-                time.sleep(4)
-                continue
-                             
+            all_sync_blocks = [ last_mask_sync + i + 1 for i in range( block - last_mask_sync )]
+            last_mask_sync = block
+            print(f'Getting blocks to sync completed in {time.time() - start_time} seconds')  # Print timing after this step
+        
             # Get the mask for the sync block.
-            mask_indices = {}
-            compression_factor = hparams.compression
-            print(f'Creating Mask with compression: {compression_factor} for block: {next_sync_block}')
-            # We seed the mask from the block height.
-            np.random.seed( next_sync_block ) 
-            for name, param in master.named_parameters():
-                next_mask = torch.from_numpy(np.random.rand(*param.shape) < (1 / compression_factor)).float()
-                indices = next_mask.nonzero(as_tuple=False).flatten()
-                mask_indices[ name ] = indices
+            print(f'Downloading masks for blocks: {all_sync_blocks}')  # Start timing
+            full_sync_start_time = time.time()
+            for blk in all_sync_blocks:
                 
-            # Sync and average all the masks from peers on the sync block.
-            print ('Downloading the masks')
-            mask_count = 0
-            masks_dicts_values = {}
-            for uid in metagraph.uids:
-                print (f'Getting metadata from uid: {uid}')
-                metadata = get_metadata_for_block( 
-                    key = 'mask', 
-                    uid = uid, 
-                    block = next_sync_block,
-                    metagraph = metagraph, 
-                    subtensor = subtensor,
-                )
-                if metadata == None: 
-                    print (f'No metadata from uid: {uid}')
+                print (f'Getting filenames for blk: {blk}...')
+                start_time = time.time()
+                if 'buckets' not in locals():
+                    buckets = []
+                    for uid in metagraph.uids:
+                        buckets.append( subtensor.get_commitment(config.netuid, uid) )
+                mask_filenames = []
+                for uid in metagraph.uids:
+                    mask_filenames.append( f"mask-{str(metagraph.hotkeys[uid])}-{blk}.pt" )
+                print(f'Get filenames completed in {time.time() - start_time} seconds')
+            
+                print(f'Downloading mask for blk: {blk}:')
+                start_time = time.time()
+                temp_files = []
+                n_downloaded = 0
+                def download_file( bucket, filename ):
+                    try:
+                        unique_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
+                        CLIENT.download_file(bucket, filename, unique_temp_file)
+                        return unique_temp_file
+                    except:
+                        return None
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    futures = [executor.submit(download_file, bucket, filename) for bucket, filename in zip(buckets, mask_filenames)]
+                    for future in concurrent.futures.as_completed(futures):
+                        result = future.result()
+                        if result:
+                            temp_files.append(result)
+                            n_downloaded += 1
+                print(f'Downloading {n_downloaded} masks completed in {time.time() - start_time} seconds')
+                
+                # Break the loop when there is nothing to download.
+                if n_downloaded == 0:
                     continue
-                # Download the compressed state_dict.
-                print (f'Downloading mask from uid: {uid}')
-                mask = download_model( metadata = metadata, device='cpu', CLIENT=CLIENT, state_dict = True )
-                if mask == None: 
-                    print (f'No mask from uid: {uid}')
-                    continue
-                print (f'Unpacking mask from uid: {uid}')
-                mask_count += 1
-                for name in mask.keys():
-                    param_shape = master.get_parameter(name).shape
-                    mask_values = mask[name]['values']
-                    indices = mask_indices[name] 
-                    decompressed = torch.zeros(param_shape, device='cpu').flatten() 
-                    decompressed[indices] = mask_values
-                    if name not in masks_dicts_values:
-                        masks_dicts_values[name] = decompressed.view(param_shape)
-                    else:
-                        masks_dicts_values[name] += decompressed.view(param_shape)
-                        
-            if mask_count == 0:
-                print ('No masks to merge. Continuing...')
-                continue
-
-            # Average the mask values
-            print (f'Averaging {mask_count} masks.')
-            for key in masks_dicts_values:
-                masks_dicts_values[key] /= mask_count
                 
-            # Set these values into the model
-            print (f'Applying average of {mask_count} masks to the master.')
-            for name, param in master.named_parameters():
-                if name in masks_dicts_values:
-                    with torch.no_grad():
-                        param.copy_(masks_dicts_values[name])
-                        
-            # Uploading the new state.
-            upload_history.append( upload_model(
-                key = 'model',
-                wallet = wallet,
-                model = master,
-                block = next_sync_block,
-                extras = {},
-                bucket = config.bucket,
-                CLIENT = CLIENT,
-            ) )
-            # Delete history over allowed.
-            if len(upload_history) > 10:
-                to_delete = upload_history.pop(0)
-                CLIENT.delete_object( Bucket=config.bucket, Key=to_delete.filename )
-                CLIENT.delete_object( Bucket=config.bucket, Key=to_delete.metadata_filename )
-
+                print(f'Creating sync mask for block: {blk}')
+                mask_indices = {}
+                torch.manual_seed( blk )
+                start_time = time.time()
+                for name, param in model.named_parameters():
+                    param = param.to(config.device)
+                    next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
+                    indices = next_mask.flatten().nonzero(as_tuple=False).flatten()
+                    mask_indices[name] = indices
+                print(f'Creating sync block mask completed in {time.time() - start_time} seconds')  # Print timing after this step
+            
+                # Loading state dicts
+                print (f'Loading state dicts for block: {blk}:')
+                start_time = time.time()
+                mask_count = 0
+                masks_dicts_values = {}
+                for file in temp_files:
+                    mask = torch.load( file, map_location='cpu', weights_only = True )
+                    mask_count += 1
+                    for name in mask.keys():
+                        mask_values = mask[name]['values']
+                        if torch.isnan(mask_values).any():
+                            continue
+                        param_shape = model.get_parameter(name).shape
+                        indices = mask_indices[name] 
+                        decompressed = torch.zeros(param_shape, device='cpu').flatten() 
+                        decompressed[indices] = mask_values
+                        if name not in masks_dicts_values:
+                            masks_dicts_values[name] = decompressed.view(param_shape)
+                        else:
+                            masks_dicts_values[name] += decompressed.view(param_shape)
+                print(f'Loading state dicts completed in {time.time() - start_time} seconds')
                 
+                # Average the mask values
+                print (f'Averaging {mask_count} masks for block: {blk}')
+                start_time = time.time()
+                for key in masks_dicts_values.keys():
+                    masks_dicts_values[key] /= mask_count
+                print(f'Averaged state dicts in {time.time() - start_time} seconds')
+                
+                # Set these values into the model
+                print(f'Applying {mask_count} masks for block: {blk}:')
+                start_time = time.time()  # Start timing
+                for name, param in model.named_parameters():
+                    indices = mask_indices[name]
+                    if name in masks_dicts_values:
+                        if masks_dicts_values[name].shape == param.shape:
+                            # Apply the mask values to the flattened param data.
+                            on_device = masks_dicts_values[name].to(model.device).flatten()
+                            param_flat = param.data.flatten()
+                            param_flat[indices] = on_device[indices]
+                            param.data.copy_(param_flat.view(param.shape))
+                            del on_device, param_flat
+                        else:
+                            print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
+                del masks_dicts_values
+                print(f'Applying {mask_count} masks completed in {time.time() - start_time} seconds')  # Print timing after this step
+                
+                # Delete files.
+                print (f'Deleting files for block: {blk}.')
+                start_time = time.time()
+                for file in temp_files:
+                    os.remove(file)
+                print(f'Deleting files completed in {time.time() - start_time} seconds')
+                
+            # Print completion
+            torch.cuda.empty_cache()
+            print(f'Downloading masks for blocks: {all_sync_blocks} in {time.time() - full_sync_start_time} seconds')
+
+            # Upload the masked weights.
+            print('Uploading master:')
+            start_time = time.time()
+            model_state_dict = model.state_dict()
+            upload_filename = f'master-{wallet.hotkey.ss58_address}.pt'
+            with io.BytesIO() as module_buffer:
+                torch.save(model_state_dict, module_buffer)
+                module_buffer.seek(0)  # Reset the buffer's position to the beginning.
+                CLIENT.upload_fileobj(module_buffer, config.bucket, upload_filename)
+            CLIENT.put_object_acl(
+                Bucket=config.bucket,
+                Key=upload_filename,
+                GrantRead='uri="http://acs.amazonaws.com/groups/global/AllUsers"',
+                GrantReadACP='uri="http://acs.amazonaws.com/groups/global/AllUsers"'
+            )
+            upload_history.append(upload_filename)
+            print(f'Uploading master completed in {time.time() - start_time} seconds')
+
+            print('Deleting history:')
+            start_time = time.time()
+            if len(upload_history) > 5:
+                CLIENT.delete_object(Bucket = config.bucket, Key = upload_history.pop(0))
+            print(f'Deleting history completed in {time.time() - start_time} seconds')
+                 
         # Handle keyboard interrupts to allow graceful shutdown.
         except (KeyboardInterrupt, SystemExit):
             break
@@ -219,7 +269,6 @@ if __name__ == "__main__":
     parser.add_argument('--name', type=str, default=None, help='Optional name')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network uid.')
-    parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
     parser.add_argument('--restart', action='store_true', help='Restart all evaluation history')
@@ -228,76 +277,3 @@ if __name__ == "__main__":
     config = bt.config(parser)
     config.subtensor.chain_endpoint = 'wss://test.finney.opentensor.ai:443/'
     main(config)
-
-
-
-# # Compute scores for each miner on their dataset sample.
-#             scores = torch.zeros_like( weights )
-#             for meta, delta in deltas:
-#                 # Get a page for the uid for this delta.
-#                 print (f'Evalling {meta.uid}')
-#                 pages = [random.choice( SubsetFineWebEdu2Loader.next_pages(
-#                     offset = subtensor.block * hparams.window_speed,
-#                     n_pages = hparams.window_size,
-#                     seed = meta.uid 
-#                 ))]
-#                 dataset = SubsetFineWebEdu2Loader(
-#                     batch_size = config.batch_size,
-#                     sequence_length = hparams.sequence_length,
-#                     pages_info = pages,
-#                     tokenizer = hparams.tokenizer
-#                 )
-#                 # Remove the delta.
-#                 for (name, master_param), (_, delta_param) in zip( master.named_parameters(), delta.named_parameters()):
-#                     on_device = delta_param.data.to(master.device)
-#                     master_param.data.sub_( metagraph.I[ meta.uid ] * on_device )
-#                     delta_param.data.to( 'cpu' )
-#                 # Compute loss without the delta.
-#                 print ('Running without delta...')
-#                 total_loss_without_delta = 0
-#                 for idx, batch in enumerate(dataset):
-#                     input_ids = torch.tensor(batch, dtype=torch.long).to(master.device)
-#                     labels = input_ids.clone()
-#                     labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
-#                     with torch.no_grad():
-#                         outputs = master(input_ids=input_ids, labels=labels)
-#                         total_loss_without_delta += outputs.loss.item()
-#                         del input_ids, labels, outputs
-#                 # Add the delta back.
-#                 for (name, master_param), (_, delta_param) in zip( master.named_parameters(), delta.named_parameters()):
-#                     on_device = delta_param.data.to(master.device)
-#                     master_param.data.add_( metagraph.I[ meta.uid ] * on_device )
-#                     delta_param.data.to( 'cpu' )
-#                 # Compute the loss with the delta.
-#                 print ('Running with delta...')
-#                 total_loss_with_delta = 0
-#                 for idx, batch in enumerate(dataset):
-#                     input_ids = torch.tensor(batch, dtype=torch.long).to(master.device)
-#                     labels = input_ids.clone()
-#                     labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
-#                     with torch.no_grad():
-#                         outputs = master(input_ids=input_ids, labels=labels)
-#                         total_loss_with_delta += outputs.loss.item()
-#                         del input_ids, labels, outputs
-#                 # Compute scores as delta dif.
-#                 torch.cuda.empty_cache() # Clean up.
-#                 scores[ meta.uid ] = total_loss_without_delta - total_loss_with_delta
-                
-#             # Set weights.
-#             print ( 'scores', scores.tolist() )
-#             non_zero_scores = scores[scores != 0]
-#             non_zero_weights = torch.softmax(non_zero_scores, dim=0)
-#             next_weights = torch.zeros_like(scores)
-#             next_weights[scores != 0] = non_zero_weights
-#             next_weights = next_weights / next_weights.sum() if next_weights.sum() != 0 else next_weights
-#             weights = 0.9 * weights + ( 1 - 0.9 ) * next_weights
-#             print ( 'next_weights', next_weights.tolist() )              
-#             print ( 'weights', weights.tolist() )              
-#             subtensor.set_weights(
-#                 wallet = wallet,
-#                 netuid = metagraph.netuid,
-#                 uids = metagraph.uids.tolist(),
-#                 weights = weights.tolist(),
-#                 wait_for_inclusion=False,
-#                 wait_for_finalization=False,
-#             )
