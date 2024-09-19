@@ -50,8 +50,9 @@ CLIENT: boto3.client = boto3.client(
 
 def load_hparams() -> SimpleNamespace:
     hparams = {
+        'blocks_per_step': 6,
         # Delta compression rate.
-        'compression': 100,
+        'compression': 300,
         # Base sample probability
         'base_probability': 1,
         # Skews higher weights by exponential factor with this temperature term.
@@ -338,6 +339,7 @@ def upload_model(
         CLIENT = CLIENT,
         key = 'model',
         mask: Dict[str, object] = None,
+        with_indicies: bool = True,
     ) -> SimpleNamespace:
     """
     Uploads a model to a specified bucket along with its metadata.
@@ -393,7 +395,10 @@ def upload_model(
             mask_flat = param_mask.flatten()
             unmasked_indices = mask_flat.nonzero(as_tuple=False).flatten()
             unmasked_params = param_flat[unmasked_indices]
-            model_state_dict[name] = {'indices': unmasked_indices, 'values': unmasked_params}
+            if with_indicies:
+                model_state_dict[name] = {'indices': unmasked_indices, 'values': unmasked_params}
+            else:
+                model_state_dict[name] = {'values': unmasked_params}
             
     # Upload the model to the storage service.
     with io.BytesIO() as module_buffer:

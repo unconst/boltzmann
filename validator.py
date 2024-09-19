@@ -112,7 +112,8 @@ def main(config):
             
             # Get block.
             block = subtensor.block
-            next_sync_block = int(subtensor.block / 4) * 4 + 4
+            step_size = hparams.blocks_per_step
+            next_sync_block = (int(subtensor.block / step_size) * step_size) + step_size
             while True:
                 block = subtensor.block
                 if block >= next_sync_block:

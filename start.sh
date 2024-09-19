@@ -20,12 +20,11 @@ pm2 delete all
 # python3 clean.py
 
 # Start all the processes again.
-pm2 start master.py --interpreter python3 --name MASTER -- --wallet.name Alice --wallet.hotkey Alice --subtensor.network test --device cuda:0 --use_wandb --restart
-pm2 start validator.py --interpreter python3 --name V1 -- --wallet.name Alice --wallet.hotkey Alice --subtensor.network test --device cuda:1 --use_wandb --restart
-pm2 start miner.py --interpreter python3 --name M1 -- --wallet.name Alice --wallet.hotkey Charlie --subtensor.network test --device cuda:2 --use_wandb
-pm2 start miner.py --interpreter python3 --name M2 -- --wallet.name Alice --wallet.hotkey Dave --subtensor.network test --device cuda:3 --use_wandb
-pm2 start miner.py --interpreter python3 --name M3 -- --wallet.name Alice --wallet.hotkey Eve --subtensor.network test --device cuda:5 --use_wandb
-pm2 start miner.py --interpreter python3 --name M4 -- --wallet.name Alice --wallet.hotkey Bob --subtensor.network test --device cuda:6 --use_wandb
+pm2 start validator.py --interpreter python3 --name V1 -- --wallet.name Alice --wallet.hotkey Alice --subtensor.network test --device cuda:0 --use_wandb
+pm2 start miner.py --interpreter python3 --name M1 -- --wallet.name Alice --wallet.hotkey Bob --subtensor.network test --device cuda:1 --use_wandb 
+pm2 start miner.py --interpreter python3 --name M2 -- --wallet.name Alice --wallet.hotkey Charlie --subtensor.network test --device cuda:2 --use_wandb
+pm2 start miner.py --interpreter python3 --name M3 -- --wallet.name Alice --wallet.hotkey Dave --subtensor.network test --device cuda:3 --use_wandb
+pm2 start miner.py --interpreter python3 --name M4 -- --wallet.name Alice --wallet.hotkey Eve --subtensor.network test --device cuda:5 --use_wandb
 
 
 # 

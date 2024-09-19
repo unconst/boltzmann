@@ -82,6 +82,7 @@ def main(config):
     last_master_sync = 0
     while True:
         try:    
+            
             # Load chain state.
             hparams = load_hparams()
             subtensor = bt.subtensor(config=config)
@@ -109,11 +110,12 @@ def main(config):
                     time.sleep(12)
                     continue
                 last_master_sync = subtensor.block
-                
+            
             # Get block.
             block = subtensor.block
-            next_sync_block = int(subtensor.block / 4) * 4 + 4
-            next_upload_block = int(subtensor.block / 4) * 4 + 8
+            step_size = hparams.blocks_per_step
+            next_sync_block = (int(subtensor.block / step_size) * step_size) + step_size
+            next_upload_block = (int(subtensor.block / step_size) * step_size)+ (step_size * 2)
             while True:
                 block = subtensor.block
                 if block >= next_sync_block:
@@ -164,17 +166,25 @@ def main(config):
 
                 # Average the mask values
                 print (f'Averaging {mask_count} masks')
-                for key in masks_dicts_values:
+                for key in masks_dicts_values.keys():
                     masks_dicts_values[key] /= mask_count
+                    # TODO: Check for division by zero in case mask_count is zero
+                    # TODO: Ensure that masks_dicts_values[key] is not None before performing division
                     
                 # Set these values into the model
-                print (f'Applyling {mask_count} masks')
+                print (f'Applying {mask_count} masks')
                 for name, param in model.named_parameters():
+                    indices = mask_indices[name]
                     if name in masks_dicts_values:
-                        param.copy_(masks_dicts_values[name].to(model.device))
+                        if masks_dicts_values[name].shape == param.shape:
+                            # Overload the indicies from the mask.
+                            param.data[indices] = masks_dicts_values[name].to(model.device)[indices]
+                        else:
+                            print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
                             
             # Sync the state from all peers.
             sync_state(next_sync_block)
+            print (f'Synced state by {subtensor.block} with upload in {next_upload_block}')
             
             # Get current block page for miner.
             pages = SubsetFineWebEdu2Loader.next_pages(
@@ -183,7 +193,7 @@ def main(config):
                 seed = my_uid 
             )
             dataset = SubsetFineWebEdu2Loader(
-                batch_size = config.actual_batch_size,
+                batch_size = config.batch_size,
                 sequence_length = hparams.sequence_length,
                 pages_info = pages,
                 tokenizer = hparams.tokenizer
@@ -192,8 +202,7 @@ def main(config):
             # Train model on page.
             for idx, batch in enumerate( dataset ):
                 # Break the training if we are past the training block.
-                if subtensor.block > next_sync_block + 1:
-                    break
+                block = subtensor.block
                 input_ids = torch.tensor(batch, dtype=torch.long).to(model.device)
                 labels = input_ids.clone()
                 labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
@@ -201,10 +210,13 @@ def main(config):
                 outputs.loss.backward()
                 optimizer.step()
                 if config.use_wandb: wandb.log( { "loss": outputs.loss.item(), f'Incentive{my_uid}': float(metagraph.I[ my_uid ]) })
-                print ( 'Loss', outputs.loss.item() )
+                print ( 'block', block, 'Loss', outputs.loss.item() )
                 del input_ids, labels, outputs
-                torch.cuda.empty_cache()
-                
+                torch.cuda.empty_cache()  
+                if block >= next_upload_block - 1:
+                    print (f'Break training on {block} with next upload: {next_upload_block}')
+                    break
+
             # Get mask for the upload block.
             upload_block_mask = {}
             compression_factor = hparams.compression
@@ -223,7 +235,9 @@ def main(config):
                 bucket = config.bucket,
                 CLIENT = CLIENT,
                 mask = upload_block_mask,
+                with_indicies = False,
             ))
+            
             # Delete history over allowed.
             if len(upload_history) > 10: # should be full epoch.
                 to_delete = upload_history.pop(0)
@@ -251,13 +265,11 @@ if __name__ == "__main__":
     parser.add_argument('--name', type=str, default=None, help='Optional miner name')
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network UID.')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
-    parser.add_argument('--desired_batch_size', type=int, default=1, help='Desired total batch size for training')
-    parser.add_argument('--actual_batch_size', type=int, default=1, help='Actual batch size per step')
+    parser.add_argument('--batch_size', type=int, default=10, help='Training batch size')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate for the optimizer')
     parser.add_argument('--optimizer_beta1', type=float, default=0.9, help='Beta1 for the optimizer')
     parser.add_argument('--optimizer_beta2', type=float, default=0.95, help='Beta2 for the optimizer')
     parser.add_argument('--optimizer_weight_decay', type=float, default=0.1, help='Weight decay for the optimizer')
-    parser.add_argument('--pages_per_epoch', type=int, default=1, help='Number of pages to train per epoch')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')    
     bt.wallet.add_args(parser)
