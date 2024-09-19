@@ -73,12 +73,13 @@ def main(config):
     if config.use_wandb:
         run = wandb.init(project='cont', resume='allow', name=f'V{my_uid}', config=config)
         
-    # Load the model from bucket if exists.
-    hparams = load_hparams()
+    # Init the master model
     upload_history = []
+    hparams = load_hparams()
     model = LlamaForCausalLM(config=hparams.model_config) 
     if not config.restart: 
         try:
+            # Load the last master from my bucket.
             master_filename = f'master-{wallet.hotkey.ss58_address}.pt'
             unique_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
             CLIENT.download_file(config.bucket, master_filename, unique_temp_file)
@@ -87,12 +88,13 @@ def main(config):
             upload_history.append(master_filename)
         except Exception as e:
             raise ValueError("There is no master to continue from. Run with --restart")
-    model.to(config.device)  # TODO: Ensure 'device' is defined in config
+    model.to(config.device)
         
     # Start.
     last_mask_sync = subtensor.block
     while True:
         try:
+            # Load the latest chain state and reset my connection.
             print('Loading chain state:')
             start_time = time.time()
             hparams = load_hparams()
@@ -100,18 +102,20 @@ def main(config):
             metagraph = subtensor.metagraph(netuid=config.netuid)
             print(f'Loading chain state completed in {time.time() - start_time} seconds') 
             
+            # Get blocks since my latest sync step.
             print('Getting blocks to sync:')
             start_time = time.time() 
             block = subtensor.block
             all_sync_blocks = [last_mask_sync + i + 1 for i in range(block - last_mask_sync)]
             last_mask_sync = block
-            print(f'Getting blocks to sync completed in {time.time() - start_time} seconds')  # Print timing after this step
+            print(f'Getting blocks to sync completed in {time.time() - start_time} seconds')
         
-            # Get the mask for the sync block.
-            print(f'Downloading masks for blocks: {all_sync_blocks}')  # Start timing
+            # For each missed block, pull all miner masks and add to state.
+            print(f'Downloading masks for blocks: {all_sync_blocks}') 
             full_sync_start_time = time.time()
             for blk in all_sync_blocks:
                 
+                # Get mask file names for all miners for this block.
                 print(f'Getting filenames for blk: {blk}...')
                 start_time = time.time()
                 if 'buckets' not in locals():
@@ -123,6 +127,7 @@ def main(config):
                     mask_filenames.append(f"mask-{str(metagraph.hotkeys[uid])}-{blk}.pt")
                 print(f'Get filenames completed in {time.time() - start_time} seconds')
             
+                # Download each of the filenames in parallel
                 print(f'Downloading mask for blk: {blk}:')
                 start_time = time.time()
                 temp_files = []
@@ -147,6 +152,7 @@ def main(config):
                 if n_downloaded == 0:
                     continue
                 
+                # Init the mask for this block.
                 print(f'Creating sync mask for block: {blk}')
                 mask_indices = {}
                 torch.manual_seed(blk)
@@ -156,9 +162,9 @@ def main(config):
                     next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
                     indices = next_mask.flatten().nonzero(as_tuple=False).flatten()
                     mask_indices[name] = indices
-                print(f'Creating sync block mask completed in {time.time() - start_time} seconds')  # Print timing after this step
+                print(f'Creating sync block mask completed in {time.time() - start_time} seconds') 
             
-                # Loading state dicts
+                # Load all masks as state dicts and decompress given mask.
                 print(f'Loading state dicts for block: {blk}:')
                 start_time = time.time()
                 mask_count = 0
@@ -180,14 +186,14 @@ def main(config):
                             masks_dicts_values[name] += decompressed.view(param_shape)
                 print(f'Loading state dicts completed in {time.time() - start_time} seconds')
                 
-                # Average the mask values
+                # Average all masks together.
                 print(f'Averaging {mask_count} masks for block: {blk}')
                 start_time = time.time()
                 for key in masks_dicts_values.keys():
                     masks_dicts_values[key] /= mask_count
                 print(f'Averaged state dicts in {time.time() - start_time} seconds')
                 
-                # Set these values into the model
+                # Apply averages to my local model state.
                 print(f'Applying {mask_count} masks for block: {blk}:')
                 start_time = time.time()  # Start timing
                 for name, param in model.named_parameters():
@@ -205,18 +211,18 @@ def main(config):
                 del masks_dicts_values
                 print(f'Applying {mask_count} masks completed in {time.time() - start_time} seconds')  # Print timing after this step
                 
-                # Delete files.
+                # Delete files and clean state.
                 print(f'Deleting files for block: {blk}.')
                 start_time = time.time()
                 for file in temp_files:
                     os.remove(file)
                 print(f'Deleting files completed in {time.time() - start_time} seconds')
                 
-            # Print completion
+            # Finish syncing masks.
             torch.cuda.empty_cache()
             print(f'Downloading masks for blocks: {all_sync_blocks} in {time.time() - full_sync_start_time} seconds')
 
-            # Upload the masked weights.
+            # Upload a full copy of the model weights to master
             print('Uploading master:')
             start_time = time.time()
             model_state_dict = model.state_dict()
@@ -234,6 +240,7 @@ def main(config):
             upload_history.append(upload_filename)
             print(f'Uploading master completed in {time.time() - start_time} seconds')
 
+            # Clean old master states.
             print('Deleting history:')
             start_time = time.time()
             if len(upload_history) > 5:
