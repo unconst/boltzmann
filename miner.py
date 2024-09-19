@@ -29,6 +29,7 @@ import numpy as np
 import bittensor as bt
 import concurrent.futures  
 import torch.optim as optim
+from tqdm import tqdm
 from typing import List, Tuple
 from dotenv import dotenv_values
 from transformers import LlamaForCausalLM 
@@ -268,7 +269,7 @@ def main(config):
             optimizer.zero_grad()
             avg_loss = 0
             n_batches = int( len(dataset.buffer) / (hparams.sequence_length * config.batch_size) )
-            for idx, batch in enumerate( dataset ):
+            for idx, batch in enumerate(tqdm(dataset)):
                 input_ids = torch.tensor(batch, dtype=torch.long).to(model.device)
                 labels = input_ids.clone()
                 labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
