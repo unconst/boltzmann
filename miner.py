@@ -77,161 +77,157 @@ def main(config):
         
     # Init model
     hparams = load_hparams()
-    model = LlamaForCausalLM( config = hparams.model_config )    
-    optimizer = Adafactor(
-        model.parameters(),
-        lr = config.learning_rate,
-        relative_step = False
-    )
-    model.to(config.device)
-    model.train()
-    master = None
-    upload_history = []
-    total_pages = 0
-    total_epochs = 0
-    total_failed_sync = 0
-    total_success_sync = 0
+    upload_history = []    
+    last_master_sync = 0
     while True:
         try:    
             # Load chain state.
             hparams = load_hparams()
             subtensor = bt.subtensor(config=config)
             metagraph = subtensor.metagraph(netuid=config.netuid)
-
-            # Get master.
-            print ('Get master meta.')
-            master_uid = int(metagraph.S.argmax())
-            master_meta = get_latest_metadata( key = 'model', uid = master_uid, metagraph = metagraph, subtensor = subtensor, CLIENT = CLIENT)
-            if master_meta == None:
-                print ('Waiting for master...')
-                time.sleep(12)
-                continue
             
-            # Initial pass, download the master directly.
-            print ('Getting master.')
-            if master == None or not hasattr( master_meta, 'deltas' ):
-                master = download_model( metadata = master_meta, device='cpu', CLIENT = CLIENT ) 
-                print ('Downloaded the master.')
+            # Sync the full model state if we have gone further than the epoch.
+            if subtensor.block - last_master_sync > 100:
+                print ('Resyncing full training state.')
+                try:
+                    master_uid = int(metagraph.S.argmax())
+                    master_meta = get_latest_metadata( key = 'model', uid = master_uid, metagraph = metagraph, subtensor = subtensor )
+                    model = download_model( metadata = master_meta, device='cpu', CLIENT = CLIENT ) 
+                    if model == None:
+                        raise ValueError('No master.')
+                    model.to(config.device)
+                    model.train()
+                    optimizer = optim.AdamW(
+                        model.parameters(),
+                        lr = config.learning_rate,  # Peak learning rate
+                        betas = ( config.optimizer_beta1, config.optimizer_beta2 ), # B1 and B2
+                        weight_decay = config.optimizer_weight_decay  # Weight decay
+                    )
+                except Exception as e:
+                    print (f'Error getting master: {e} Waiting ...')
+                    time.sleep(12)
+                    continue
+                last_master_sync = subtensor.block
                 
-            # If master_meta is not my state, sync.
-            if hash_model( master ) != master_meta.model_hash:
-                # Merge all miner deltas.
-                delta_metas = [ SimpleNamespace( **d ) for d in master_meta.deltas]
-                total_pages = sum([ d.n_pages for d in delta_metas])
-                for meta in delta_metas:
-                    try:
-                        delta = download_model( metadata = meta, device='cpu', CLIENT=CLIENT )
-                        for (name, master_param), (_, delta_param) in zip( master.named_parameters(), delta.named_parameters() ):
-                            on_device = delta_param.data.to(master.device)
-                            master_param.data.add_( metagraph.I[ meta.uid ] * on_device )
-                            delta_param.data.to( 'cpu' )
-                        print ('Applied delta.')
-                    except Exception as e:
-                        print (f'Failed to apply deltas with error: {e}')
-                        break
-                print (f'Applied deltas with {total_pages} applied')
-                
-            # Checking if the previous sync merged properly.
-            if hash_model( master ) != master_meta.model_hash:
-                # Merge was unsuccessful, downloading full.
-                print ('Failed to sync master from deltas, downloading full state...')
-                master = download_model( metadata = master_meta, device='cpu', CLIENT = CLIENT ) 
-                total_failed_sync += 1
-            else:
-                # Merge was successful.
-                print ('Successfully syncd master state from deltas.')
-                total_success_sync += 1
-            if config.use_wandb: wandb.log({ "total_failed_sync": total_failed_sync, "total_success_sync": total_success_sync })
-            
-            # Check for failed state sync.
-            if master == None:
-                print ('Master was None, continue...')
-                continue
-            
-            # Copy the master state into the model.
-            print ('Sink delta into the master.')
-            for (name, model_param), (_, master_param) in zip(model.named_parameters(), master.named_parameters()):
-                model_param.data.copy_(master_param.data.to(model.device))
-            
-            # Build the current mask.
-            mask = {}
-            compression_factor = hparams.compression
-            print (f'Creating Mask with compression: {compression_factor}')
-            for name, param in model.named_parameters():
-                mask[name] = (torch.rand_like(param) < (1 / compression_factor)).float() 
-                
-            # Epochs start here. 
-            total_epochs += 1
-            if config.use_wandb: wandb.log({ "total_epochs": total_epochs })
-            
-            # Get next page.
-            print ('Training until next master.')
-            n_pages = 0
+            # Get block.
+            block = subtensor.block
+            next_sync_block = int(subtensor.block / 4) * 4 + 4
+            next_upload_block = int(subtensor.block / 4) * 4 + 8
             while True:
-                
-                # Break on state change.
-                next_master_meta = get_latest_metadata( key = 'model', uid = master_uid, metagraph = metagraph, subtensor = subtensor, CLIENT = CLIENT)
-                if next_master_meta == None or next_master_meta.model_hash != master_meta.model_hash:
+                block = subtensor.block
+                if block >= next_sync_block:
                     break
+                print (f'Waiting for sync block: {next_sync_block} current: {block}')
+                time.sleep(4)
+                continue
+            
+            def sync_state( sync_block: int ):
+                # Get the mask for the sync block.
+                mask_indices = {}
+                compression_factor = hparams.compression
+                print(f'Creating Mask with compression: {compression_factor}X')
+                # We seed the mask from the block height.
+                np.random.seed( sync_block ) 
+                for name, param in model.named_parameters():
+                    next_mask = torch.from_numpy(np.random.rand(*param.shape) < (1 / compression_factor)).float()
+                    indices = next_mask.nonzero(as_tuple=False).flatten()
+                    mask_indices[ name ] = indices
                 
-                print ('Get next dataset...')
-                n_pages += 1
-                total_pages += 1
-                if config.use_wandb: wandb.log({ "n_pages": n_pages, "total_pages": total_pages })
-                pages = SubsetFineWebEdu2Loader.next_pages(
-                    offset = subtensor.block * hparams.window_speed,
-                    n_pages = 1,
-                    seed = my_uid 
-                )
-                dataset = SubsetFineWebEdu2Loader(
-                    batch_size = config.actual_batch_size,
-                    sequence_length = hparams.sequence_length,
-                    pages_info = pages,
-                    tokenizer = hparams.tokenizer
-                )
-                # Train the model with the mask.
-                print ('Start training...')
-                # dont_upload = False
-                for idx, batch in enumerate( dataset ):
-                    input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
-                    labels = input_ids.clone()
-                    labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
-                    outputs = model(input_ids = input_ids, labels=labels)
-                    outputs.loss.backward()
-                    for name, param in model.named_parameters():
-                        if param.grad is not None:
-                            # Mask the gradient.
-                            param.grad.mul_( mask[ name ].to( param.grad.device ).to(param.grad.dtype) )  
-                    optimizer.step()
-                    if config.use_wandb: wandb.log({ "loss": outputs.loss.item(), f'Incentive{my_uid}': metagraph.I[ my_uid ] })
-                    print ( 'Loss', outputs.loss.item() )
-                    del input_ids, labels, outputs
-                    torch.cuda.empty_cache()
-                
-                # Compute the delta between the model and the master.
-                print ('Get Delta.')
-                delta = copy.deepcopy( model ).to('cpu')
-                for (name, delta_param), (_, master_param) in zip(delta.named_parameters(), master.named_parameters()):
-                    delta_param.data.sub_(master_param.data.to('cpu'))   
+                # Sync and average all the masks from peers on the sync block.
+                masks_dicts_values = {}
+                mask_counts = {}
+                for uid in metagraph.uids:
+                    metadata = get_metadata_for_block( 
+                        key = 'mask', 
+                        uid = uid, 
+                        block = sync_block,
+                        metagraph = metagraph, 
+                        subtensor = subtensor,
+                    )
+                    if metadata == None: continue
+                    # Download the compressed state_dict.
+                    mask = download_model( metadata = metadata, device='cpu', CLIENT=CLIENT, state_dict = True )
+                    if mask == None: continue
+                    for name in mask.keys():
+                        param_shape = model.get_parameter(name).shape
+                        mask_values = mask[name]['values']
+                        indices = mask_indices[name] 
+                        decompressed = torch.zeros(param_shape, device='cpu').flatten() 
+                        decompressed[indices] = mask_values
+                        if name not in masks_dicts_values:
+                            masks_dicts_values[name] = decompressed.view(param_shape)
+                            mask_counts[name] = 1
+                        else:
+                            masks_dicts_values[name] += decompressed.view(param_shape)
+                            mask_counts[name] += 1
+
+                # Average the mask values
+                for key in masks_dicts_values:
+                    masks_dicts_values[key] /= mask_counts[key]
                     
-                print ('Upload Delta.')
-                upload_history.append( upload_model(
-                    key = 'delta',
-                    wallet = wallet,
-                    model = delta,
-                    block = int(time.time()),  # Use current timestamp as block number.
-                    extras = {'n_pages': n_pages, 'master_hash': master_meta.model_hash },  # Additional metadata can be added here.
-                    bucket = config.bucket,
-                    CLIENT = CLIENT,
-                    mask = mask,
-                ))
-                # Delete history over allowed.
-                if len(upload_history) > 3:
-                    to_delete = upload_history.pop(0)
-                    CLIENT.delete_object( Bucket=config.bucket, Key=to_delete.filename )
-                    CLIENT.delete_object( Bucket=config.bucket, Key=to_delete.metadata_filename )
+                # Set these values into the model
+                for name, param in model.named_parameters():
+                    if name in masks_dicts_values:
+                        with torch.no_grad():
+                            param.copy_(masks_dicts_values[name].to(model.device))
+                            
+            # Sync the state from all peers.
+            sync_state(next_sync_block)
+            
+            # Get current block page for miner.
+            pages = SubsetFineWebEdu2Loader.next_pages(
+                offset = next_upload_block,
+                n_pages = 1,
+                seed = my_uid 
+            )
+            dataset = SubsetFineWebEdu2Loader(
+                batch_size = config.actual_batch_size,
+                sequence_length = hparams.sequence_length,
+                pages_info = pages,
+                tokenizer = hparams.tokenizer
+            )
+            
+            # Train model on page.
+            for idx, batch in enumerate( dataset ):
+                # Break the training if we are past the training block.
+                if subtensor.block > next_upload_block - 1:
+                    break
+                input_ids = torch.tensor(batch, dtype=torch.long).to(model.device)
+                labels = input_ids.clone()
+                labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
+                outputs = model(input_ids = input_ids, labels=labels)
+                outputs.loss.backward()
+                optimizer.step()
+                if config.use_wandb: wandb.log( { "loss": outputs.loss.item(), f'Incentive{my_uid}': float(metagraph.I[ my_uid ]) })
+                print ( 'Loss', outputs.loss.item() )
+                del input_ids, labels, outputs
+                torch.cuda.empty_cache()
+                
+            # Get mask for the upload block.
+            upload_block_mask = {}
+            compression_factor = hparams.compression
+            print(f'Creating Mask with compression: {compression_factor}')
+            np.random.seed( next_upload_block )  # Seed numpy's random generator with the upload block.
+            for name, param in model.named_parameters():
+                upload_block_mask[name] = torch.from_numpy(np.random.rand(*param.shape) < (1 / compression_factor)).float()
+                
+            # Upload the masked weights.
+            upload_history.append( upload_model(
+                key = 'mask',
+                wallet = wallet,
+                model = model,
+                block = next_upload_block, # Key the mask with the upload block here.
+                extras = {},  # Additional metadata can be added here.
+                bucket = config.bucket,
+                CLIENT = CLIENT,
+                mask = upload_block_mask,
+            ))
+            # Delete history over allowed.
+            if len(upload_history) > 10: # should be full epoch.
+                to_delete = upload_history.pop(0)
+                CLIENT.delete_object( Bucket=config.bucket, Key=to_delete.filename )
+                CLIENT.delete_object( Bucket=config.bucket, Key=to_delete.metadata_filename )
                  
-        
         # Handle keyboard interrupts to allow graceful shutdown.
         except (KeyboardInterrupt, SystemExit):
             # Clean up by deleting the model from S3 if it exists.

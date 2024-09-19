@@ -189,6 +189,50 @@ def hash_model(module: torch.nn.Module) -> str:
     module_hash = hashlib.sha256(concatenated_model_states_bytes).hexdigest()
     return module_hash
 
+def get_metadata_for_block( 
+        uid, 
+        block: int,
+        metagraph,
+        subtensor,
+        CLIENT = CLIENT,
+        key:str = 'model',
+    ):
+    try:
+        # Get the bucket name (commitment) for the given netuid and UID.
+        bucket = subtensor.get_commitment(metagraph.netuid, uid)
+        # Get the hotkey associated with the UID from the metagraph.
+        hotkey = metagraph.hotkeys[uid]
+        # Retrieve the latest metadata for the block.
+        metadata_filename = f"{key}-{hotkey}-{block}_metadata.json"
+        filename = f"{key}-{hotkey}-{block}.pt"
+
+        # Get the metadata file from the storage service.
+        metadata_response = CLIENT.get_object(Bucket=bucket, Key=metadata_filename)
+        
+        # Read and update the metadata with the content of the metadata file.
+        metadata = {}
+        metadata_json = json.loads(metadata_response['Body'].read().decode('utf-8'))
+        metadata.update(metadata_json)
+        metadata['bucket'] = bucket
+        metadata['block'] = block
+        metadata['metadata_filename'] = metadata_filename
+
+        # Get the metadata of the model file from the storage service.
+        response = CLIENT.head_object(Bucket=bucket, Key=filename)
+        
+        # Extract and calculate metadata information.
+        metadata['last_modified'] = int(response['LastModified'].timestamp())
+        # Estimate blocks since modification assuming 12 seconds per block.
+        metadata['blocks_since_modified'] = int((time.time() - metadata['last_modified']) / 12)
+        metadata['size'] = response['ContentLength']
+        metadata['filename'] = filename
+        
+        # Return the metadata as a SimpleNamespace for easy attribute access.
+        return SimpleNamespace(**metadata)
+    except Exception as e:
+        # Return None if any exception occurs.
+        return None
+
 def get_latest_metadata_for_hotkey_and_bucket(
         hotkey: str,
         bucket: str,
@@ -393,6 +437,7 @@ def download_model(
         metadata: SimpleNamespace, 
         device: str, 
         CLIENT = CLIENT,
+        state_dict: bool = False,
     ) -> Optional[torch.nn.Module]:
     """
     Downloads a model from a specified bucket and loads it onto the specified device.
@@ -411,19 +456,20 @@ def download_model(
         start_time = time.time()  # Record the start time for the download.
 
         # Check the model type and initialize the appropriate model configuration and model.
-        if metadata.model_type == "llama":
-            # Create Llama model configuration from metadata.
-            model_config = LlamaConfig(**metadata.model_config)
-            # Initialize Llama model with the configuration.
-            model = LlamaForCausalLM(model_config)
-        elif metadata.model_type == "gpt2":
-            # Create GPT-2 model configuration from metadata.
-            model_config = GPT2Config(**metadata.model_config)
-            # Initialize GPT-2 model with the configuration.
-            model = GPT2LMHeadModel(model_config)
-        else:
-            # If model type is unknown, raise an exception.
-            raise ValueError(f"Unsupported model type: {metadata.model_type}")
+        if not state_dict:
+            if metadata.model_type == "llama":
+                # Create Llama model configuration from metadata.
+                model_config = LlamaConfig(**metadata.model_config)
+                # Initialize Llama model with the configuration.
+                model = LlamaForCausalLM(model_config)
+            elif metadata.model_type == "gpt2":
+                # Create GPT-2 model configuration from metadata.
+                model_config = GPT2Config(**metadata.model_config)
+                # Initialize GPT-2 model with the configuration.
+                model = GPT2LMHeadModel(model_config)
+            else:
+                # If model type is unknown, raise an exception.
+                raise ValueError(f"Unsupported model type: {metadata.model_type}")
             
         # Generate a unique temporary file path using uuid.
         unique_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
@@ -435,20 +481,24 @@ def download_model(
         new_model_state_dict = torch.load( unique_temp_file, map_location=torch.device(device), weights_only = True )
 
         # Check if the model is compressed and decompress if necessary
-        if hasattr(metadata, 'compressed') and metadata.compressed:
-            for name, param in model.named_parameters():
-                if name in new_model_state_dict:
-                    param_shape = param.shape
-                    decompressed = torch.zeros(param_shape, device=param.device).flatten()
-                    indices = new_model_state_dict[name]['indices']
-                    values = new_model_state_dict[name]['values']
-                    decompressed[indices] = values
-                    new_model_state_dict[name] = decompressed.view(param.shape)
+        if not state_dict:
+            if hasattr(metadata, 'compressed') and metadata.compressed:
+                for name, param in model.named_parameters():
+                    if name in new_model_state_dict:
+                        param_shape = param.shape
+                        decompressed = torch.zeros(param_shape, device=param.device).flatten()
+                        indices = new_model_state_dict[name]['indices']
+                        values = new_model_state_dict[name]['values']
+                        decompressed[indices] = values
+                        new_model_state_dict[name] = decompressed.view(param.shape)
         
-        # Load the state dict into the model.
-        model.load_state_dict(new_model_state_dict)
-        # Move the model to the specified device.
-        model.to(device)
+        if not state_dict:
+            # Load the state dict into the model.
+            model.load_state_dict(new_model_state_dict)
+            # Move the model to the specified device.
+            model.to(device)
+        else:
+            model = new_model_state_dict
 
         # Remove the temporary file after use.
         os.remove(unique_temp_file)
