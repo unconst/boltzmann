@@ -45,19 +45,7 @@ weights = softmax( weights * temperature )
 subtensor.set_weights( weights )
 ```
 
-Miner are rewarded for producing a compressed delta on the current master model which reduces the loss maximally when added in conjunction with the deltas produced by other miners in the network weighted by incentive. Mathematically this can be expressed as :
-
-The master model's parameters after applying the miners' deltas are updated as:
-
-\[
-\theta_{\text{master}} = \theta_{\text{initial}} + \sum_{i} w_i I_i \Delta_i
-\]
-
-where the weight \( w_i \) for each miner is determined by the softmax of the loss change:
-
-\[
-w_i = \frac{\exp\left(\frac{\Delta L_i}{T}\right)}{\sum_j \exp\left(\frac{\Delta L_j}{T}\right)}, \quad \Delta L_i = L(\theta_{\text{master}}^{+i}, \mathcal{D}_i) - L(\theta_{\text{master}}^{-i}, \mathcal{D}_i)
-\]
+Miner are rewarded for producing a compressed delta on the current master model which reduces the loss maximally when added in conjunction with the deltas produced by other miners in the network weighted by incentive. 
 
 # Step 1.
   - Create an S3 <Bucket> on AWS and add export your AWS API Key.
