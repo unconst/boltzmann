@@ -77,242 +77,126 @@ def main(config):
     # Initialize Weights and Biases (wandb) for experiment tracking if enabled.
     if config.use_wandb:
         run = wandb.init(project='cont', resume='allow', name=f'V{my_uid}', config=config)
-        
-    # Load running hparams.
-    hparams = load_hparams()
-    # Load the evaluation history from S3 storage.
-    history = load_history(my_uid, metagraph, subtensor, CLIENT)
-    # Optionally clear history on restart.
-    if config.restart:
-        history = {}
-        save_history(wallet, history, config.bucket, CLIENT)        
-        master = LlamaForCausalLM( config = hparams.model_config )
-        current_meta = upload_model(
-            wallet = wallet,
-            model = master,
-            block = int(time.time()),  # Use current timestamp as block number.
-            extras = {},  # Additional metadata can be added here.
-            bucket = config.bucket,
-            CLIENT = CLIENT,
-        ) 
-
-    # Remember the min moving global loss.
-    upload_threshold = math.inf
-    current_master_meta = None
-    update_block = subtensor.block
+         
+    # Init empty weights.
+    weights = torch.zeros( metagraph.S.shape, dtype = torch.float32 )
     while True:
         try:
             # Sync the chain state.
-            subtensor = bt.subtensor(config=config)            
-            metagraph = subtensor.metagraph(netuid=config.netuid)
-            
-            # Sync the latest hparams from the global training state gist.
             hparams = load_hparams()
+            subtensor = bt.subtensor(config=config)            
+            metagraph = subtensor.metagraph(netuid=config.netuid)            
             
-            # Get the master metadata.
+            # Get master metadata.
+            print ('Get master metadata')
             master_uid = int(metagraph.S.argmax())
-            lastest_master_meta = get_latest_metadata( key = 'model', uid = master_uid, metagraph = metagraph, subtensor = subtensor, CLIENT = CLIENT)
-            if lastest_master_meta == None:
-                # Check if we are infact the master. Then upload our state.
-                if master_uid == my_uid:
-                    current_meta = upload_model(
-                        wallet = wallet,
-                        model = master,
-                        block = int(time.time()),  # Use current timestamp as block number.
-                        extras = {},  # Additional metadata can be added here.
-                        bucket = config.bucket,
-                        CLIENT = CLIENT,
-                    )
-                print ('No Valid master waiting ...')
+            master_meta = get_latest_metadata( key = 'model', uid = master_uid, metagraph = metagraph, subtensor = subtensor, CLIENT = CLIENT)
+            if master_meta == None:
+                print ('Waiting for master....')
                 time.sleep(12)
                 continue
-                
-            # If the master has changed or is None, download it.
-            if current_master_meta == None or lastest_master_meta.model_hash != current_master_meta.model_hash:
-                print ('Loading the new master...')
-                current_master_meta = lastest_master_meta
-                master = download_model( metadata = lastest_master_meta, device='cpu', CLIENT = CLIENT )
-                master.to( config.device )
-                master.eval()
-
-            # Sample the next uid based on incentives.
-            probabilities = metagraph.I + (hparams.base_probability / float(metagraph.n))
-            probabilities /= probabilities.sum()
-            print ( 'Probabilities', probabilities )
-            # next_uid = int(np.argmax(np.random.multinomial(1, probabilities)))
-            next_uid = int(random.choice( metagraph.uids ))
-            print ( 'next_uid', next_uid )
-
-            # Retrieve the miner's metadata, which contains information about their delta.
-            metadata = get_latest_metadata( key = 'delta', uid = next_uid, metagraph = metagraph, subtensor = subtensor, CLIENT=CLIENT)
-            if metadata is None:
-                print (f'Metadata is None for uid: {next_uid}. continue ...')
-                # Start again.
-                continue 
             
-            # Check the compression.
-            # allowed_size = 3 * (lastest_master_meta.size / hparams.compression) 
-            # if config.use_wandb: wandb.log({ 'metadata.size': metadata.size, 'allowed_size': allowed_size })
-            # if metadata.size > allowed_size:
-            #     print (f'metadata is too large {metadata.size} > {allowed_size}:')
-            #     # Delta is too large.
-            #     continue
+            # Download the master.
+            master = download_model( metadata = master_meta, device='cpu', CLIENT = CLIENT ) 
+            if master == None:
+                print ('Master was None, continue...')
+                continue    
             
-            # Download the miner delta based on the metadata.
-            delta = download_model( metadata = metadata, device='cpu', CLIENT=CLIENT )
-            if delta is None:
-                print (f'model is None after download for uid: {next_uid}. continue ...)')
-                # Start again.
-                continue
+            # Make sure its on the right device.
+            master.to( config.device ) 
+            master.eval()
+            master_hash = hash_model( master )
             
-            # Apply the delta to the master model.
-            for (name, master_param), (_, delta_param) in zip( master.named_parameters(), delta.named_parameters() ):
-                master_param.data.add_( delta_param.data.to( master.device ) )
-            print (f'Applied delta to model.')
-                
-            # Select local and global pages to eval the model on.
-            local_losses = []
-            global_losses = []
-            local_page = random.choice(SubsetFineWebEdu2Loader.next_pages(
-                offset = subtensor.block * hparams.window_speed,
-                n_pages = hparams.window_size,
-                seed = next_uid
-            ))
-            local_dataset = SubsetFineWebEdu2Loader(
-                batch_size = config.batch_size,
-                sequence_length = hparams.sequence_length,
-                pages_info = [local_page],
-                tokenizer = hparams.tokenizer
-            )
-            global_dataset = SubsetFineWebEdu2Loader(
-                batch_size = config.batch_size,
-                sequence_length = hparams.sequence_length,
-                num_pages = 1,
-                tokenizer = hparams.tokenizer
-            )
-            global_page = global_dataset.pages[0]
-            
-            # Evaluate the model on the local dataset.
-            print (f'Evaling local...')
-            for batch in local_dataset:
-                # Convert the batch to tensors and move to the device.
-                input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
-                labels = input_ids.clone()  # Clone input_ids for labels.
-                # Mask the padding tokens.
-                labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
-                with torch.no_grad():
-                    # Forward pass through the model with scaling.
-                    with torch.amp.autocast(config.device, dtype=torch.bfloat16):
+            # Get all delta metadatas.
+            metas = []
+            for uid in metagraph.uids:
+                metadata = get_latest_metadata( key = 'delta', uid = uid, metagraph = metagraph, subtensor = subtensor, CLIENT = CLIENT )
+                if metadata != None:
+                    metas.append( metadata )
+                    
+            # Download all the deltas and apply them to the master.
+            deltas = []
+            for meta in metas:
+                delta = download_model( metadata = meta, device='cpu', CLIENT=CLIENT ) 
+                if delta != None: 
+                    # Apply the delta to the master.
+                    for (name, master_param), (_, delta_param) in zip( master.named_parameters(), delta.named_parameters()):
+                        on_device = delta_param.data.to(master.device)
+                        master_param.data.add_( metagraph.I[ meta.uid ] * on_device )
+                        delta_param.data.to( 'cpu' )
+                    deltas.append( (meta, delta) ) 
+                    
+            # Compute scores for each miner on their dataset sample.
+            scores = torch.zeros_like( weights )
+            for meta, delta in deltas:
+                # Get a page for the uid for this delta.
+                print (f'Evalling {meta.uid}')
+                pages = [random.choice( SubsetFineWebEdu2Loader.next_pages(
+                    offset = subtensor.block * hparams.window_speed,
+                    n_pages = hparams.window_size,
+                    seed = meta.uid 
+                ))]
+                dataset = SubsetFineWebEdu2Loader(
+                    batch_size = config,batch_size,
+                    sequence_length = hparams.sequence_length,
+                    pages_info = pages,
+                    tokenizer = hparams.tokenizer
+                )
+                # Remove the delta.
+                for (name, master_param), (_, delta_param) in zip( master.named_parameters(), delta.named_parameters()):
+                    on_device = delta_param.data.to(master.device)
+                    master_param.data.sub_( metagraph.I[ meta.uid ] * on_device )
+                    delta_param.data.to( 'cpu' )
+                # Compute loss without the delta.
+                print ('Running without delta...')
+                total_loss_without_delta = 0
+                for idx, batch in enumerate(dataset):
+                    input_ids = torch.tensor(batch, dtype=torch.long).to(master.device)
+                    labels = input_ids.clone()
+                    labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
+                    with torch.no_grad():
                         outputs = master(input_ids=input_ids, labels=labels)
-                # Append the loss to the list.
-                local_losses.append(outputs.loss.item())
-                # Clean up to free memory.
-                del input_ids, labels, outputs
-                torch.cuda.empty_cache()
-
-            # Evaluate the model on the global dataset.
-            print (f'Evalling global...')
-            for batch in global_dataset:
-                input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
-                labels = input_ids.clone()
-                labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
-                with torch.no_grad():
-                    # Forward pass through the model with scaling.
-                    with torch.amp.autocast(config.device, dtype=torch.bfloat16):
+                        total_loss_without_delta += outputs.loss.item()
+                        del input_ids, labels, outputs
+                # Add the delta back.
+                for (name, master_param), (_, delta_param) in zip( master.named_parameters(), delta.named_parameters()):
+                    on_device = delta_param.data.to(master.device)
+                    master_param.data.add_( metagraph.I[ meta.uid ] * on_device )
+                    delta_param.data.to( 'cpu' )
+                # Compute the loss with the delta.
+                print ('Running with delta...')
+                total_loss_with_delta = 0
+                for idx, batch in enumerate(dataset):
+                    input_ids = torch.tensor(batch, dtype=torch.long).to(master.device)
+                    labels = input_ids.clone()
+                    labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
+                    with torch.no_grad():
                         outputs = master(input_ids=input_ids, labels=labels)
-                global_losses.append(outputs.loss.item())
-                del input_ids, labels, outputs
-                torch.cuda.empty_cache()
-
-            # Record the evaluation event.
-            # Create an event dictionary with all relevant information.
-            event = {
-                'block': int(subtensor.block),
-                'next_uid': int(next_uid),
-                'local_page': int(local_page[1]),
-                'global_page': int(global_page[1]),
-                'local_loss': float(np.mean(local_losses)),
-                'global_loss': float(np.mean(global_losses)),
-                'local_losses': [float(v) for v in local_losses],
-                'global_losses': [float(v) for v in global_losses],
-            }
-            print(
-                f'UID {next_uid}, Block {subtensor.block}, '
-                f'Local Page {int(local_page[1])}, Local Loss {float(np.mean(local_losses))}, '
-                f'Global Page {int(global_page[1])}, Global Loss {float(np.mean(global_losses))}'
-            )
-            # Append the event to the history.
-            if next_uid not in history: history[next_uid] = [] 
-            history[next_uid].append(event)
-            if config.use_wandb:
-                # Log the event to Weights and Biases.
-                wandb.log(event)
+                        total_loss_with_delta += outputs.loss.item()
+                        del input_ids, labels, outputs
+                # Compute scores as delta dif.
+                torch.cuda.empty_cache() # Clean up.
+                scores[ meta.uid ] = total_loss_without_delta - total_loss_with_delta
                 
-            # Save the eval history to the chain and then reload.
-            save_history( wallet, history, config.bucket, CLIENT )
-
-            # Initialize tensors for local and global weights.
-            local_loss = torch.zeros(metagraph.uids.shape)
-            global_loss = torch.zeros(metagraph.uids.shape)
-
-            # Compute the moving average local and global losses.
-            for uid, samples in history.items():
-                last_block, moving_global_loss, moving_local_loss = None, 0, 0
-                for sample in samples:
-                    next_local_loss = float(np.mean(sample['local_losses']))
-                    next_global_loss = float(np.mean(sample['global_losses']))
-                    if np.isnan(next_local_loss) or np.isnan(next_global_loss):
-                        continue # Skip NaN values.
-                    block = int(sample['block'])
-                    alpha = min( 1, hparams.base_alpha * (block - last_block) ) if last_block is not None else 1
-                    moving_global_loss = alpha * next_global_loss + (1 - alpha) * moving_global_loss
-                    moving_local_loss = alpha * next_local_loss + (1 - alpha) * moving_local_loss
-                    last_block = block
-                local_loss[int(uid)] = moving_local_loss
-                global_loss[int(uid)] = moving_global_loss
-
-            print('local_loss:', local_loss.tolist())
-            print('global_loss:', global_loss.tolist())                
-            weights = hparams.local_dominance * (-local_loss) + (1 - hparams.local_dominance) * (-global_loss)    
-            weights[weights.nonzero(as_tuple=True)] = torch.softmax(weights[weights.nonzero(as_tuple=True)] * hparams.temperature , dim=0)       
-            print('weights:', weights.tolist())                
-
-            # Set the computed weights on the chain using the wallet.
+            # Set weights.
+            print ( 'scores', scores )
+            non_zero_scores = scores[scores != 0]
+            non_zero_weights = torch.softmax(non_zero_scores, dim=0)
+            next_weights = torch.zeros_like(scores)
+            next_weights[scores != 0] = non_zero_weights
+            next_weights = next_weights / next_weights.sum() if next_weights.sum() != 0 else next_weights
+            weights = 0.9 * weights + ( 1 - 0.9 ) * next_weights
+            print ( 'next_weights', next_weights.tolist() )              
+            print ( 'weights', weights.tolist() )              
             subtensor.set_weights(
-                wallet=wallet,
-                netuid=metagraph.netuid,
-                uids=metagraph.uids.tolist(),
-                weights=weights.tolist(),
+                wallet = wallet,
+                netuid = metagraph.netuid,
+                uids = metagraph.uids.tolist(),
+                weights = weights.tolist(),
                 wait_for_inclusion=False,
                 wait_for_finalization=False,
-            )            
-            
-            # If we are the master validator, check if the latest model has beaten the 
-            # threshold for upload.
-            uid_score = float(np.mean(global_losses))
-            if config.use_wandb: wandb.log({ 'uid_score': uid_score, 'upload_threshold': upload_threshold  })
-            print ( 'uid_score', uid_score, 'upload_threshold', upload_threshold )
-            if uid_score < upload_threshold and my_uid == master_uid:
-                print ('New Master, uploading state.')
-                upload_threshold = uid_score * hparams.epsilon
-                update_block = subtensor.block
-                CLIENT.delete_object( Bucket=config.bucket, Key=current_master_meta.filename )
-                CLIENT.delete_object( Bucket=config.bucket, Key=current_master_meta.metadata_filename )
-                current_master_meta = upload_model(
-                    key = 'model',
-                    wallet = wallet,
-                    model = master,
-                    block = int(time.time()),
-                    extras = { 'delta': metadata.__dict__ }, # Record the delta we just applied.
-                    bucket = config.bucket,
-                    CLIENT = CLIENT,
-                ) 
+            )
                 
-            # Otherwise, simply remove the delta and continue
-            else:
-                for (name, master_param), (_, delta_param) in zip( master.named_parameters(), delta.named_parameters() ):
-                    master_param.data.sub_( delta_param.data.to( master.device ) )
-
         # Handle keyboard interrupts to allow graceful shutdown.
         except (KeyboardInterrupt, SystemExit):
             break

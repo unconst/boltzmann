@@ -51,7 +51,7 @@ CLIENT: boto3.client = boto3.client(
 def load_hparams() -> SimpleNamespace:
     hparams = {
         # Delta compression rate.
-        'compression': 1000,
+        'compression': 100,
         # Base sample probability
         'base_probability': 1,
         # Skews higher weights by exponential factor with this temperature term.
@@ -67,14 +67,20 @@ def load_hparams() -> SimpleNamespace:
         # Number of new pages added to the local window every block.
         'window_speed': 4,
         # Improvement epsilon requirement.
-        'epsilon': 0.999,
+        'epsilon': 0.99,
         # AutoTokenizer name.
         'tokenizer_name': 'gpt2',
         # Model arch.
-        'hidden_size': 4096,
-        'num_hidden_layers': 32,
-        'num_attention_heads': 32,
-        'intermediate_size': 11008
+        # 7B.
+        # 'hidden_size': 4096,
+        # 'num_hidden_layers': 32,
+        # 'num_attention_heads': 32,
+        # 'intermediate_size': 11008
+        # 1B
+        'hidden_size': 2040,
+        'num_hidden_layers': 12,
+        'num_attention_heads': 12,
+        'intermediate_size': 6144
     }
     # Convert the dictionary to a SimpleNamespace
     hparams_ns = SimpleNamespace(**hparams)
@@ -334,20 +340,6 @@ def upload_model(
     # Generate filenames for the model and its metadata based on the hotkey and block number.
     filename = f'{key}-{wallet.hotkey.ss58_address}-{block}.pt'  # Filename for the model.
     metadata_filename = f"{key}-{wallet.hotkey.ss58_address}-{block}_metadata.json"  # Filename for the metadata.
-
-    # Upload the metadata to the storage service.
-    # Convert the extras dictionary to JSON and encode it to bytes.
-    metadata_buffer = io.BytesIO(json.dumps(extras).encode('utf-8'))  # Create a buffer for the metadata.
-    # Upload the metadata buffer to the storage service.
-    CLIENT.upload_fileobj(metadata_buffer, bucket, metadata_filename)
-
-    # Grant read and list permissions to all users for the metadata file.
-    CLIENT.put_object_acl(
-        Bucket=bucket,
-        Key=metadata_filename,
-        GrantRead='uri="http://acs.amazonaws.com/groups/global/AllUsers"',
-        GrantReadACP='uri="http://acs.amazonaws.com/groups/global/AllUsers"'
-    )
     
     # Decompress from the mask.
     if mask != None:
@@ -371,6 +363,19 @@ def upload_model(
     CLIENT.put_object_acl(
         Bucket=bucket,
         Key=filename,
+        GrantRead='uri="http://acs.amazonaws.com/groups/global/AllUsers"',
+        GrantReadACP='uri="http://acs.amazonaws.com/groups/global/AllUsers"'
+    )
+    
+    # Upload the metadata to the storage service.
+    # Convert the extras dictionary to JSON and encode it to bytes.
+    metadata_buffer = io.BytesIO(json.dumps(extras).encode('utf-8'))  # Create a buffer for the metadata.
+    # Upload the metadata buffer to the storage service.
+    CLIENT.upload_fileobj(metadata_buffer, bucket, metadata_filename)
+    # Grant read and list permissions to all users for the metadata file.
+    CLIENT.put_object_acl(
+        Bucket=bucket,
+        Key=metadata_filename,
         GrantRead='uri="http://acs.amazonaws.com/groups/global/AllUsers"',
         GrantReadACP='uri="http://acs.amazonaws.com/groups/global/AllUsers"'
     )
@@ -449,7 +454,7 @@ def download_model(
         os.remove(unique_temp_file)
 
         # Log the completion of the download process with the time taken.
-        print(f"Downloaded model from {metadata.filename}@{metadata.bucket} of size: {human_readable_size(metadata.size)} in {time.time() - start_time} seconds.")
+        print(f"Downloaded {metadata.key} from {metadata.filename}@{metadata.bucket} of size: {human_readable_size(metadata.size)} in {time.time() - start_time} seconds.")
         # Return the downloaded model.
         return model
     except Exception as e:

@@ -74,180 +74,161 @@ def main(config):
     # Initialize Weights and Biases (wandb) for experiment tracking if enabled.
     if config.use_wandb:
         run = wandb.init(project='cont', resume='allow', name=f'M{my_uid}', config=config)
-    
-    # Train loop.       
+        
+    # Init model
+    hparams = load_hparams()
+    model = LlamaForCausalLM( config = hparams.model_config )    
+    optimizer = Adafactor(
+        model.parameters(),
+        lr = config.learning_rate,
+        relative_step = False
+    )
+    model.to(config.device)
+    model.train()
     master = None
-    n_failed_sync = 0
-    n_success_sync = 0
-    upload_history = []  # List of previous uploads
-    update_block = subtensor.block
+    upload_history = []
+    total_pages = 0
+    total_epochs = 0
+    total_failed_sync = 0
+    total_success_sync = 0
     while True:
-        try:
-    
-            # Resynchronize the chain state to get the latest metagraph.
+        try:    
+            # Load chain state.
+            hparams = load_hparams()
             subtensor = bt.subtensor(config=config)
             metagraph = subtensor.metagraph(netuid=config.netuid)
-            
-            # Sync the latest hparams from the global training state gist.
-            hparams = load_hparams()
-            
-            # Get the master metadata.
-            master_metadata = get_latest_metadata( key = 'model', uid = int(metagraph.S.argmax()), metagraph = metagraph, subtensor = subtensor, CLIENT=CLIENT)
-            if master_metadata is None:
-                print ('No valid master, waiting ...')
+
+            # Get master.
+            print ('Get master meta.')
+            master_uid = int(metagraph.S.argmax())
+            master_meta = get_latest_metadata( key = 'model', uid = master_uid, metagraph = metagraph, subtensor = subtensor, CLIENT = CLIENT)
+            if master_meta == None:
+                print ('Waiting for master...')
                 time.sleep(12)
                 continue
             
-            # Check to see if the master is not the same as remote.
-            if master_metadata.model_hash != hash_model( master ):
+            # Initial pass, download the master directly.
+            print ('Getting master.')
+            if master == None or not hasattr( master_meta, 'deltas' ):
+                master = download_model( metadata = master_meta, device='cpu', CLIENT = CLIENT ) 
+                print ('Downloaded the master.')
                 
-                # Updating master from the delta applied to it.
-                if master != None and hasattr( master_metadata, 'delta' ):
-                    # Apply remote delta.
-                    print (f'Applying delta to update master ...')
-                    delta_meta = SimpleNamespace( **master_metadata.delta ) 
-                    delta = download_model( metadata = delta_meta, device = 'cpu', CLIENT = CLIENT )
-                    for (name, master_param), (_, delta_param) in zip( master.named_parameters(), delta.named_parameters() ):
-                        master_param.data.add_( delta_param.data.to( master.device ) )
-                    del delta
-                    
-                # If the master is None or the hash is different (even after delta application.)
-                if master == None or hash_model( master ) != master_metadata.model_hash:
-                    # Download the master directly.
-                    print (f'Local:{hash_model( master )} != Remote:{master_metadata.model_hash}.\nDownloading full state...')
-                    master = download_model( metadata = master_metadata, device='cpu', CLIENT = CLIENT ) 
-                    n_failed_sync += 1
-                    if config.use_wandb: wandb.log({'n_failed_sync': n_failed_sync} )
-                else:
-                    print ('Master state synced correctly.')
-                    n_success_sync += 1
-                    if config.use_wandb: wandb.log({'n_success_sync': n_success_sync} )
-                    
-                # Finally load the model and init it for training.
-                print ('Loading model state to train ...')
-                if 'model' in locals(): 
-                    del model;
-                model = copy.deepcopy( master )    
-                scaler = torch.amp.GradScaler()            
-                optimizer = Adafactor(
-                    model.parameters(),
-                    lr = config.learning_rate,
-                    relative_step = False
-                )
-                model.to(config.device)
-                model.train()
-                model.gradient_checkpointing_enable()
-                torch.cuda.empty_cache()
-                update_block = subtensor.block
+            # If master_meta is not my state, sync.
+            if hash_model( master ) != master_meta.model_hash:
+                # Merge all miner deltas.
+                delta_metas = [ SimpleNamespace( **d ) for d in master_meta.deltas]
+                total_pages = sum([ d.n_pages for d in delta_metas])
+                for meta in delta_metas:
+                    try:
+                        delta = download_model( metadata = meta, device='cpu', CLIENT=CLIENT )
+                        for (name, master_param), (_, delta_param) in zip( master.named_parameters(), delta.named_parameters() ):
+                            master_param.data.add_( (meta.n_pages/total_pages) * delta_param.data.to( master.device ) )
+                        print ('Applied delta.')
+                    except Exception as e:
+                        print (f'Failed to apply deltas with error: {e}')
+                        break
+                print (f'Applied deltas with {total_pages} applied')
                 
-                # Build this models current compression mask.
-                mask = {}
-                compression_factor = hparams.compression
-                for name, param in model.named_parameters():
-                    # Create a mask with (1 - 1/compression_factor) zeros and 1/compression_factor ones, same shape as param
-                    cpu_param = param.to('cpu')
-                    next_mask = (torch.rand_like(cpu_param) < (1 / compression_factor)).float()  # 1/compression_factor chance to be True (1.0)
-                    mask[name] = next_mask
-
-            # Iterate over the number of pages to train per epoch.
-            print ('Training ...')
-            for step in range(config.pages_per_epoch):
-                # Generate the current training window based on the subtensor block.
-                local_pages: List[Tuple[str, int, str]] = SubsetFineWebEdu2Loader.next_pages(
-                    offset = subtensor.block * hparams.window_speed + 100,  # Offset into the future to avoid overlap with validators.
-                    n_pages = hparams.window_size,
-                    seed = my_uid  # Seed with miner's UID for consistency.
+            # Checking if the previous sync merged properly.
+            if hash_model( master ) != master_meta.model_hash:
+                # Merge was unsuccessful, downloading full.
+                print ('Failed to sync master from deltas, downloading full state...')
+                master = download_model( metadata = master_meta, device='cpu', CLIENT = CLIENT ) 
+                total_failed_sync += 1
+            else:
+                # Merge was successful.
+                print ('Successfully syncd master state from deltas.')
+                total_success_sync += 1
+            if config.use_wandb: wandb.log({ "total_failed_sync": total_failed_sync, "total_success_sync": total_success_sync })
+            
+            # Check for failed state sync.
+            if master == None:
+                print ('Master was None, continue...')
+                continue
+            
+            # Copy the master state into the model.
+            print ('Sink delta into the master.')
+            for (name, model_param), (_, master_param) in zip(model.named_parameters(), master.named_parameters()):
+                model_param.data.copy_(master_param.data.to(model.device))
+            
+            # Build the current mask.
+            mask = {}
+            compression_factor = hparams.compression
+            print (f'Creating Mask with compression: {compression_factor}')
+            for name, param in model.named_parameters():
+                mask[name] = (torch.rand_like(param) < (1 / compression_factor)).float() 
+                
+            # Epochs start here. 
+            total_epochs += 1
+            if config.use_wandb: wandb.log({ "total_epochs": total_epochs })
+            
+            # Get next page.
+            print ('Training until next master.')
+            n_pages = 0
+            while True:
+                
+                # Break on state change.
+                next_master_meta = get_latest_metadata( key = 'model', uid = master_uid, metagraph = metagraph, subtensor = subtensor, CLIENT = CLIENT)
+                if next_master_meta == None or next_master_meta.model_hash != master_meta.model_hash:
+                    break
+                
+                print ('Get next dataset...')
+                n_pages += 1
+                total_pages += 1
+                if config.use_wandb: wandb.log({ "n_pages": n_pages, "total_pages": total_pages })
+                pages = SubsetFineWebEdu2Loader.next_pages(
+                    offset = subtensor.block * hparams.window_speed,
+                    n_pages = 1,
+                    seed = my_uid 
                 )
-    
-                # Select a random page from the evaluation window for training.
-                local_page = random.choice(local_pages)
-    
-                # Create the dataset for the selected page.
                 dataset = SubsetFineWebEdu2Loader(
                     batch_size = config.actual_batch_size,
                     sequence_length = hparams.sequence_length,
-                    pages_info = [ local_page ],
+                    pages_info = pages,
                     tokenizer = hparams.tokenizer
                 )
-    
-                # Calculate the number of gradient accumulation steps to achieve desired batch size.
-                accumulation_steps = config.desired_batch_size // config.actual_batch_size
-    
-                # Zero the gradients of the optimizer.
-                optimizer.zero_grad()
-                # Training loop over batches in the dataset.
-                for idx, batch in enumerate(dataset):
-                    # Convert the batch to a PyTorch tensor and move to the device.
+                # Train the model with the mask.
+                print ('Start training...')
+                # dont_upload = False
+                for idx, batch in enumerate( dataset ):
                     input_ids = torch.tensor(batch, dtype=torch.long).to(config.device)
-                    labels = input_ids.clone()  # Clone input_ids to use as labels.
-    
-                    # Mask the padding tokens in labels by setting them to -100.
-                    # This tells the loss function to ignore these positions.
+                    labels = input_ids.clone()
                     labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
-    
-                    # Forward pass with mixed precision.
-                    with torch.amp.autocast( config.device, dtype = torch.bfloat16 ):
-                        outputs = model(input_ids=input_ids, labels=labels)
-                        loss = outputs.loss  # Get the loss value.
-                        loss = loss / accumulation_steps  # Normalize loss for gradient accumulation.
-    
-                    # Backward pass to compute gradients with scaled loss.
-                    scaler.scale(loss).backward()
-                    # Perform optimizer step after accumulating gradients.
-                    if (idx + 1) % accumulation_steps == 0:
-                        # Apply the masks to gradients making these params not trainable.
-                        for name, param in model.named_parameters():
-                            if param.grad is not None:
-                                # Ensure mask is on the same device and dtype as the gradient
-                                next_mask = mask[ name ]
-                                next_mask = next_mask.to( param.grad.device ).to(param.grad.dtype)
-                                param.grad.mul_( next_mask )  # In-place multiplication to zero out gradients based on compression_ratio
-                        # Unscale the gradients and perform optimizer step.
-                        scaler.step(optimizer)
-                        # Update the scaler for next iteration.
-                        scaler.update()
-                        # Zero the gradients for the next step.
-                        optimizer.zero_grad()
-    
-                    # Log training progress to console.
-                    print(f"Loss: {(loss.item() * accumulation_steps):.4f}")
-    
-                    # Log metrics to wandb if enabled.
-                    if config.use_wandb:
-                        wandb.log({
-                            "incentive": float(metagraph.I[my_uid]),
-                            "loss": loss.item() * accumulation_steps
-                        })
-                    
-                    # TODO: Delete unnecessary tensors to free up GPU memory.
+                    outputs = model(input_ids = input_ids, labels=labels)
+                    outputs.loss.backward()
+                    for name, param in model.named_parameters():
+                        if param.grad is not None:
+                            # Mask the gradient.
+                            param.grad.mul_( mask[ name ].to( param.grad.device ).to(param.grad.dtype) )  
+                    optimizer.step()
+                    if config.use_wandb: wandb.log({ "loss": outputs.loss.item(), f'Incentive{my_uid}': metagraph.I[ my_uid ] })
+                    print ( 'Loss', outputs.loss.item() )
                     del input_ids, labels, outputs
                     torch.cuda.empty_cache()
-    
-            # After training, remove the previous model from S3 if it exists.
-            if len(upload_history) > 3:
-                to_delete = upload_history.pop(0)
-                CLIENT.delete_object(Bucket=config.bucket, Key=to_delete.filename)
-                CLIENT.delete_object(Bucket=config.bucket, Key=to_delete.metadata_filename)
                 
-            # Compute the delta between the current model and the master.
-            print ('Computing the delta...')
-            delta = copy.deepcopy( model ).to('cpu')
-            for (name, delta_param), (_, master_param) in zip(delta.named_parameters(), master.named_parameters()):
-                delta_param.data.sub_( master_param.data.to('cpu') )
-    
-            # Upload the current delta to S3 for evaluation.
-            print ('Uploading the delta...')
-            upload_history.append( upload_model(
-                key = 'delta',
-                wallet = wallet,
-                model = delta,
-                block = int(time.time()),  # Use current timestamp as block number.
-                extras = {},  # Additional metadata can be added here.
-                bucket = config.bucket,
-                CLIENT = CLIENT,
-                mask = mask,
-            ))
-            del delta
+                # Compute the delta between the model and the master.
+                print ('Get Delta.')
+                delta = copy.deepcopy( model ).to('cpu')
+                for (name, delta_param), (_, master_param) in zip(delta.named_parameters(), master.named_parameters()):
+                    delta_param.data.sub_(master_param.data.to('cpu'))   
+                    
+                print ('Upload Delta.')
+                upload_history.append( upload_model(
+                    key = 'delta',
+                    wallet = wallet,
+                    model = delta,
+                    block = int(time.time()),  # Use current timestamp as block number.
+                    extras = {'n_pages': n_pages, 'master_hash': master_meta.model_hash },  # Additional metadata can be added here.
+                    bucket = config.bucket,
+                    CLIENT = CLIENT,
+                    mask = mask,
+                ))
+                # Delete history over allowed.
+                if len(upload_history) > 3:
+                    to_delete = upload_history.pop(0)
+                    CLIENT.delete_object( Bucket=config.bucket, Key=to_delete.filename )
+                    CLIENT.delete_object( Bucket=config.bucket, Key=to_delete.metadata_filename )
+                 
         
         # Handle keyboard interrupts to allow graceful shutdown.
         except (KeyboardInterrupt, SystemExit):

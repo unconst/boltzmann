@@ -8,56 +8,56 @@ BISTRO – Bittensor Incentivized and Scalable Training with Reward Optimization
 
 Validation design explained in pseudo-code:
 ```markdown
+# Get the master model state. 
+master = get_master()
 
-# Init the model
-master = init_model()
+# Iterate over each miner uid.
+for uid in metagraph.uids
 
-# Upload the model to S3
-upload( master )
+  # Add the miner's delta to the master model multiplied by incentive.
+  add_delta( master, get_delta( uid ) * metagraph.I[ uid ] )
 
-# Loop forever.
-loop:
-
-  # Select a random uid to sample.
-  uid = random.choice( metagraph.uids )
-
-  # Get the latest delta uploaded by the miner. 
-  delta = get_delta( uid )
-
-  # Add the delta to the master model
-  add_delta( master, delta )
+# Iterate over each miner uid.
+for uid in metagraph.uids:
 
   # Eval the master on the miner's current local pages.
   local_pages = get_pages( subtensor.block, uid )
-  local_loss = eval( local_pages, master )
-
-  # Eval the master on random pages from global.
-  global_pages = get_random_pages()
-  global_loss = eval( global_pages, master )
-
-  # Set weights on chain
-  weights[ uid ] = (1/2) * moving_average( -local_loss ) + (1/2) * moving_average( -global_loss )
-
-  # Softmax weights: smaller negative losses getting higher scores.
-  weights = softmax( weights * temperature )
-
-  # Set weights on chain
-  subtensor.set_weights( weights )
-
-  # Check if moving average produces a reasonable update.
-  if global_loss < min_loss:
-      # Update min loss.
-      min_loss = global_loss
-
-      # Upload the new master (gossip the UID so miners can pull it)
-      upload( master, delta = uid ) 
   
-  # Otherwise, loop.
-  else:
-      remove_delta( master, delta )
+  # Eval the delta on the master.
+  loss_with_delta = eval( local_pages, master )
+
+  # Remove the miner's delta from the master.
+  remove_delta( master, get_delta( uid ) * metagraph.I[ uid ] )
+  
+  # Eval the master without the delta.
+  loss_without_delta = eval( local_pages, master )
+  
+  # Score the miner based on the difference.
+  scores[ uid ] = loss_with_delta - loss_without_delta
+
+  # Add the miner's delta back to the master model.
+  add_delta( master, get_delta( uid ) * metagraph.I[ uid ] )
+
+# Softmax scores.
+weights = softmax( weights * temperature )
+
+# Set weights on chain
+subtensor.set_weights( weights )
 ```
 
-Validators on Bistro evaluate gradients (or model deltas) that miners submit to intermediate S3 buckets. At any block miner deltas are evaluated 'local' and 'global' pages pulled from the dataset. Local pages are randomly sampled pages pulled from within a window of pages (unique to each miner) but deterministic based on the block, global pages are pulled at random from the full dataset. Miners must maximize their performance on their unique window of pages while regulating their performance on the global. The incentives are designed to force miners to train mergable models and to make them available in a high bandwidth environment. As the training progresses the master model updates as deltas show case reduced losses.
+Miner are rewarded for producing a compressed delta on the current master model which reduces the loss maximally when added in conjunction with the deltas produced by other miners in the network weighted by incentive. Mathematically this can be expressed as :
+
+The master model's parameters after applying the miners' deltas are updated as:
+
+\[
+\theta_{\text{master}} = \theta_{\text{initial}} + \sum_{i} w_i I_i \Delta_i
+\]
+
+where the weight \( w_i \) for each miner is determined by the softmax of the loss change:
+
+\[
+w_i = \frac{\exp\left(\frac{\Delta L_i}{T}\right)}{\sum_j \exp\left(\frac{\Delta L_j}{T}\right)}, \quad \Delta L_i = L(\theta_{\text{master}}^{+i}, \mathcal{D}_i) - L(\theta_{\text{master}}^{-i}, \mathcal{D}_i)
+\]
 
 # Step 1.
   - Create an S3 <Bucket> on AWS and add export your AWS API Key.
