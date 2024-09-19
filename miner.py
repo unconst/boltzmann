@@ -50,7 +50,8 @@ def main(config):
     # Print the configuration settings.
     print('\n', '-' * 40, 'Config', '-' * 40)
     print(config)
-
+    
+    # Init Bittensor objects.
     wallet = bt.wallet(config=config)
     subtensor = bt.subtensor(config=config)
     metagraph = subtensor.metagraph(netuid=config.netuid)    
@@ -58,7 +59,9 @@ def main(config):
         raise ValueError(f'Wallet {wallet} is not registered on subnet: {metagraph.netuid}')    
     my_uid = metagraph.hotkeys.index(wallet.hotkey.ss58_address)    
     print('\n', '-' * 40, 'Objects', '-' * 40)
-    print(f'Wallet: {wallet}\nSubtensor: {subtensor}\nMetagraph: {metagraph}\nUID: {my_uid}')    
+    print(f'Wallet: {wallet}\nSubtensor: {subtensor}\nMetagraph: {metagraph}\nUID: {my_uid}')  
+    
+    # Init my bucket information by submitting it to the chain.  
     try:
         if config.bucket != subtensor.get_commitment(config.netuid, my_uid):
             raise ValueError(f'Chain commitment does not match: {config.bucket}')
@@ -71,7 +74,7 @@ def main(config):
     if config.use_wandb:
         run = wandb.init(project='cont', resume='allow', name=f'M{my_uid}', config=config)
         
-    # Init model
+    # Init training state.
     hparams = load_hparams()
     model = None
     upload_history = []  
@@ -79,6 +82,8 @@ def main(config):
     last_master_sync = 0
     while True:
         try:    
+            
+            # Sync the current chain state and hparams.
             print ('Loading chain state:')
             start_time = time.time()
             hparams = load_hparams()
@@ -86,9 +91,9 @@ def main(config):
             metagraph = subtensor.metagraph(netuid=config.netuid)
             print(f'Loading chain state completed in {time.time() - start_time} seconds') 
             
-            # Sync the full model state if we have gone further than the epoch.
-            print(f'Checking epoch sync:')  # Print timing after this step
-            start_time = time.time()  # Start timing
+            # Sync the full model state every hparams.epoch_length
+            print(f'Checking epoch sync:') 
+            start_time = time.time() 
             if model == None or subtensor.block - last_master_sync > hparams.epoch_length:
                 try:
                     master_uid = int(metagraph.S.argmax())
@@ -114,20 +119,21 @@ def main(config):
                     print (f'Error getting master: {e} Waiting ...')
                     time.sleep(12)
                     continue
-            print(f'Checking epoch sync: completed in {time.time() - start_time} seconds')  # Print timing after this step
+            print(f'Checking epoch sync: completed in {time.time() - start_time} seconds') 
             
             print(f'Getting block state:')
             start_time = time.time()  # Start timing
             block = subtensor.block
             all_sync_blocks = [ last_mask_sync + i + 1 for i in range( block - last_mask_sync )]
             last_mask_sync = block
-            print(f'Getting block completed in {time.time() - start_time} seconds')  # Print timing after this step
+            print(f'Getting block completed in {time.time() - start_time} seconds')
             
-            # Get the mask for the sync block.
-            print(f'Downloading masks for blocks: {all_sync_blocks}')  # Start timing
+            # Get the mask for all sync blocks.
+            print(f'Downloading masks for blocks: {all_sync_blocks}') 
             full_sync_start_time = time.time()
             for blk in all_sync_blocks:
                 
+                # Pull the filenames + buckets for all miners.
                 print (f'Getting filenames for blk: {blk}...')
                 start_time = time.time()
                 if 'buckets' not in locals():
@@ -139,6 +145,7 @@ def main(config):
                     mask_filenames.append( f"mask-{str(metagraph.hotkeys[uid])}-{blk}.pt" )
                 print(f'Get filenames completed in {time.time() - start_time} seconds')
             
+                # Download the masks from all valid files
                 print(f'Downloading mask for blk: {blk}:')
                 start_time = time.time()
                 temp_files = []
@@ -163,6 +170,7 @@ def main(config):
                 if n_downloaded == 0:
                     continue
                 
+                # Init the mask indicies using the block number.
                 print(f'Creating sync mask for block: {blk}')
                 mask_indices = {}
                 torch.manual_seed( blk )
@@ -172,9 +180,9 @@ def main(config):
                     next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
                     indices = next_mask.flatten().nonzero(as_tuple=False).flatten()
                     mask_indices[name] = indices
-                print(f'Creating sync block mask completed in {time.time() - start_time} seconds')  # Print timing after this step
+                print(f'Creating sync block mask completed in {time.time() - start_time} seconds')
             
-                # Loading state dicts
+                # Load all masks as state dicts.
                 print (f'Loading state dicts for block: {blk}:')
                 start_time = time.time()
                 mask_count = 0
@@ -196,14 +204,14 @@ def main(config):
                             masks_dicts_values[name] += decompressed.view(param_shape)
                 print(f'Loading state dicts completed in {time.time() - start_time} seconds')
                 
-                # Average the mask values
+                # Average the masks before applying.
                 print (f'Averaging {mask_count} masks for block: {blk}')
                 start_time = time.time()
                 for key in masks_dicts_values.keys():
                     masks_dicts_values[key] /= mask_count
                 print(f'Averaged state dicts in {time.time() - start_time} seconds')
                 
-                # Set these values into the model
+                # Set the average into the model.
                 print(f'Applying {mask_count} masks for block: {blk}:')
                 start_time = time.time()  # Start timing
                 for name, param in model.named_parameters():
@@ -219,9 +227,9 @@ def main(config):
                         else:
                             print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
                 del masks_dicts_values
-                print(f'Applying {mask_count} masks completed in {time.time() - start_time} seconds')  # Print timing after this step
+                print(f'Applying {mask_count} masks completed in {time.time() - start_time} seconds')
                 
-                # Delete files.
+                # Delete files and clean up.
                 print (f'Deleting files for block: {blk}.')
                 start_time = time.time()
                 for file in temp_files:
@@ -232,10 +240,11 @@ def main(config):
             torch.cuda.empty_cache()
             print(f'Downloading masks for blocks: {all_sync_blocks} in {time.time() - full_sync_start_time} seconds')
                   
-            # Load up a block from the past.
+            # Select the block to produce a mask for.
             next_upload_block = subtensor.block - 1
             
-            # Get current block page for miner.
+            # Get the pages for this block and my_uid.
+            # This is global and deterministic
             print ('Page loading:')
             start_time = time.time()  # Start timing
             pages = SubsetFineWebEdu2Loader.next_pages(
@@ -249,9 +258,9 @@ def main(config):
                 pages_info = pages,
                 tokenizer = hparams.tokenizer
             )
-            print(f'Page loading completed in {time.time() - start_time} seconds')  # Print timing after this step
+            print(f'Page loading completed in {time.time() - start_time} seconds')
             
-            # Train model on page.
+            # Train my model on the current page.
             print ('Training:')
             start_time = time.time()  # Start timing
             optimizer.zero_grad()
@@ -270,11 +279,10 @@ def main(config):
                 del input_ids, labels, outputs
                 torch.cuda.empty_cache()  
             optimizer.step()
-            # dont even upload we didnt train.
             if config.use_wandb: wandb.log( { "step_loss": float( avg_loss / (idx+1) ) })
-            print(f'Training completed in {time.time() - start_time} seconds')  # Print timing after this step
+            print(f'Training completed in {time.time() - start_time} seconds')
             
-            # Get mask for the upload block.
+            # Get the proper mask for my upload block + page.
             print(f'Creating upload mask:')
             start_time = time.time()  # Start timing
             upload_mask = {}
@@ -283,8 +291,9 @@ def main(config):
                 param = param.to(config.device)
                 next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
                 upload_mask[name] = next_mask
-            print(f'Creating upload block mask completed in {time.time() - start_time} seconds')  # Print timing after this step
-                            
+            print(f'Creating upload block mask completed in {time.time() - start_time} seconds')
+            
+            # Mask the model values given the mask and produce a state dict.                
             print('Apply upload mask to model:')
             model_state_dict = model.state_dict()
             for name, param in model.named_parameters():
@@ -294,9 +303,9 @@ def main(config):
                 unmasked_indices = mask_flat.nonzero(as_tuple=False).flatten()
                 unmasked_params = param_flat[unmasked_indices]
                 model_state_dict[name] = {'values': unmasked_params}
-            print(f'Applied mask to model completed in: {time.time() - start_time} seconds')  # Print timing after this step
+            print(f'Applied mask to model completed in: {time.time() - start_time} seconds')
 
-            # Upload the masked weights.
+            # Upload the state dict of my masked weights.
             print('Uploading mask:')
             start_time = time.time()
             upload_filename = f'mask-{wallet.hotkey.ss58_address}-{next_upload_block}.pt'
@@ -313,6 +322,7 @@ def main(config):
             upload_history.append(upload_filename)
             print(f'Uploading mask completed in {time.time() - start_time} seconds')
 
+            # Delete old mask files and clean.
             print('Deleting history:')
             start_time = time.time()
             if len(upload_history) > 5:
