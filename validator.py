@@ -15,6 +15,7 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+import io
 import os
 import json
 import copy
@@ -92,7 +93,7 @@ def main(config):
     model.to(config.device)  # TODO: Ensure 'device' is defined in config
         
     # Start.
-    last_mask_sync = 0
+    last_mask_sync = subtensor.block
     while True:
         try:
             print('Loading chain state:')
