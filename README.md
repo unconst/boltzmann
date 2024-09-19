@@ -9,6 +9,8 @@ Miners upload masks of their models using a distro distributed training regime s
 The valdiators measure the loss difference between the model with these updates applied and withe the updates removed.
 There are various corner cases remaining to make this work but generally the structure is here. Good luck!
 
+NOTE: you need a fairly large machine (H100 recommended) to run either the validator or miner.
+
 # Step 1.
   - Create an S3 <Bucket> on AWS and add export your AWS API Key.
   - Make sure to set the most permissive access to your bucket.
