@@ -217,7 +217,7 @@ def main(config):
                 print ( 'block', block, 'Loss', outputs.loss.item() )
                 del input_ids, labels, outputs
                 torch.cuda.empty_cache()  
-                if block >= next_upload_block - 1:
+                if block >= next_upload_block - 2:
                     print (f'Break training on {block} with next upload: {next_upload_block}')
                     break
 
@@ -269,7 +269,7 @@ if __name__ == "__main__":
     parser.add_argument('--name', type=str, default=None, help='Optional miner name')
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network UID.')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
-    parser.add_argument('--batch_size', type=int, default=4, help='Training batch size')
+    parser.add_argument('--batch_size', type=int, default=1, help='Training batch size')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate for the optimizer')
     parser.add_argument('--optimizer_beta1', type=float, default=0.9, help='Beta1 for the optimizer')
     parser.add_argument('--optimizer_beta2', type=float, default=0.95, help='Beta2 for the optimizer')
