@@ -1,3 +1,4 @@
+# Creates Alice wallets with Alice, Bob, Dave, Charlie, Eve and Ferdie hotkeys.
 echo " Create wallets if not existent"
 for name in Alice Bob Charlie Dave Eve Ferdie
 do
@@ -17,14 +18,15 @@ pm2 sendSignal SIGINT all
 pm2 delete all
 
 # Delete items from bucket
-python3 clean.py
+BUCKET=${1:-decis}
+python3 tools/clean.py --bucket $BUCKET
 
 # Start all the processes again.
-pm2 start validator.py --interpreter python3 --name V1 -- --wallet.name Alice --wallet.hotkey Alice --subtensor.network test --device cuda:0 --use_wandb
-pm2 start miner.py --interpreter python3 --name M1 -- --wallet.name Alice --wallet.hotkey Bob --subtensor.network test --device cuda:1 --use_wandb 
-pm2 start miner.py --interpreter python3 --name M2 -- --wallet.name Alice --wallet.hotkey Charlie --subtensor.network test --device cuda:2 --use_wandb
-pm2 start miner.py --interpreter python3 --name M3 -- --wallet.name Alice --wallet.hotkey Dave --subtensor.network test --device cuda:3 --use_wandb
-pm2 start miner.py --interpreter python3 --name M4 -- --wallet.name Alice --wallet.hotkey Eve --subtensor.network test --device cuda:5 --use_wandb
+pm2 start validator.py --interpreter python3 --name V1 -- --wallet.name Alice --wallet.hotkey Alice --bucket $BUCKET --device cuda:0 --use_wandb
+pm2 start miner.py --interpreter python3 --name M1 -- --wallet.name Alice --wallet.hotkey Bob --bucket $BUCKET --device cuda:1 --use_wandb 
+pm2 start miner.py --interpreter python3 --name M2 -- --wallet.name Alice --wallet.hotkey Charlie --bucket $BUCKET --device cuda:2 --use_wandb
+pm2 start miner.py --interpreter python3 --name M3 -- --wallet.name Alice --wallet.hotkey Dave --bucket $BUCKET --device cuda:3 --use_wandb
+pm2 start miner.py --interpreter python3 --name M4 -- --wallet.name Alice --wallet.hotkey Eve --bucket $BUCKET --device cuda:5 --use_wandb
 
 
 
