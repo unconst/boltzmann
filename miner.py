@@ -136,6 +136,15 @@ def main(config):
             last_mask_sync = block
             print(f'Getting block completed in {time.time() - start_time} seconds')
             
+            # Get buckets per uid if needs update.
+            if 'buckets' not in locals() or len(buckets) != len(metagraph.uids):
+                buckets = []
+                for uid in metagraph.uids:
+                    try:
+                        buckets.append( subtensor.get_commitment(config.netuid, uid) )
+                    except:
+                        buckets.append( None )
+            
             # Get the mask for all sync blocks.
             print(f'Downloading masks for blocks: {all_sync_blocks}') 
             full_sync_start_time = time.time()
@@ -144,13 +153,7 @@ def main(config):
                 # Pull the filenames + buckets for all miners.
                 print (f'Getting filenames for blk: {blk} ...')
                 start_time = time.time()
-                if 'buckets' not in locals():
-                    buckets = []
-                    for uid in metagraph.uids:
-                        buckets.append( subtensor.get_commitment(config.netuid, uid) )
-                mask_filenames = []
-                for uid in metagraph.uids:
-                    mask_filenames.append( f"mask-{str(metagraph.hotkeys[uid])}-{blk}.pt" )
+                mask_filenames = [ f"mask-{str(metagraph.hotkeys[uid])}-{blk}.pt" for uid in  metagraph.uids ]
                 print(f'Get filenames completed in {time.time() - start_time} seconds')
 
                 # Download the masks from all valid files
@@ -160,6 +163,7 @@ def main(config):
                 n_downloaded = 0
                 def download_file( bucket, filename ):
                     try:
+                        if bucket == None: return None
                         unique_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
                         CLIENT.download_file(bucket, filename, unique_temp_file)
                         return unique_temp_file

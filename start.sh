@@ -44,6 +44,7 @@ pm2 start miner.py --interpreter python3 --name M1 -- --wallet.name Alice --wall
 pm2 start miner.py --interpreter python3 --name M2 -- --wallet.name Alice --wallet.hotkey Charlie --bucket $BUCKET --device cuda:2 --use_wandb
 pm2 start miner.py --interpreter python3 --name M3 -- --wallet.name Alice --wallet.hotkey Dave --bucket $BUCKET --device cuda:3 --use_wandb
 pm2 start miner.py --interpreter python3 --name M4 -- --wallet.name Alice --wallet.hotkey Eve --bucket $BUCKET --device cuda:5 --use_wandb
+pm2 start miner.py --interpreter python3 --name M5 -- --wallet.name Alice --wallet.hotkey Ferdie --bucket $BUCKET --device cuda:6 --use_wandb
 
 
 
