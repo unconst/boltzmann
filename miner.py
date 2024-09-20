@@ -26,16 +26,20 @@ import tempfile
 import argparse
 import traceback
 import numpy as np
+from tqdm import tqdm
 import bittensor as bt
 import concurrent.futures  
 import torch.optim as optim
-from tqdm import tqdm
 from typing import List, Tuple
 from dotenv import dotenv_values
 from transformers import LlamaForCausalLM 
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from hparams import load_hparams
 from dataset import SubsetFineWebEdu2Loader
+
+# Enable cuDNN benchmark for optimized performance
+torch.backends.cudnn.benchmark = True
 
 # Instantiate the AWS S3 client.
 env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
@@ -86,7 +90,7 @@ def main(config):
         try:    
             
             # Sync the current chain state and hparams.
-            print ('Loading chain state:')
+            print ('Loading chain state ...')
             start_time = time.time()
             hparams = load_hparams()
             subtensor = bt.subtensor(config=config)
@@ -94,7 +98,7 @@ def main(config):
             print(f'Loading chain state completed in {time.time() - start_time} seconds') 
             
             # Sync the full model state every hparams.epoch_length
-            print(f'Checking epoch sync:') 
+            print(f'Checking epoch sync ...') 
             start_time = time.time() 
             if model == None or subtensor.block - last_master_sync > hparams.epoch_length:
                 try:
@@ -115,16 +119,17 @@ def main(config):
                         betas = ( config.optimizer_beta1, config.optimizer_beta2 ), # B1 and B2
                         weight_decay = config.optimizer_weight_decay  # Weight decay
                     )
-                    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=hparams.epoch_length, gamma=0.1)
+                    scaler = torch.cuda.amp.GradScaler()
+                    scheduler = CosineAnnealingLR( optimizer, T_max = hparams.epoch_length, eta_min=4e-5, last_epoch=-1 )
                     last_master_sync = subtensor.block 
                     last_mask_sync = last_master_sync
                 except Exception as e:
-                    print (f'No master. Waiting ...')
+                    print (f'No master:{e} Waiting ...')
                     time.sleep(12)
                     continue
             print(f'Checking epoch sync: completed in {time.time() - start_time} seconds') 
             
-            print(f'Getting block state:')
+            print(f'Getting block state ...')
             start_time = time.time()  # Start timing
             block = subtensor.block
             all_sync_blocks = [ last_mask_sync + i + 1 for i in range( block - last_mask_sync )]
@@ -137,7 +142,7 @@ def main(config):
             for blk in all_sync_blocks:
                 
                 # Pull the filenames + buckets for all miners.
-                print (f'Getting filenames for blk: {blk}...')
+                print (f'Getting filenames for blk: {blk} ...')
                 start_time = time.time()
                 if 'buckets' not in locals():
                     buckets = []
@@ -149,7 +154,7 @@ def main(config):
                 print(f'Get filenames completed in {time.time() - start_time} seconds')
             
                 # Download the masks from all valid files
-                print(f'Downloading mask for blk: {blk}:')
+                print(f'Downloading mask for blk: {blk} ... ')
                 start_time = time.time()
                 temp_files = []
                 n_downloaded = 0
@@ -174,7 +179,7 @@ def main(config):
                     continue
                 
                 # Init the mask indicies using the block number.
-                print(f'Creating sync mask for block: {blk}')
+                print(f'Creating sync mask for block: {blk} ...')
                 mask_indices = {}
                 torch.manual_seed( blk )
                 start_time = time.time()
@@ -186,7 +191,7 @@ def main(config):
                 print(f'Creating sync block mask completed in {time.time() - start_time} seconds')
             
                 # Load all masks as state dicts.
-                print (f'Loading state dicts for block: {blk}:')
+                print (f'Loading state dicts for block: {blk} ...')
                 start_time = time.time()
                 mask_count = 0
                 masks_dicts_values = {}
@@ -208,14 +213,14 @@ def main(config):
                 print(f'Loading state dicts completed in {time.time() - start_time} seconds')
                 
                 # Average the masks before applying.
-                print (f'Averaging {mask_count} masks for block: {blk}')
+                print (f'Averaging {mask_count} masks for block: {blk} ...')
                 start_time = time.time()
                 for key in masks_dicts_values.keys():
                     masks_dicts_values[key] /= mask_count
                 print(f'Averaged state dicts in {time.time() - start_time} seconds')
                 
                 # Set the average into the model.
-                print(f'Applying {mask_count} masks for block: {blk}:')
+                print(f'Applying {mask_count} masks for block: {blk} ...')
                 start_time = time.time()  # Start timing
                 for name, param in model.named_parameters():
                     indices = mask_indices[name]
@@ -229,11 +234,17 @@ def main(config):
                             del on_device, param_flat
                         else:
                             print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
-                del masks_dicts_values
+                for key in masks_dicts_values.keys():
+                    masks_dicts_values[key].cpu()
+                    del masks_dicts_values[key]
+                for key in mask_indices.keys():
+                    mask_indices[key] = mask_indices[key].cpu()
+                    del mask_indices[key]
+                del mask_indices, masks_dicts_values
                 print(f'Applying {mask_count} masks completed in {time.time() - start_time} seconds')
                 
                 # Delete files and clean up.
-                print (f'Deleting files for block: {blk}.')
+                print (f'Deleting files for block: {blk} ...')
                 start_time = time.time()
                 for file in temp_files:
                     os.remove(file)
@@ -248,56 +259,78 @@ def main(config):
             
             # Get the pages for this block and my_uid.
             # This is global and deterministic
-            print ('Page loading:')
+            n_pages = int(config.desired_batch_size * 0.01)
+            print (f'Loading {n_pages} pages ...')
             start_time = time.time()  # Start timing
             pages = SubsetFineWebEdu2Loader.next_pages(
                 offset = next_upload_block,
-                n_pages = 1,
+                n_pages = n_pages,
                 seed = my_uid 
             )
             dataset = SubsetFineWebEdu2Loader(
-                batch_size = config.batch_size,
+                batch_size = config.actual_batch_size,
                 sequence_length = hparams.sequence_length,
                 pages_info = pages,
                 tokenizer = hparams.tokenizer
             )
-            print(f'Page loading completed in {time.time() - start_time} seconds')
+            print(f'Loading {n_pages} pages completed in {time.time() - start_time} seconds')
             
             # Train my model on the current page.
-            print ('Training:')
+            torch.cuda.empty_cache() # Empty cache going into the training step.
             start_time = time.time()  # Start timing
             optimizer.zero_grad()
-            avg_loss = 0
-            n_batches = int( len(dataset.buffer) / (hparams.sequence_length * config.batch_size) )
-            for idx, batch in enumerate(tqdm(dataset)):
+            total_loss = 0.0
+            total_steps = config.desired_batch_size // config.actual_batch_size
+            progress_bar = tqdm(total=total_steps, desc="Training:")
+            for idx, batch in enumerate(dataset):
                 input_ids = torch.tensor(batch, dtype=torch.long).to(model.device)
                 labels = input_ids.clone()
                 labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
-                outputs = model(input_ids = input_ids, labels=labels)
-                loss = outputs.loss / n_batches
-                loss.backward()
-                avg_loss += outputs.loss.item()
-                del input_ids, labels, outputs
-                torch.cuda.empty_cache()  
-            optimizer.step()
-            if config.use_wandb: wandb.log( { "step_loss": float( avg_loss / (idx+1) ) })
-            if config.use_wandb: wandb.log( { f"incentive{ my_uid }": float( metagraph.I[my_uid] ) })
-
-            print(f'Training completed in {time.time() - start_time} seconds')
+                with torch.amp.autocast( device_type = model.device.type, dtype = torch.float16 ):  # Enable autocasting for mixed precision
+                    outputs = model(input_ids = input_ids, labels=labels)
+                total_loss += outputs.loss.item()
+                scaler.scale( outputs.loss ).backward()
+                progress_bar.update(1)  # Update the progress bar
+                if idx >= total_steps - 1:
+                    break
+            progress_bar.close()  # Close the progress bar
+            
+            scaler.step(optimizer)  # Unscale the gradients and step the optimizer
+            scaler.update()  # Update the scaler for next iteration
+            scheduler.step()  # Update the learning rate.
+            
+            # Clean lingering objects
+            del input_ids, labels, outputs
+            torch.cuda.empty_cache() # Empty cache at end of step.
+            
+            # Calculate and print average loss
+            average_loss = total_loss / total_steps
+            print('loss:', average_loss, 'learning_rate:', scheduler.get_last_lr()[0])
+            if config.use_wandb:
+                wandb.log({
+                    "step_loss": average_loss,
+                    "learning_rate": scheduler.get_last_lr()[0],
+                    f"incentive{my_uid}": float(metagraph.I[my_uid])
+                })
+            total_time = time.time() - start_time
+            print(f'Training completed in {total_time} seconds')
+            print(f'Steps per second: {total_steps / total_time}')
+            print(f'Batches per second: {config.actual_batch_size * total_steps / total_time}')
+            print(f'Tokens per second: {hparams.sequence_length * config.actual_batch_size * total_steps / total_time}')
             
             # Get the proper mask for my upload block + page.
-            print(f'Creating upload mask:')
+            print(f'Creating upload mask ...')
             start_time = time.time()  # Start timing
             upload_mask = {}
             torch.manual_seed(next_upload_block)  # Seed torch's random generator with the upload block.
             for name, param in model.named_parameters():
                 param = param.to(config.device)
                 next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
-                upload_mask[name] = next_mask
+                upload_mask[name] = next_mask.to('cpu')
             print(f'Creating upload block mask completed in {time.time() - start_time} seconds')
             
             # Mask the model values given the mask and produce a state dict.                
-            print('Apply upload mask to model:')
+            print('Apply upload mask to model ...')
             model_state_dict = model.state_dict()
             for name, param in model.named_parameters():
                 param_mask = upload_mask[name].to(param.device)
@@ -305,11 +338,13 @@ def main(config):
                 mask_flat = param_mask.flatten()
                 unmasked_indices = mask_flat.nonzero(as_tuple=False).flatten()
                 unmasked_params = param_flat[unmasked_indices]
-                model_state_dict[name] = {'values': unmasked_params}
+                model_state_dict[name] = {'values': unmasked_params.to('cpu')}
+                del unmasked_indices
+            del upload_mask
             print(f'Applied mask to model completed in: {time.time() - start_time} seconds')
 
             # Upload the state dict of my masked weights.
-            print('Uploading mask:')
+            print('Uploading mask ...')
             start_time = time.time()
             upload_filename = f'mask-{wallet.hotkey.ss58_address}-{next_upload_block}.pt'
             with io.BytesIO() as module_buffer:
@@ -326,7 +361,7 @@ def main(config):
             print(f'Uploading mask completed in {time.time() - start_time} seconds')
 
             # Delete old mask files and clean.
-            print('Deleting history:')
+            print('Deleting history ...')
             start_time = time.time()
             if len(upload_history) > 5:
                 to_delete = upload_history.pop(0)
@@ -351,8 +386,9 @@ if __name__ == "__main__":
     parser.add_argument('--name', type=str, default=None, help='Optional miner name')
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network UID.')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
-    parser.add_argument('--batch_size', type=int, default=1, help='Training batch size')
-    parser.add_argument('--learning_rate', type=float, default=0.00001, help='Learning rate for the optimizer')
+    parser.add_argument('--desired_batch_size', type=int, default=512, help='Training batch size per step')
+    parser.add_argument('--actual_batch_size', type=int, default=9, help='Training batch size per accumulation.')
+    parser.add_argument('--learning_rate', type=float, default=4e-4, help='Learning rate for the optimizer')
     parser.add_argument('--optimizer_beta1', type=float, default=0.9, help='Beta1 for the optimizer')
     parser.add_argument('--optimizer_beta2', type=float, default=0.95, help='Beta2 for the optimizer')
     parser.add_argument('--optimizer_weight_decay', type=float, default=0.1, help='Weight decay for the optimizer')

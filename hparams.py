@@ -21,21 +21,21 @@ from transformers import AutoTokenizer, LlamaConfig
 def load_hparams() -> SimpleNamespace:
     hparams = {
         # Steps between full state syncing
-        'epoch_length': 2_000,
+        'epoch_length': 10_000,
         # Delta compression rate.
         'compression': 300,
         # Global sequence length
-        'sequence_length': 1024,
+        'sequence_length': 2048,
         # AutoTokenizer name.
         'tokenizer_name': 'gpt2',
-        # Size of the hidden layers in the model.
-        'hidden_size': 2040,
-        # Number of hidden layers in the model.
-        'num_hidden_layers': 12,
-        # Number of attention heads in the model.
-        'num_attention_heads': 12,
-        # Size of the intermediate (feed-forward) layer in the model.
-        'intermediate_size': 6144
+        # Model arch.
+        'num_hidden_layers': 16,         # Layers
+        'hidden_size': 2048,             # Hidden Size
+        'intermediate_size': 8192,       # Intermediate Size
+        'num_attention_heads': 8,        # Attention Heads
+        'num_key_value_heads': 8,        # Key/Value Heads
+        'activation_function': "swiGLU", # Activation Function
+        'max_position_embeddings': 2048, # Positional Embeddings (RoPE)
     }
     # Convert the dictionary to a SimpleNamespace
     hparams_ns = SimpleNamespace(**hparams)
@@ -47,5 +47,8 @@ def load_hparams() -> SimpleNamespace:
         num_hidden_layers = hparams_ns.num_hidden_layers,
         num_attention_heads = hparams_ns.num_attention_heads,
         intermediate_size = hparams_ns.intermediate_size,
+        num_key_value_heads = hparams_ns.num_key_value_heads,
+        activation_function = hparams_ns.activation_function,
+        max_position_embeddings = hparams_ns.max_position_embeddings,
     )
     return hparams_ns
