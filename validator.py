@@ -91,6 +91,8 @@ def main(config):
     model.to(config.device)
         
     # Start.
+    last_n = int(metagraph.n)
+    scores = torch.zeros( last_n, dtype = torch.float32 )
     last_mask_sync = subtensor.block
     while True:
         try:
@@ -121,7 +123,7 @@ def main(config):
                 # Get mask file names for all miners for this block.
                 print(f'Getting filenames for blk: {blk}...')
                 start_time = time.time()
-                if 'buckets' not in locals():
+                if 'buckets' not in locals() or metagraph.n != len( buckets ):
                     buckets = []
                     for uid in metagraph.uids:
                         buckets.append(subtensor.get_commitment(config.netuid, uid))
@@ -301,10 +303,9 @@ def main(config):
             print(f'Evaluating with mask completed in {time.time() - start_time} seconds')
             
             # Compute the miner score for their mask.
-            if uid_to_eval in scores:
-                scores[uid_to_eval] = 0.1 * (with_avg_loss - without_avg_loss) + 0.9 * scores[uid_to_eval]
-            else:
-                scores[uid_to_eval] = 0.1 * (with_avg_loss - without_avg_loss)
+            if len(scores) < int(metagraph.n):
+                scores = torch.concat([scores, torch.zeros( int(metagraph.n) - len(scores), dtype=torch.float32)])
+            scores[uid_to_eval] = 0.1 * (with_avg_loss - without_avg_loss) + 0.9 * scores[uid_to_eval]
                 
             # Compute the weights
             non_zero_scores = scores[scores != 0]
