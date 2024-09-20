@@ -29,6 +29,7 @@ import traceback
 import numpy as np
 import bittensor as bt
 import concurrent.futures  
+from tqdm import tqdm
 from dotenv import dotenv_values
 from typing import Dict, Optional, List, Tuple
 from transformers import LlamaForCausalLM 
@@ -77,7 +78,6 @@ def main(config):
         run = wandb.init(project='cont', resume='allow', name=f'V{my_uid}', config=config)
         
     # Init the master model
-    upload_history = []
     hparams = load_hparams()
     model = LlamaForCausalLM(config=hparams.model_config) 
     if not config.restart: 
@@ -90,7 +90,6 @@ def main(config):
             CLIENT.download_file(config.bucket, master_filename, unique_temp_file)
             master_state_dict = torch.load(unique_temp_file, map_location='cpu', weights_only=True)
             model.load_state_dict(master_state_dict)
-            upload_history.append(master_filename)
             print(f'Loading master state completed in {time.time() - start_time} seconds.') 
         except Exception as e:
             raise ValueError("There is no master to continue from. Run with --restart")
@@ -148,7 +147,8 @@ def main(config):
                         unique_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
                         CLIENT.download_file(bucket, filename, unique_temp_file)
                         return (uid, unique_temp_file)
-                    except:
+                    except Exception as e:
+                        # File does not exist.
                         return None
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     futures = [executor.submit(download_file, bucket, uid, filename) for bucket, (uid, filename) in zip(buckets, mask_filenames)]
@@ -161,6 +161,7 @@ def main(config):
                 
                 # Break the loop when there is nothing to download.
                 if n_downloaded == 0:
+                    print (f'Downloaded no valid masks for block: {blk}. Continue ... ')
                     continue
                 
                 # Init the mask for this block.
@@ -179,6 +180,7 @@ def main(config):
                 print(f'Loading state dicts for block: {blk} ...')
                 start_time = time.time()
                 mask_count = 0
+                masks_dicts_values = {}
                 for uid, file in temp_files:
                     masks_per_block_per_uid[ blk ][ uid ] = {}
                     mask = torch.load(file, map_location='cpu', weights_only=True)
@@ -227,13 +229,13 @@ def main(config):
                 # Delete files and clean state.
                 print(f'Deleting files for block: {blk} ...')
                 start_time = time.time()
-                for file in temp_files:
+                for uid, file in temp_files:
                     os.remove(file)
                 print(f'Deleting files completed in {time.time() - start_time} seconds')
                 
             # Finish syncing masks.
             torch.cuda.empty_cache()
-            print(f'Downloading masks for blocks: {all_sync_blocks} in {time.time() - full_sync_start_time} seconds.')
+            print(f'Finished downloading masks for blocks: {all_sync_blocks} in {time.time() - full_sync_start_time} seconds.')
             
             # Upload a full copy of the model weights to master
             print('Uploading master ...')
@@ -250,16 +252,8 @@ def main(config):
                 GrantRead='uri="http://acs.amazonaws.com/groups/global/AllUsers"',
                 GrantReadACP='uri="http://acs.amazonaws.com/groups/global/AllUsers"'
             )
-            upload_history.append(upload_filename)
             print(f'Uploading master completed in {time.time() - start_time} seconds.')
-
-            # Clean old master states.
-            print('Deleting history ...')
-            start_time = time.time()
-            if len(upload_history) > 5:
-                CLIENT.delete_object(Bucket=config.bucket, Key=upload_history.pop(0))
-            print(f'Deleting history completed in {time.time() - start_time} seconds.')
-
+        
             block_to_eval = None
             if len(list(masks_per_block_per_uid.keys())) == 0:
                 print ('No masks to eval. Continue ...')
@@ -281,7 +275,7 @@ def main(config):
             start_time = time.time()  # Start timing
             pages = SubsetFineWebEdu2Loader.next_pages(
                 offset=block_to_eval,
-                n_pages=1,
+                n_pages=3,
                 seed=uid_to_eval
             )
             dataset = SubsetFineWebEdu2Loader(
@@ -349,9 +343,9 @@ def main(config):
                 scores = torch.concat([scores, torch.zeros( int(metagraph.n) - len(scores), dtype=torch.float32)])
             scores[uid_to_eval] = 0.1 * (with_avg_loss - without_avg_loss) + 0.9 * scores[uid_to_eval]
             # Compute the weights
-            non_zero_scores = scores[scores != 0]
+            non_zero_indices = scores.nonzero(as_tuple=False).flatten()
             weights = torch.zeros_like(scores, dtype=torch.float32)
-            weights[non_zero_scores] = torch.softmax(non_zero_scores, dim=0)
+            weights[non_zero_indices] = torch.softmax(scores[non_zero_indices], dim=0)
             print ('scores', scores.tolist())
             print ('weights', weights.tolist())
             print(f'Computing weights completed in {time.time() - start_time} seconds.')
@@ -385,7 +379,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Validator script')
     parser.add_argument('--name', type=str, default=None, help='Optional name')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
-    parser.add_argument('--batch_size', type=int, default=1, help='Batch size for eval.')
+    parser.add_argument('--batch_size', type=int, default=4, help='Batch size for eval.')
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network uid.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')

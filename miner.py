@@ -132,7 +132,7 @@ def main(config):
             print(f'Getting block state ...')
             start_time = time.time()  # Start timing
             block = subtensor.block
-            all_sync_blocks = [ last_mask_sync + i + 1 for i in range( block - last_mask_sync )]
+            all_sync_blocks = list(range(last_mask_sync - 2, block + 1))
             last_mask_sync = block
             print(f'Getting block completed in {time.time() - start_time} seconds')
             
@@ -152,7 +152,7 @@ def main(config):
                 for uid in metagraph.uids:
                     mask_filenames.append( f"mask-{str(metagraph.hotkeys[uid])}-{blk}.pt" )
                 print(f'Get filenames completed in {time.time() - start_time} seconds')
-            
+
                 # Download the masks from all valid files
                 print(f'Downloading mask for blk: {blk} ... ')
                 start_time = time.time()
@@ -236,10 +236,8 @@ def main(config):
                             print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
                 for key in masks_dicts_values.keys():
                     masks_dicts_values[key].cpu()
-                    del masks_dicts_values[key]
                 for key in mask_indices.keys():
                     mask_indices[key] = mask_indices[key].cpu()
-                    del mask_indices[key]
                 del mask_indices, masks_dicts_values
                 print(f'Applying {mask_count} masks completed in {time.time() - start_time} seconds')
                 
@@ -247,23 +245,20 @@ def main(config):
                 print (f'Deleting files for block: {blk} ...')
                 start_time = time.time()
                 for file in temp_files:
-                    os.remove(file)
+                    os.remove(file[1])
                 print(f'Deleting files completed in {time.time() - start_time} seconds')
                 
             # Print completion
             torch.cuda.empty_cache()
             print(f'Downloading masks for blocks: {all_sync_blocks} in {time.time() - full_sync_start_time} seconds')
-                  
-            # Select the block to produce a mask for.
-            next_upload_block = subtensor.block - 1
-            
+                              
             # Get the pages for this block and my_uid.
             # This is global and deterministic
-            n_pages = int(config.desired_batch_size * 0.01)
+            n_pages = max(1, int(config.desired_batch_size * 0.01))
             print (f'Loading {n_pages} pages ...')
             start_time = time.time()  # Start timing
             pages = SubsetFineWebEdu2Loader.next_pages(
-                offset = next_upload_block,
+                offset = subtensor.block + n_pages,
                 n_pages = n_pages,
                 seed = my_uid 
             )
@@ -295,9 +290,13 @@ def main(config):
                     break
             progress_bar.close()  # Close the progress bar
             
-            scaler.step(optimizer)  # Unscale the gradients and step the optimizer
-            scaler.update()  # Update the scaler for next iteration
-            scheduler.step()  # Update the learning rate.
+            # Try step with error handling.
+            try:
+                scaler.step(optimizer)  # Unscale the gradients and step the optimizer
+                scaler.update()  # Update the scaler for next iteration
+                scheduler.step()  # Update the learning rate.
+            except AssertionError as e:
+                print(f"An error occurred during the optimizer step: {e}")
             
             # Clean lingering objects
             del input_ids, labels, outputs
@@ -317,6 +316,9 @@ def main(config):
             print(f'Steps per second: {total_steps / total_time}')
             print(f'Batches per second: {config.actual_batch_size * total_steps / total_time}')
             print(f'Tokens per second: {hparams.sequence_length * config.actual_batch_size * total_steps / total_time}')
+            
+            # Select the block to produce a mask for.
+            next_upload_block = subtensor.block
             
             # Get the proper mask for my upload block + page.
             print(f'Creating upload mask ...')
@@ -358,7 +360,7 @@ def main(config):
                 GrantReadACP='uri="http://acs.amazonaws.com/groups/global/AllUsers"'
             )
             upload_history.append(upload_filename)
-            print(f'Uploading mask completed in {time.time() - start_time} seconds')
+            print(f'Uploading mask to: {upload_filename} completed in {time.time() - start_time} seconds')
 
             # Delete old mask files and clean.
             print('Deleting history ...')
