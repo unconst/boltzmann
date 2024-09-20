@@ -245,7 +245,7 @@ def main(config):
                 print (f'Deleting files for block: {blk} ...')
                 start_time = time.time()
                 for file in temp_files:
-                    os.remove(file[1])
+                    os.remove(file)
                 print(f'Deleting files completed in {time.time() - start_time} seconds')
                 
             # Print completion
