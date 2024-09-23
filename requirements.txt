@@ -27,3 +27,4 @@ wandb
 typer
 numpy
 flash-attn
+packaging
