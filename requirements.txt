@@ -26,3 +26,4 @@ torchvision
 wandb
 typer
 numpy
+flash-attn
