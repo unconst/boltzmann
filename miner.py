@@ -140,10 +140,8 @@ def main(config):
             if 'buckets' not in locals() or len(buckets) != len(metagraph.uids):
                 buckets = []
                 for uid in metagraph.uids:
-                    try:
-                        buckets.append( subtensor.get_commitment(config.netuid, uid) )
-                    except:
-                        buckets.append( None )
+                    try: buckets.append( subtensor.get_commitment(config.netuid, uid) )
+                    except: buckets.append( None )
             
             # Get the mask for all sync blocks.
             print(f'Downloading masks for blocks: {all_sync_blocks}') 
