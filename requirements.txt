@@ -26,5 +26,6 @@ torchvision
 wandb
 typer
 numpy
-flash-attn
 packaging
+flash-attn
+
