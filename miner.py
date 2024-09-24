@@ -150,6 +150,8 @@ def main(config):
             all_sync_blocks = list(range(last_mask_sync - 2, block + 1))
             # This fast forwards us to the block which shares no ids with the previous block.
             # If we don't do this fast forward, then we will be downloading the same masks multiple times.
+            # TODO (const) consider if we should just remember the last mask id and download all masks for that id.
+            # Or if we should just redownload an apply the same masks.
             last_mask_sync = (block_to_mask_id(block) + 1) * hparams.blocks_per_mask
             print(f'Getting block completed in {time.time() - start_time} seconds')
 
@@ -165,6 +167,7 @@ def main(config):
             # For each bucket, get all files that need to be synced.
             print(f'Getting masks names for blocks: {all_sync_blocks} and buckets: {set(buckets)}')
             num_valid_masks = 0
+            start_time = time.time()
             mask_filenames_per_mask_id = {block_to_mask_id(blk): [] for blk in all_sync_blocks}
             for bucket in list(set(buckets)):
                 if bucket is None:
@@ -179,11 +182,15 @@ def main(config):
                         if int(blk) in all_sync_blocks:
                             mask_filenames_per_mask_id[block_to_mask_id(int(blk))].append({'bucket': bucket, 'hotkey': hotkey, 'filename': obj['Key']})
                             num_valid_masks += 1
+            print(f'Getting masks names for blocks: {all_sync_blocks} completed in {time.time() - start_time} seconds')
 
             # Get the mask for mask_ids.
             print(f'Downloading {num_valid_masks} masks for: {all_sync_blocks}')
             full_sync_start_time = time.time()
+            masks_per_id_per_uid = {}
+            mask_count_per_id = {}
             for mask_id in mask_filenames_per_mask_id.keys():
+                masks_per_id_per_uid[ blk ] = {}
                 # Get the number of masks for this step.
                 num_masks_for_mask_id = len(mask_filenames_per_mask_id[mask_id])
                 if num_masks_for_mask_id == 0:
@@ -194,7 +201,6 @@ def main(config):
                 start_time = time.time()
                 temp_files = []
                 n_downloaded = 0
-
                 def download_file(mask_info):
                     try:
                         unique_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
@@ -234,6 +240,7 @@ def main(config):
                 mask_count = 0
                 masks_dicts_values = {}
                 for file in temp_files:
+                    masks_per_id_per_uid[ blk ][ uid ] = {}
                     mask = torch.load(file, map_location='cpu')
                     mask_count += 1
                     for name in mask.keys():
@@ -244,10 +251,12 @@ def main(config):
                         indices = mask_indices[name]
                         decompressed = torch.zeros(param_shape, device='cpu').flatten()
                         decompressed[indices] = mask_values
+                        masks_per_id_per_uid[ blk ][ uid ][ name ] = decompressed.view(param_shape)
                         if name not in masks_dicts_values:
                             masks_dicts_values[name] = decompressed.view(param_shape)
                         else:
                             masks_dicts_values[name] += decompressed.view(param_shape)
+                mask_count_per_id[ mask_id ] = mask_count
                 print(f'Loading state dicts completed in {time.time() - start_time} seconds')
 
                 # Average the masks before applying.
@@ -289,13 +298,14 @@ def main(config):
             # Print completion
             torch.cuda.empty_cache()
             print(f'Downloading masks for blocks: {all_sync_blocks} and mask_ids: {mask_filenames_per_mask_id.keys()} in {time.time() - full_sync_start_time} seconds')
+            
             # Get the pages for this block and my_uid.
             # This is global and deterministic
             n_pages = max(1, int(hparams.desired_batch_size * 0.01))
             print (f'Loading {n_pages} pages ...')
             start_time = time.time()  # Start timing
             pages = SubsetFineWebEdu2Loader.next_pages(
-                offset = subtensor.block + n_pages,
+                offset = subtensor.block,
                 n_pages = n_pages,
                 seed = my_uid 
             )

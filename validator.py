@@ -109,107 +109,135 @@ def main(config):
             metagraph = subtensor.metagraph(netuid=config.netuid)
             print(f'Loading chain state completed in {time.time() - start_time} seconds.') 
             
-            # Get blocks since my latest sync step.
-            print('Getting blocks to sync ...')
-            start_time = time.time() 
+            # Function which maps from block to mask_id such that multiple blocks share the same mask id.
+            # This is used to ensure that the model is not updated too frequently and that the mask is shared.
+            # for multiple updates which fall across multiple blocks.
+            def block_to_mask_id(block: int) -> int:
+                return int(block / hparams.blocks_per_mask)
+
+            print(f'Getting block state ...')
+            start_time = time.time()  # Start timing
             block = subtensor.block
-            all_sync_blocks = [last_mask_sync + i + 1 for i in range(block - last_mask_sync)]
-            last_mask_sync = block
-            print(f'Getting blocks to sync completed in {time.time() - start_time} seconds.')
-        
-            # For each missed block, pull all miner masks and add to state.
-            print(f'Downloading masks for blocks: {all_sync_blocks} ...') 
-            full_sync_start_time = time.time()
-            masks_per_block_per_uid = {}
-            mask_count_per_block = {}
-            for blk in all_sync_blocks:
-                masks_per_block_per_uid[ blk ] = {}
-                
-                # Get mask file names for all miners for this block.
-                print(f'Getting filenames for blk: {blk} ...')
-                start_time = time.time()
-                if 'buckets' not in locals() or metagraph.n != len( buckets ):
-                    buckets = []
-                    for uid in metagraph.uids:
-                        buckets.append(subtensor.get_commitment(config.netuid, uid))
-                mask_filenames = []
+            all_sync_blocks = list(range(last_mask_sync - 2, block + 1))
+            # This fast forwards us to the block which shares no ids with the previous block.
+            # If we don't do this fast forward, then we will be downloading the same masks multiple times.
+            # TODO (const) consider if we should just remember the last mask id and download all masks for that id.
+            # Or if we should just redownload an apply the same masks.
+            last_mask_sync = (block_to_mask_id(block) + 1) * hparams.blocks_per_mask
+            print(f'Getting block completed in {time.time() - start_time} seconds')
+            # Get buckets per uid if needs update.
+            if 'buckets' not in locals() or len(buckets) != len(metagraph.uids):
+                buckets = []
                 for uid in metagraph.uids:
-                    mask_filenames.append((uid, f"mask-{str(metagraph.hotkeys[uid])}-{blk}.pt"))
-                print(f'Get filenames completed in {time.time() - start_time} seconds.')
-            
-                # Download each of the filenames in parallel
-                print(f'Downloading mask for blk: {blk} ...')
+                    try:
+                        buckets.append(subtensor.get_commitment(config.netuid, uid))
+                    except:
+                        buckets.append(None)
+
+            # For each bucket, get all files that need to be synced.
+            print(f'Getting masks names for blocks: {all_sync_blocks} and buckets: {set(buckets)}')
+            num_valid_masks = 0
+            start_time = time.time()
+            mask_filenames_per_mask_id = {block_to_mask_id(blk): [] for blk in all_sync_blocks}
+            for bucket in list(set(buckets)):
+                if bucket is None:
+                    continue
+                paginator = CLIENT.get_paginator('list_objects_v2')
+                page_iterator = paginator.paginate(Bucket=bucket, Prefix='mask-')
+                for page in page_iterator:
+                    if 'Contents' not in page:
+                        continue  # Filter not found
+                    for obj in page['Contents']:
+                        hotkey, blk = obj['Key'].split('-')[1], obj['Key'].split('-')[2].split('.')[0]
+                        if int(blk) in all_sync_blocks:
+                            mask_filenames_per_mask_id[block_to_mask_id(int(blk))].append({'bucket': bucket, 'hotkey': hotkey, 'filename': obj['Key']})
+                            num_valid_masks += 1
+            print(f'Getting masks names for blocks: {all_sync_blocks} completed in {time.time() - start_time} seconds')
+
+            # Get the mask for mask_ids.
+            print(f'Downloading {num_valid_masks} masks for: {all_sync_blocks}')
+            full_sync_start_time = time.time()
+            masks_per_id_per_uid = {}
+            mask_count_per_id = {}
+            for mask_id in mask_filenames_per_mask_id.keys():
+                masks_per_id_per_uid[ blk ] = {}
+                # Get the number of masks for this step.
+                num_masks_for_mask_id = len(mask_filenames_per_mask_id[mask_id])
+                if num_masks_for_mask_id == 0:
+                    continue
+
+                # Download the masks from all valid files
+                print(f'Downloading {num_masks_for_mask_id} mask for mask_id: {mask_id} ... ')
                 start_time = time.time()
                 temp_files = []
                 n_downloaded = 0
-                def download_file(bucket, uid, filename):
+                def download_file(mask_info):
                     try:
                         unique_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
-                        CLIENT.download_file(bucket, filename, unique_temp_file)
-                        return (uid, unique_temp_file)
-                    except Exception as e:
-                        # File does not exist.
+                        CLIENT.download_file(mask_info['bucket'], mask_info['filename'], unique_temp_file)
+                        return unique_temp_file
+                    except:
                         return None
+
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    futures = [executor.submit(download_file, bucket, uid, filename) for bucket, (uid, filename) in zip(buckets, mask_filenames)]
+                    futures = [executor.submit(download_file, mask_info) for mask_info in mask_filenames_per_mask_id[mask_id]]
                     for future in concurrent.futures.as_completed(futures):
                         result = future.result()
                         if result:
                             temp_files.append(result)
                             n_downloaded += 1
-                print(f'Downloading {n_downloaded} masks completed in {time.time() - start_time} seconds.')
-                
+                print(f'Downloading {n_downloaded} masks completed in {time.time() - start_time} seconds')
+
                 # Break the loop when there is nothing to download.
                 if n_downloaded == 0:
-                    print (f'Downloaded no valid masks for block: {blk}. Continue ... ')
                     continue
-                
-                # Init the mask for this block.
-                print(f'Creating sync mask for block: {blk} ...')
+
+                # Init the mask indices using the block number.
+                print(f'Creating mask for mask_id: {mask_id} ...')
                 mask_indices = {}
-                torch.manual_seed(blk)
+                torch.manual_seed(mask_id)
                 start_time = time.time()
                 for name, param in model.named_parameters():
                     param = param.to(config.device)
                     next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
                     indices = next_mask.flatten().nonzero(as_tuple=False).flatten()
                     mask_indices[name] = indices
-                print(f'Creating sync block mask completed in {time.time() - start_time} seconds.') 
-            
-                # Load all masks as state dicts and decompress given mask.
-                print(f'Loading state dicts for block: {blk} ...')
+                print(f'Creating mask completed in {time.time() - start_time} seconds')
+
+                # Load all masks as state dicts.
+                print(f'Loading state dicts for mask_id: {mask_id} ...')
                 start_time = time.time()
                 mask_count = 0
                 masks_dicts_values = {}
-                for uid, file in temp_files:
-                    masks_per_block_per_uid[ blk ][ uid ] = {}
-                    mask = torch.load(file, map_location='cpu', weights_only=True)
+                for file in temp_files:
+                    masks_per_id_per_uid[ blk ][ uid ] = {}
+                    mask = torch.load(file, map_location='cpu')
                     mask_count += 1
                     for name in mask.keys():
                         mask_values = mask[name]['values']
                         if torch.isnan(mask_values).any():
                             continue
                         param_shape = model.get_parameter(name).shape
-                        indices = mask_indices[name] 
-                        decompressed = torch.zeros(param_shape, device='cpu').flatten() 
+                        indices = mask_indices[name]
+                        decompressed = torch.zeros(param_shape, device='cpu').flatten()
                         decompressed[indices] = mask_values
-                        masks_per_block_per_uid[ blk ][ uid ][ name ] = decompressed.view(param_shape)
+                        masks_per_id_per_uid[ blk ][ uid ][ name ] = decompressed.view(param_shape)
                         if name not in masks_dicts_values:
                             masks_dicts_values[name] = decompressed.view(param_shape)
                         else:
                             masks_dicts_values[name] += decompressed.view(param_shape)
-                mask_count_per_block[ blk ] = mask_count
-                print(f'Loading state dicts completed in {time.time() - start_time} seconds.')
-                
-                # Average all masks together.
-                print(f'Averaging {mask_count} masks for block: {blk} ...')
+                mask_count_per_id[ mask_id ] = mask_count
+                print(f'Loading state dicts completed in {time.time() - start_time} seconds')
+
+                # Average the masks before applying.
+                print(f'Averaging {mask_count} masks for mask_id: {mask_id} ...')
                 start_time = time.time()
                 for key in masks_dicts_values.keys():
                     masks_dicts_values[key] /= mask_count
-                print(f'Averaged state dicts in {time.time() - start_time} seconds.')
-                
-                # Apply averages to my local model state.
-                print(f'Applying {mask_count} masks for block: {blk} ...')
+                print(f'Averaged state dicts in {time.time() - start_time} seconds')
+
+                # Set the average into the model.
+                print(f'Applying {mask_count} masks for mask_id: {mask_id} ...')
                 start_time = time.time()  # Start timing
                 for name, param in model.named_parameters():
                     indices = mask_indices[name]
@@ -223,19 +251,23 @@ def main(config):
                             del on_device, param_flat
                         else:
                             print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
-                del masks_dicts_values
-                print(f'Applying {mask_count} masks completed in {time.time() - start_time} seconds.')  # Print timing after this step
-                
-                # Delete files and clean state.
-                print(f'Deleting files for block: {blk} ...')
+                for key in masks_dicts_values.keys():
+                    masks_dicts_values[key].cpu()
+                for key in mask_indices.keys():
+                    mask_indices[key] = mask_indices[key].cpu()
+                del mask_indices, masks_dicts_values
+                print(f'Applying {mask_count} masks completed in {time.time() - start_time} seconds')
+
+                # Delete files and clean up.
+                print(f'Deleting files for mask_id: {mask_id} ...')
                 start_time = time.time()
-                for uid, file in temp_files:
+                for file in temp_files:
                     os.remove(file)
                 print(f'Deleting files completed in {time.time() - start_time} seconds')
-                
-            # Finish syncing masks.
+
+            # Print completion
             torch.cuda.empty_cache()
-            print(f'Finished downloading masks for blocks: {all_sync_blocks} in {time.time() - full_sync_start_time} seconds.')
+            print(f'Downloading masks for blocks: {all_sync_blocks} and mask_ids: {mask_filenames_per_mask_id.keys()} in {time.time() - full_sync_start_time} seconds')
             
             # Upload a full copy of the model weights to master
             print('Uploading master ...')
@@ -254,35 +286,35 @@ def main(config):
             )
             print(f'Uploading master completed in {time.time() - start_time} seconds.')
         
-            block_to_eval = None
-            if len(list(masks_per_block_per_uid.keys())) == 0:
+            id_to_eval = None
+            if len(list(masks_per_id_per_uid.keys())) == 0:
                 print ('No masks to eval. Continue ...')
                 continue # Nothing to do.
-            block_to_eval = max(list(masks_per_block_per_uid.keys()))
-            if len(list(masks_per_block_per_uid[block_to_eval].keys())) == 0:
+            id_to_eval = max(list(masks_per_id_per_uid.keys()))
+            if len(list(masks_per_id_per_uid[id_to_eval].keys())) == 0:
                 print ('No masks to eval. Continue ...')
                 continue # Nothing to do.
             
             # Eval this UID.
-            uid_to_eval = random.choice(list(masks_per_block_per_uid[block_to_eval].keys()))
-            mask_count = mask_count_per_block[block_to_eval]
-            mask = masks_per_block_per_uid[block_to_eval][uid_to_eval]
-            del masks_per_block_per_uid
+            uid_to_eval = random.choice(list(masks_per_id_per_uid[id_to_eval].keys()))
+            mask_count = mask_count_per_id[id_to_eval]
+            mask = masks_per_id_per_uid[id_to_eval][uid_to_eval]
+            del masks_per_id_per_uid
             
             # Get the pages for this block and my_uid.
             # This is global and deterministic
             print('Loading page for eval ...')
             start_time = time.time()  # Start timing
             pages = SubsetFineWebEdu2Loader.next_pages(
-                offset=block_to_eval,
-                n_pages=3,
-                seed=uid_to_eval
+                offset = id_to_eval * hparams.blocks_per_mask,
+                n_pages = 3,
+                seed = uid_to_eval
             )
             dataset = SubsetFineWebEdu2Loader(
-                batch_size=config.batch_size,
-                sequence_length=hparams.sequence_length,
-                pages_info=pages,
-                tokenizer=hparams.tokenizer
+                batch_size = config.batch_size,
+                sequence_length = hparams.sequence_length,
+                pages_info = pages,
+                tokenizer = hparams.tokenizer
             )
             print(f'Loading page for eval completed in {time.time() - start_time} seconds.')
             
