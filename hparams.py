@@ -17,6 +17,7 @@
 
 import os
 import json
+import time
 import requests
 from types import SimpleNamespace
 from transformers import AutoTokenizer, LlamaConfig
@@ -66,11 +67,10 @@ def load_hparams() -> SimpleNamespace:
         print(hparams.hidden_size)
         print(hparams.model_config)
     """
-    github_url = "https://raw.githubusercontent.com/unconst/cont/master/hparams.json"
-
+    github_url = f"https://raw.githubusercontent.com/unconst/cont/master/hparams.json?timestamp={int(time.time())}"
     try:
         # Attempt to fetch from the GitHub file first
-        response = requests.get(github_url, timeout=10)
+        response = requests.get(github_url, timeout=10, headers={'Cache-Control': 'no-cache'})
         response.raise_for_status()
         hparams = json.loads(response.text)
         print("Successfully loaded parameters from GitHub.")
