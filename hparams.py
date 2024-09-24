@@ -27,7 +27,7 @@ def load_hparams() -> SimpleNamespace:
         # Global sequence length
         'sequence_length': 2048,
         # AutoTokenizer name.
-        'tokenizer_name': 'gpt2',
+        'tokenizer_name': "togethercomputer/LLaMA-2-7B-32K",
         # Model arch.
         'num_hidden_layers': 16,         # Layers
         'hidden_size': 2048,             # Hidden Size

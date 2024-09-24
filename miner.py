@@ -285,6 +285,7 @@ def main(config):
             
             # Train my model on the current page.
             torch.cuda.empty_cache() # Empty cache going into the training step.
+            optimizer.zero_grad() # Clear any lingering grads.
             start_time = time.time()  # Start timing
             total_loss = 0.0
             total_steps = config.desired_batch_size // config.actual_batch_size
@@ -296,7 +297,8 @@ def main(config):
                 with torch.amp.autocast( device_type = model.device.type, dtype = torch.bfloat16 ):  # Enable autocasting for mixed precision
                     outputs = model(input_ids = input_ids, labels=labels)
                 total_loss += outputs.loss.item()
-                outputs.loss.backward()
+                loss = outputs.loss / (total_steps + 1) # Divide by number of accumulations.
+                loss.backward()
                 progress_bar.update(1)  # Update the progress bar
                 if idx >= total_steps - 1:
                     break
