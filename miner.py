@@ -267,7 +267,7 @@ def main(config):
                               
             # Get the pages for this block and my_uid.
             # This is global and deterministic
-            n_pages = max(1, int(config.desired_batch_size * 0.01))
+            n_pages = max(1, int(hparams.desired_batch_size * 0.01))
             print (f'Loading {n_pages} pages ...')
             start_time = time.time()  # Start timing
             pages = SubsetFineWebEdu2Loader.next_pages(
@@ -276,7 +276,7 @@ def main(config):
                 seed = my_uid 
             )
             dataset = SubsetFineWebEdu2Loader(
-                batch_size = config.actual_batch_size,
+                batch_size = hparams.actual_batch_size,
                 sequence_length = hparams.sequence_length,
                 pages_info = pages,
                 tokenizer = hparams.tokenizer
@@ -289,7 +289,7 @@ def main(config):
             torch.cuda.empty_cache() # Empty cache going into the training step.
             start_time = time.time()  # Start timing
             total_loss = 0.0
-            total_steps = config.desired_batch_size // config.actual_batch_size
+            total_steps = hparams.desired_batch_size // hparams.actual_batch_size
             progress_bar = tqdm(total=total_steps, desc="Training:")
             for idx, batch in enumerate(dataset):
                 input_ids = torch.tensor(batch, dtype=torch.long).to(model.device)
@@ -331,7 +331,7 @@ def main(config):
             total_time = time.time() - start_time
             print(f'Training completed in {total_time} seconds')
             print(f'Steps per second: {total_steps / total_time}')
-            print(f'Batches per second: {config.actual_batch_size * total_steps / total_time}')
+            print(f'Batches per second: {hparams.actual_batch_size * total_steps / total_time}')
             print(f'Tokens per second: {hparams.sequence_length * config.actual_batch_size * total_steps / total_time}')
             
             # Select the block to produce a mask for.
@@ -405,8 +405,6 @@ if __name__ == "__main__":
     parser.add_argument('--name', type=str, default=None, help='Optional miner name')
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network UID.')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
-    parser.add_argument('--desired_batch_size', type=int, default=512, help='Training batch size per step')
-    parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
     parser.add_argument('--learning_rate', type=float, default=4e-4, help='Learning rate for the optimizer')
     parser.add_argument('--optimizer_beta1', type=float, default=0.9, help='Beta1 for the optimizer')
     parser.add_argument('--optimizer_beta2', type=float, default=0.95, help='Beta2 for the optimizer')

@@ -75,6 +75,8 @@ def get_default_hparams() -> dict:
         "num_key_value_heads": 8,
         "activation_function": "swiGLU",
         "max_position_embeddings": 2048,
+        "desired_batch_size": 512,  
+        "actual_batch_size": 9,
     }
 
 
