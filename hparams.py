@@ -76,6 +76,7 @@ def get_default_hparams() -> dict:
         "activation_function": "swiGLU",
         "max_position_embeddings": 2048,
         "blocks_per_mask": 5,
+        'desired_batch_size': 512,
     }
 
 
