@@ -114,7 +114,7 @@ def main(config):
             # This is used to ensure that the model is not updated too frequently and that the mask is shared.
             # for multiple updates which fall across multiple blocks.
             def block_to_mask_window_id(block: int) -> int:
-                return int(block / hparams.blocks_per_mask)
+                return int(block / hparams.mask_window_length)
 
             print(f'Getting block state ...')
             start_time = time.time()  # Start timing
@@ -124,7 +124,7 @@ def main(config):
             # If we don't do this fast forward, then we will be downloading the same masks multiple times.
             # TODO (const) consider if we should just remember the last mask id and download all masks for that id.
             # Or if we should just redownload an apply the same masks.
-            last_mask_sync = (block_to_mask_window_id(block) + 1) * hparams.blocks_per_mask
+            last_mask_sync = (block_to_mask_window_id(block) + 1) * hparams.mask_window_length
             print(f'Getting block completed in {time.time() - start_time} seconds')
             # Get buckets per uid if needs update.
             if 'buckets' not in locals() or len(buckets) != len(metagraph.uids):
@@ -311,7 +311,7 @@ def main(config):
             print('Loading page for eval ...')
             start_time = time.time()  # Start timing
             pages = SubsetFineWebEdu2Loader.next_pages(
-                offset = id_to_eval * hparams.blocks_per_mask,
+                offset = id_to_eval * hparams.mask_window_length,
                 n_pages = 3,
                 seed = uid_to_eval
             )
