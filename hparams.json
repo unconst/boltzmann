@@ -18,7 +18,7 @@
     "optimizer_weight_decay": 0.1,
     "grad_clip": null,
     "cosine_epoch_length": 1000,
-    "eta_min": 4e-5,
+    "eta_min": 1e-5,
     "max_history": 5,
     "pages_window_speed": 10,
 }
