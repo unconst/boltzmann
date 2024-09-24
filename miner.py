@@ -34,6 +34,7 @@ import concurrent.futures
 import torch.optim as optim
 from typing import List, Tuple
 from dotenv import dotenv_values
+from types import SimpleNamespace
 from transformers import LlamaForCausalLM 
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
@@ -151,10 +152,9 @@ def main(config):
             # This fast forwards us to the block which shares no ids with the previous block.
             # If we don't do this fast forward, then we will be downloading the same masks multiple times.
             # TODO (const) consider if we should just remember the last mask id and download all masks for that id.
-            # Or if we should just redownload an apply the same masks.
+            # Or if we should just redownload and apply the same masks.
             last_mask_sync = (block_to_mask_id(block) + 1) * hparams.blocks_per_mask
             print(f'Getting block completed in {time.time() - start_time} seconds')
-
             # Get buckets per uid if needs update.
             if 'buckets' not in locals() or len(buckets) != len(metagraph.uids):
                 buckets = []
@@ -175,13 +175,16 @@ def main(config):
                 paginator = CLIENT.get_paginator('list_objects_v2')
                 page_iterator = paginator.paginate(Bucket=bucket, Prefix='mask-')
                 for page in page_iterator:
-                    if 'Contents' not in page:
-                        continue  # Filter not found
-                    for obj in page['Contents']:
-                        hotkey, blk = obj['Key'].split('-')[1], obj['Key'].split('-')[2].split('.')[0]
-                        if int(blk) in all_sync_blocks:
-                            mask_filenames_per_mask_id[block_to_mask_id(int(blk))].append({'bucket': bucket, 'hotkey': hotkey, 'filename': obj['Key']})
-                            num_valid_masks += 1
+                    for obj in page.get('Contents', []):
+                        try:
+                            hotkey, blk = obj['Key'].split('-')[1], obj['Key'].split('-')[2].split('.')[0]
+                            if int(blk) in all_sync_blocks:
+                                mask_id = block_to_mask_id(int(blk))
+                                mask_info = SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=obj['Key'], uid=metagraph.hotkeys.index(hotkey), block=int(blk), mask_id=mask_id)
+                                mask_filenames_per_mask_id[mask_id].append(mask_info)
+                                num_valid_masks += 1
+                        except:
+                            continue
             print(f'Getting masks names for blocks: {all_sync_blocks} completed in {time.time() - start_time} seconds')
 
             # Get the mask for mask_ids.
@@ -190,7 +193,7 @@ def main(config):
             masks_per_id_per_uid = {}
             mask_count_per_id = {}
             for mask_id in mask_filenames_per_mask_id.keys():
-                masks_per_id_per_uid[ blk ] = {}
+                masks_per_id_per_uid[mask_id] = {}
                 # Get the number of masks for this step.
                 num_masks_for_mask_id = len(mask_filenames_per_mask_id[mask_id])
                 if num_masks_for_mask_id == 0:
@@ -203,9 +206,10 @@ def main(config):
                 n_downloaded = 0
                 def download_file(mask_info):
                     try:
-                        unique_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
-                        CLIENT.download_file(mask_info['bucket'], mask_info['filename'], unique_temp_file)
-                        return unique_temp_file
+                        temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
+                        CLIENT.download_file(mask_info.bucket, mask_info.filename, temp_file)
+                        mask_info = SimpleNamespace(**vars(mask_info), temp_file=temp_file)
+                        return mask_info
                     except:
                         return None
 
@@ -239,9 +243,9 @@ def main(config):
                 start_time = time.time()
                 mask_count = 0
                 masks_dicts_values = {}
-                for file in temp_files:
-                    masks_per_id_per_uid[ blk ][ uid ] = {}
-                    mask = torch.load(file, map_location='cpu')
+                for info in temp_files:
+                    masks_per_id_per_uid[info.mask_id][info.uid] = {}
+                    mask = torch.load(info.temp_file, map_location='cpu')
                     mask_count += 1
                     for name in mask.keys():
                         mask_values = mask[name]['values']
@@ -251,12 +255,12 @@ def main(config):
                         indices = mask_indices[name]
                         decompressed = torch.zeros(param_shape, device='cpu').flatten()
                         decompressed[indices] = mask_values
-                        masks_per_id_per_uid[ blk ][ uid ][ name ] = decompressed.view(param_shape)
+                        masks_per_id_per_uid[info.mask_id][info.uid][name] = decompressed.view(param_shape)
                         if name not in masks_dicts_values:
                             masks_dicts_values[name] = decompressed.view(param_shape)
                         else:
                             masks_dicts_values[name] += decompressed.view(param_shape)
-                mask_count_per_id[ mask_id ] = mask_count
+                mask_count_per_id[mask_id] = mask_count
                 print(f'Loading state dicts completed in {time.time() - start_time} seconds')
 
                 # Average the masks before applying.
@@ -282,7 +286,7 @@ def main(config):
                         else:
                             print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
                 for key in masks_dicts_values.keys():
-                    masks_dicts_values[key].cpu()
+                    masks_dicts_values[key] = masks_dicts_values[key].cpu()
                 for key in mask_indices.keys():
                     mask_indices[key] = mask_indices[key].cpu()
                 del mask_indices, masks_dicts_values
@@ -291,14 +295,14 @@ def main(config):
                 # Delete files and clean up.
                 print(f'Deleting files for mask_id: {mask_id} ...')
                 start_time = time.time()
-                for file in temp_files:
-                    os.remove(file)
+                for info in temp_files:
+                    os.remove(info.temp_file)
                 print(f'Deleting files completed in {time.time() - start_time} seconds')
 
             # Print completion
+            del mask_filenames_per_mask_id
             torch.cuda.empty_cache()
             print(f'Downloading masks for blocks: {all_sync_blocks} and mask_ids: {mask_filenames_per_mask_id.keys()} in {time.time() - full_sync_start_time} seconds')
-            
             # Get the pages for this block and my_uid.
             # This is global and deterministic
             n_pages = max(1, int(hparams.desired_batch_size * 0.01))
