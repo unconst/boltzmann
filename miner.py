@@ -363,20 +363,26 @@ def main(config):
             del input_ids, labels, outputs
             torch.cuda.empty_cache() # Empty cache at end of step.
             
-            # Calculate and print average loss
+            # Calculate, print and logg average loss
             average_loss = total_loss / total_steps
             print('loss:', average_loss, 'learning_rate:', scheduler.get_last_lr()[0])
+            total_time = time.time() - start_time
+            steps_per_second = total_steps / total_time
+            batches_per_second = config.actual_batch_size * total_steps / total_time
+            tokens_per_second = hparams.sequence_length * config.actual_batch_size * total_steps / total_time
             if config.use_wandb:
                 wandb.log({
                     "step_loss": average_loss,
                     "learning_rate": scheduler.get_last_lr()[0],
-                    f"incentive{my_uid}": float(metagraph.I[my_uid])
+                    f"incentive{my_uid}": float(metagraph.I[my_uid]),
+                    "steps_per_second": steps_per_second,
+                    "batches_per_second": batches_per_second,
+                    "tokens_per_second": tokens_per_second
                 })
-            total_time = time.time() - start_time
             print(f'Training completed in {total_time} seconds')
-            print(f'Steps per second: {total_steps / total_time}')
-            print(f'Batches per second: {config.actual_batch_size * total_steps / total_time}')
-            print(f'Tokens per second: {hparams.sequence_length * config.actual_batch_size * total_steps / total_time}')
+            print(f'Steps per second: {steps_per_second}')
+            print(f'Batches per second: {batches_per_second}')
+            print(f'Tokens per second: {tokens_per_second}')
             
             # Select the block to produce a mask for.
             next_upload_block = subtensor.block
