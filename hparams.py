@@ -14,18 +14,18 @@
 # THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
-import json
-import requests
+
 import os
+import json
+import time
+import requests
 from types import SimpleNamespace
 from transformers import AutoTokenizer, LlamaConfig
-import time
 
 # Cache file path
 CACHE_FILE = "hparams_cache.json"
 # Cache expiration time (24 hours in seconds)
 CACHE_EXPIRATION = 24 * 60 * 60
-
 
 def load_from_cache() -> dict:
     """
@@ -67,7 +67,7 @@ def get_default_hparams() -> dict:
         "epoch_length": 25000,
         "compression": 300,
         "sequence_length": 2048,
-        "tokenizer_name": "gpt2",
+        "tokenizer_name": "togethercomputer/LLaMA-2-7B-32K",
         "num_hidden_layers": 16,
         "hidden_size": 2048,
         "intermediate_size": 8192,
