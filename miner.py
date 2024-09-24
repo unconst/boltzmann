@@ -92,6 +92,7 @@ def main(config):
         
     # Init training state.
     hparams = load_hparams()
+    print ('hparams:', hparams ) 
     model = None
     upload_history = []  
     last_mask_sync = 0 
