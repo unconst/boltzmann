@@ -99,6 +99,8 @@ def main(config):
     last_master_sync = 0
     while True:
         try:    
+            # Start timing for the entire step
+            global_step_start_time = time.time()
             
             # Sync the current chain state and hparams.
             print ('Loading chain state ...')
@@ -428,6 +430,14 @@ def main(config):
                 to_delete = upload_history.pop(0)
                 CLIENT.delete_object(Bucket=config.bucket, Key=to_delete)
             print(f'Deleting history completed in {time.time() - start_time} seconds')
+            
+            # Calculate and log global steps per second
+            global_step_total_time = time.time() - global_step_start_time
+            global_steps_per_second = 1 / global_step_total_time
+            if config.use_wandb:
+                wandb.log({
+                    "global_steps_per_second": global_steps_per_second
+                })
                  
         # Handle keyboard interrupts to allow graceful shutdown.
         except (KeyboardInterrupt, SystemExit):
