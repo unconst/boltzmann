@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from transformers import AutoTokenizer, LlamaConfig
 
 # Cache file path
-CACHE_FILE = "hparams_cache.json"
+HPARAMS_FILE = "hparams.json"
 # Cache expiration time (24 hours in seconds)
 CACHE_EXPIRATION = 24 * 60 * 60
 
@@ -34,15 +34,14 @@ def load_from_cache() -> dict:
     Returns:
         dict: Cached hyperparameters or None if cache is invalid or expired.
     """
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "r") as f:
+    if os.path.exists(HPARAMS_FILE):
+        with open(HPARAMS_FILE, "r") as f:
             cached_data = json.load(f)
 
         if time.time() - cached_data["timestamp"] < CACHE_EXPIRATION:
             return cached_data["hparams"]
 
     return None
-
 
 def cache_hparams(hparams: dict):
     """
@@ -52,32 +51,8 @@ def cache_hparams(hparams: dict):
         hparams (dict): Hyperparameters to cache.
     """
     cache_data = {"timestamp": time.time(), "hparams": hparams}
-    with open(CACHE_FILE, "w") as f:
+    with open(HPARAMS_FILE, "w") as f:
         json.dump(cache_data, f)
-
-
-def get_default_hparams() -> dict:
-    """
-    Return the default hyperparameters.
-
-    Returns:
-        dict: Default hyperparameters.
-    """
-    return {
-        "epoch_length": 25000,
-        "compression": 300,
-        "sequence_length": 2048,
-        "tokenizer_name": "togethercomputer/LLaMA-2-7B-32K",
-        "num_hidden_layers": 16,
-        "hidden_size": 2048,
-        "intermediate_size": 8192,
-        "num_attention_heads": 8,
-        "num_key_value_heads": 8,
-        "activation_function": "swiGLU",
-        "max_position_embeddings": 2048,
-        "blocks_per_mask": 5,
-        'desired_batch_size': 512,
-    }
 
 
 def create_namespace(hparams: dict) -> SimpleNamespace:
@@ -113,7 +88,7 @@ def create_namespace(hparams: dict) -> SimpleNamespace:
 
 def load_hparams() -> SimpleNamespace:
     """
-    Load hyperparameters from a GitHub gist, with caching and fallback mechanisms.
+    Load hyperparameters from a GitHub file, with caching and fallback mechanisms.
 
     Returns:
         SimpleNamespace: A namespace containing the hyperparameters and model configuration.
@@ -123,27 +98,20 @@ def load_hparams() -> SimpleNamespace:
         print(hparams.hidden_size)
         print(hparams.model_config)
     """
-    gist_url = "https://gist.githubusercontent.com/distributedstatemachine/75e8db446d2f1eaf1417f06d55765a32/raw/hprams.json"
+    github_url = "https://raw.githubusercontent.com/unconst/cont/master/hparams.json"
 
     try:
-        # Attempt to fetch from the gist first
-        response = requests.get(gist_url, timeout=10)
+        # Attempt to fetch from the GitHub file first
+        response = requests.get(github_url, timeout=10)
         response.raise_for_status()
         hparams = json.loads(response.text)
         # Cache the new parameters
         cache_hparams(hparams)
-        print("Successfully loaded parameters from gist.")
+        print("Successfully loaded parameters from GitHub.")
     except (requests.RequestException, json.JSONDecodeError) as e:
-        print(f"Error loading parameters from gist: {e}")
+        print(f"Error loading parameters from GitHub: {e}")
         print("Attempting to load from cache...")
-
-        # Try to load from cache
-        cached_hparams = load_from_cache()
-        if cached_hparams:
-            print("Successfully loaded parameters from cache.")
-            hparams = cached_hparams
-        else:
-            print("Cache not available. Falling back to default parameters.")
-            hparams = get_default_hparams()
-
+        hparams = load_from_cache()
+        if hparams is None:
+            raise RuntimeError("Failed to load hyperparameters from both GitHub and cache.")
     return create_namespace(hparams)
