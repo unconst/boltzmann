@@ -102,10 +102,17 @@ def main(config):
             # Start timing for the entire step
             global_step_start_time = time.time()
             
+            # Load hparams.
+            print ('Loading hparams ...')
+            start_time = time.time()
+            new_hparams = load_hparams()
+            hparams_changed = any(new_hparams.get(key) != hparams.get(key) for key in set(new_hparams) | set(hparams))
+            hparams = new_hparams
+            print(f'Loading hparams completed in {time.time() - start_time} seconds') 
+
             # Sync the current chain state and hparams.
             print ('Loading chain state ...')
             start_time = time.time()
-            hparams = load_hparams()
             subtensor = bt.subtensor(config=config)
             metagraph = subtensor.metagraph(netuid=config.netuid)
             print(f'Loading chain state completed in {time.time() - start_time} seconds') 
@@ -126,14 +133,6 @@ def main(config):
                     model.load_state_dict( master_state_dict )
                     model.to(config.device)
                     model.train()
-                    optimizer = optim.AdamW(
-                        model.parameters(),
-                        lr = config.learning_rate,  # Peak learning rate
-                        betas = ( config.optimizer_beta1, config.optimizer_beta2 ), # B1 and B2
-                        weight_decay = config.optimizer_weight_decay,  # Weight decay
-                        foreach = True,  # more memory usage, but faster
-                    )
-                    scheduler = CosineAnnealingLR( optimizer, T_max = hparams.epoch_length, eta_min=4e-5, last_epoch=-1 )
                     last_master_sync = subtensor.block 
                     last_mask_sync = last_master_sync
                 except Exception as e:
@@ -141,6 +140,16 @@ def main(config):
                     time.sleep(12)
                     continue
             print(f'Checking epoch sync: completed in {time.time() - start_time} seconds') 
+            
+            if 'optimizer' not in locals() or optimizer == None or hparams_changed:
+                optimizer = optim.AdamW(
+                    model.parameters(),
+                    lr = hparams.learning_rate,  # Peak learning rate
+                    betas = ( hparams.optimizer_beta1, hparams.optimizer_beta2 ), # B1 and B2
+                    weight_decay = hparams.optimizer_weight_decay,  # Weight decay
+                    foreach = True,  # more memory usage, but faster
+                )
+                scheduler = CosineAnnealingLR( optimizer, T_max = hparams.cosine_epoch_length, eta_min=hparams.eta_min, last_epoch=-1 )
             
             # Function which maps from block to mask_wid such that multiple blocks share the same mask window id.
             # This is used to ensure that the model is not updated too frequently and that the mask is shared.
@@ -303,6 +312,10 @@ def main(config):
                     os.remove(info.temp_file)
                 print(f'Deleting files completed in {time.time() - start_time} seconds')
 
+            # Log the average number of masks applied per mask_wid
+            avg_masks_per_mask_wid = sum(mask_count_per_id.values()) / len(mask_count_per_id) if mask_count_per_id else 0
+            if config.use_wandb: wandb.log({"avg_masks_per_mask_wid": avg_masks_per_mask_wid})
+
             # Print completion
             del mask_filenames_per_mask_wid
             torch.cuda.empty_cache()
@@ -313,7 +326,7 @@ def main(config):
             print (f'Loading {n_pages} pages ...')
             start_time = time.time()  # Start timing
             pages = SubsetFineWebEdu2Loader.next_pages(
-                offset = subtensor.block,
+                offset = subtensor.block + hparams.pages_window_speed,
                 n_pages = n_pages,
                 seed = my_uid 
             )
@@ -351,8 +364,8 @@ def main(config):
             # Try step with error handling.
             try:
                 # grad norm clipping
-                if config.grad_clip:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+                if hparams.grad_clip:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), hparams.grad_clip)
                 optimizer.step()
                 scheduler.step()  # Update the learning rate.
                 optimizer.zero_grad()
@@ -432,7 +445,7 @@ def main(config):
             # Delete old mask files and clean.
             print('Deleting history ...')
             start_time = time.time()
-            if len(upload_history) > 5:
+            if len(upload_history) > hparams.max_history:
                 to_delete = upload_history.pop(0)
                 CLIENT.delete_object(Bucket=config.bucket, Key=to_delete)
             print(f'Deleting history completed in {time.time() - start_time} seconds')
