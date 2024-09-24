@@ -119,7 +119,7 @@ def main(config):
                     unique_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
                     CLIENT.download_file( master_bucket, master_filename, unique_temp_file )
                     master_state_dict = torch.load( unique_temp_file, map_location='cpu', weights_only = True )
-                    model = LlamaForCausalLM( config = hparams.model_config, attn_implementation="flash_attention_2" )
+                    model = LlamaForCausalLM( config = hparams.model_config )
                     model.load_state_dict( master_state_dict )
                     model.to(config.device)
                     model.train()
