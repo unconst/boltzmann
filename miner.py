@@ -106,7 +106,7 @@ def main(config):
             print ('Loading hparams ...')
             start_time = time.time()
             new_hparams = load_hparams()
-            hparams_changed = any(new_hparams.get(key) != hparams.get(key) for key in set(new_hparams) | set(hparams))
+            hparams_changed = any(getattr(new_hparams, key) != getattr(hparams, key) for key in set(vars(new_hparams)) | set(vars(hparams)))
             hparams = new_hparams
             print(f'Loading hparams completed in {time.time() - start_time} seconds') 
 
