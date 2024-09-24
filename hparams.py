@@ -17,43 +17,12 @@
 
 import os
 import json
-import time
 import requests
 from types import SimpleNamespace
 from transformers import AutoTokenizer, LlamaConfig
 
 # Cache file path
 HPARAMS_FILE = "hparams.json"
-# Cache expiration time (24 hours in seconds)
-CACHE_EXPIRATION = 24 * 60 * 60
-
-def load_from_cache() -> dict:
-    """
-    Load hyperparameters from the cache file if it exists and is not expired.
-
-    Returns:
-        dict: Cached hyperparameters or None if cache is invalid or expired.
-    """
-    if os.path.exists(HPARAMS_FILE):
-        with open(HPARAMS_FILE, "r") as f:
-            cached_data = json.load(f)
-
-        if time.time() - cached_data["timestamp"] < CACHE_EXPIRATION:
-            return cached_data["hparams"]
-
-    return None
-
-def cache_hparams(hparams: dict):
-    """
-    Cache the hyperparameters to a local file.
-
-    Args:
-        hparams (dict): Hyperparameters to cache.
-    """
-    cache_data = {"timestamp": time.time(), "hparams": hparams}
-    with open(HPARAMS_FILE, "w") as f:
-        json.dump(cache_data, f, indent=4)
-
 
 def create_namespace(hparams: dict) -> SimpleNamespace:
     """
@@ -85,7 +54,6 @@ def create_namespace(hparams: dict) -> SimpleNamespace:
 
     return hparams_ns
 
-
 def load_hparams() -> SimpleNamespace:
     """
     Load hyperparameters from a GitHub file, with caching and fallback mechanisms.
@@ -105,13 +73,13 @@ def load_hparams() -> SimpleNamespace:
         response = requests.get(github_url, timeout=10)
         response.raise_for_status()
         hparams = json.loads(response.text)
-        # Cache the new parameters
-        cache_hparams(hparams)
         print("Successfully loaded parameters from GitHub.")
     except (requests.RequestException, json.JSONDecodeError) as e:
         print(f"Error loading parameters from GitHub: {e}")
         print("Attempting to load from cache...")
-        hparams = load_from_cache()
-        if hparams is None:
-            raise RuntimeError("Failed to load hyperparameters from both GitHub and cache.")
+        with open(HPARAMS_FILE, "r") as f:
+            hparams = json.load(f)
+    # Cache the new parameters
+    with open(HPARAMS_FILE, "w") as f:
+        json.dump(hparams, f, indent=4)
     return create_namespace(hparams)
