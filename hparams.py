@@ -52,7 +52,7 @@ def cache_hparams(hparams: dict):
     """
     cache_data = {"timestamp": time.time(), "hparams": hparams}
     with open(HPARAMS_FILE, "w") as f:
-        json.dump(cache_data, f)
+        json.dump(cache_data, f, indent=4)
 
 
 def create_namespace(hparams: dict) -> SimpleNamespace:
