@@ -16,6 +16,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 test.py
+hparams_cache.json
 *.ipynb
 venv/
 wandb/
