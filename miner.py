@@ -271,12 +271,17 @@ def main(config):
                 print(f'\n\tCreating mask for mask_wid: {mask_wid} ...')
                 mask_indices = {}
                 torch.manual_seed(mask_wid)
+                torch.cuda.manual_seed(mask_wid)  # For CUDA operations if running on GPU
+                torch.backends.cudnn.deterministic = True  # Enforce deterministic algorithms in cuDNN
+                torch.backends.cudnn.benchmark = False     # Disable cuDNN's auto-tuner that selects the best algorithms
                 start_time = time.time()
                 for name, param in model.named_parameters():
                     param = param.to(config.device)
                     next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
                     indices = next_mask.flatten().nonzero(as_tuple=False).flatten()
                     mask_indices[name] = indices
+                torch.backends.cudnn.deterministic = False  # Enforce deterministic algorithms in cuDNN
+                torch.backends.cudnn.benchmark = True     # Disable cuDNN's auto-tuner that selects the best algorithms
                 print(f'\t\tCreating mask completed in {time.time() - start_time} seconds')
 
                 # Load all masks as state dicts.
@@ -440,11 +445,17 @@ def main(config):
             print(f'\nCreating upload mask ...')
             start_time = time.time()  # Start timing
             upload_mask = {}
-            torch.manual_seed( block_to_mask_window_id(next_upload_block) )  # Seed torch's random generator with the upload mask for its mask_wid.
+            mask_seed = block_to_mask_window_id(next_upload_block)
+            torch.manual_seed(mask_seed)
+            torch.cuda.manual_seed(mask_seed)  # For CUDA operations if running on GPU
+            torch.backends.cudnn.deterministic = True  # Enforce deterministic algorithms in cuDNN
+            torch.backends.cudnn.benchmark = False     # Disable cuDNN's auto-tuner that selects the best algorithms
             for name, param in model.named_parameters():
                 param = param.to(config.device)
                 next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
                 upload_mask[name] = next_mask.to('cpu')
+            torch.backends.cudnn.deterministic = False  # Enforce deterministic algorithms in cuDNN
+            torch.backends.cudnn.benchmark = True     # Disable cuDNN's auto-tuner that selects the best algorithms
             print(f'\tCreating upload mask_wid mask completed in {time.time() - start_time} seconds')
             
             # Mask the model values given the mask and produce a state dict.                
