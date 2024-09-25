@@ -105,7 +105,7 @@ def main(config):
     # Build a LRU for the masks.
     # This function is called often so we want to pre a
     param_shapes = {name: param.shape for name, param in sorted(model.named_parameters())}
-    @lru_cache(maxsize=5)
+    @lru_cache(maxsize=4)
     def get_mask_indicies_for_mask_window( mask_wid:int, compression: int ):
         print(f'\n\tCreating mask for mask_wid: {mask_wid} ...')
         mask_indices = {}
@@ -116,7 +116,7 @@ def main(config):
             next_mask = (random_values < (1 / compression)).astype(np.float32)  # Apply compression ratio
             next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
             indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
-            mask_indices[name] = indices
+            mask_indices[name] = indices.to('cpu')
         print(f'\t\tCreating mask completed in {time.time() - start_time} seconds')
         return mask_indices
         
@@ -546,7 +546,7 @@ if __name__ == "__main__":
     parser.add_argument('--name', type=str, default=None, help='Optional miner name')
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network UID.')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
-    parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
+    parser.add_argument('--actual_batch_size', type=int, default=6, help='Training batch size per accumulation.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')    
     bt.wallet.add_args(parser)
