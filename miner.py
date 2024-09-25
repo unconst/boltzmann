@@ -105,7 +105,7 @@ def main(config):
     # Build a LRU for the masks.
     # This function is called often so we want to pre a
     @lru_cache(maxsize=10)
-    def get_mask_indicies_for_mask_window( mask_wid:int ):
+    def get_mask_indicies_for_mask_window( mask_wid:int, compression: int ):
         print(f'\n\tCreating mask for mask_wid: {mask_wid} ...')
         mask_indices = {}
         start_time = time.time()
@@ -114,7 +114,7 @@ def main(config):
             param_shape = param.shape
             np.random.seed(int(mask_wid))
             random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
-            next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
+            next_mask = (random_values < (1 / compression)).astype(np.float32)  # Apply compression ratio
             next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
             indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
             mask_indices[name] = indices
@@ -312,7 +312,7 @@ def main(config):
                     continue
 
                 # Get or create the mask for the window.
-                mask_indices = get_mask_indicies_for_mask_window( mask_wid )
+                mask_indices = get_mask_indicies_for_mask_window( mask_wid, hparams.compression )
 
                 # Load all masks as state dicts.
                 print(f'\n\tLoading state dicts for mask_wid: {mask_wid} ...')
@@ -480,7 +480,7 @@ def main(config):
             mask_seed = block_to_mask_window_id(next_upload_block)
             
             # Get or create the mask for the window.
-            mask_indices = get_mask_indicies_for_mask_window( mask_wid )
+            mask_indices = get_mask_indicies_for_mask_window( mask_wid , hparams.compression )
             
             # Mask the model values given the mask and produce a state dict.                
             print(f'\nApply {mask_seed} upload mask to model ...')
