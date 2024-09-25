@@ -115,9 +115,7 @@ def main(config):
             # Load hparams.
             print ('\nLoading hparams ...')
             start_time = time.time()
-            new_hparams = load_hparams()
-            hparams_changed = False
-            hparams = new_hparams
+            hparams = load_hparams()
             print(f'\tLoading hparams completed in {time.time() - start_time} seconds') 
 
             # Sync the current chain state and hparams.
@@ -151,7 +149,17 @@ def main(config):
                     continue
                 print(f'\tCLoading master state completed in {time.time() - start_time} seconds') 
             
-            if 'optimizer' not in locals() or optimizer == None or hparams_changed:
+            def has_hparams_changed(optimizer, scheduler, hparams):
+                for param_group in optimizer.param_groups:
+                    if param_group['lr'] != hparams.learning_rate or \
+                       param_group['betas'] != (hparams.optimizer_beta1, hparams.optimizer_beta2) or \
+                       param_group['weight_decay'] != hparams.optimizer_weight_decay:
+                        return True
+                if scheduler.T_max != hparams.cosine_epoch_length or \
+                   scheduler.eta_min != hparams.eta_min:
+                    return True
+                return False
+            if 'optimizer' not in locals() or optimizer == None or has_hparams_changed(optimizer, scheduler, hparams):
                 print(f'\nResetting optimizer ...') 
                 start_time = time.time()
                 optimizer = optim.AdamW(
@@ -274,20 +282,20 @@ def main(config):
                 # Break the loop when there is nothing to download.
                 if n_downloaded == 0:
                     continue
-
-                # Init the mask indices using the block number.
+                                
                 print(f'\n\tCreating mask for mask_wid: {mask_wid} ...')
-                mask_indices = {}
                 start_time = time.time()
+                mask_indices = {}
+                torch.manual_seed(int(mask_wid))
+                torch.cuda.manual_seed(int(mask_wid))  # For CUDA operations if running on GPU
+                torch.backends.cudnn.deterministic = True  # Enforce deterministic algorithms in cuDNN
+                torch.backends.cudnn.benchmark = False     # Disable cuDNN's auto-tuner that selects the best algorithms
                 for name, param in sorted(model.named_parameters()):
                     param = param.to(config.device)
-                    param_shape = param.shape
-                    np.random.seed( int(mask_wid) )
-                    random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
-                    next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
-                    next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
-                    indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
-                    mask_indices[name] = indices
+                    next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
+                    mask_indices[name] = next_mask.to('cpu')
+                torch.backends.cudnn.deterministic = False  # Enforce deterministic algorithms in cuDNN
+                torch.backends.cudnn.benchmark = True     # Disable cuDNN's auto-tuner that selects the best algorithms
                 print(f'\t\tCreating mask completed in {time.time() - start_time} seconds')
 
                 # Load all masks as state dicts.
@@ -452,20 +460,20 @@ def main(config):
             # Select the block to produce a mask for.
             next_upload_block = subtensor.block
             
-            # Get the proper mask for my upload block + page.
-            start_time = time.time()  # Start timing
-            upload_mask = {}
             mask_seed = block_to_mask_window_id(next_upload_block)
             print(f'\nCreating upload mask for window: {mask_seed} ...')
+            start_time = time.time()  # Start timing
+            upload_mask = {}
+            torch.manual_seed(int(mask_seed))
+            torch.cuda.manual_seed(int(mask_seed))  # For CUDA operations if running on GPU
+            torch.backends.cudnn.deterministic = True  # Enforce deterministic algorithms in cuDNN
+            torch.backends.cudnn.benchmark = False     # Disable cuDNN's auto-tuner that selects the best algorithms
             for name, param in sorted(model.named_parameters()):
                 param = param.to(config.device)
-                param_shape = param.shape
-                np.random.seed( int(mask_seed) )
-                random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
-                next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
-                next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
-                indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
-                upload_mask[name] = indices
+                next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
+                upload_mask[name] = next_mask.to('cpu')
+            torch.backends.cudnn.deterministic = False  # Enforce deterministic algorithms in cuDNN
+            torch.backends.cudnn.benchmark = True     # Disable cuDNN's auto-tuner that selects the best algorithms
             print(f'\tCreating upload mask_wid mask completed in {time.time() - start_time} seconds')
             
             # Mask the model values given the mask and produce a state dict.                
