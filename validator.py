@@ -277,19 +277,39 @@ def main(config):
             # Upload a full copy of the model weights to master
             print('Uploading master ...')
             start_time = time.time()
+            # Save the model's state dictionary
             model_state_dict = model.state_dict()
-            upload_filename = f'master-{wallet.hotkey.ss58_address}.pt'
+            # Generate filenames for temporary and master objects
+            temp_key = f"master-temp-{uuid.uuid4()}.pt"
+            master_key = f"master-{wallet.hotkey.ss58_address}.pt"
+            # Use an in-memory buffer to serialize the model
             with io.BytesIO() as module_buffer:
+                # Serialize the model state dict to the buffer
                 torch.save(model_state_dict, module_buffer)
-                module_buffer.seek(0)  # Reset the buffer's position to the beginning.
-                CLIENT.upload_fileobj(module_buffer, config.bucket, upload_filename)
+                module_buffer.seek(0)  # Reset buffer position to the beginning
+                # Upload the buffer to S3 with the temporary key
+                CLIENT.upload_fileobj(module_buffer, config.bucket, temp_key)
+                print(f'Temporary model uploaded as {temp_key}')
+
+            # Set the ACL to make the temporary object publicly readable
             CLIENT.put_object_acl(
                 Bucket=config.bucket,
-                Key=upload_filename,
-                GrantRead='uri="http://acs.amazonaws.com/groups/global/AllUsers"',
-                GrantReadACP='uri="http://acs.amazonaws.com/groups/global/AllUsers"'
+                Key=temp_key,
+                ACL='public-read'
             )
-            print(f'Uploading master completed in {time.time() - start_time} seconds.')
+            # Atomically copy the temporary object to the master key
+            CLIENT.copy_object(
+                Bucket=config.bucket,
+                CopySource={'Bucket': config.bucket, 'Key': temp_key},
+                Key=master_key,
+                ACL='public-read'
+            )
+            print(f'Model atomically copied to {master_key}')
+            # Delete the temporary object to clean up
+            CLIENT.delete_object(Bucket=config.bucket, Key=temp_key)
+            print(f'Temporary object {temp_key} deleted')
+            elapsed_time = time.time() - start_time
+            print(f'Uploading master completed in {elapsed_time} seconds.')
         
             id_to_eval = None
             if len(list(masks_per_id_per_uid.keys())) == 0:
