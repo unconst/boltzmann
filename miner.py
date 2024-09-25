@@ -280,7 +280,7 @@ def main(config):
                 mask_indices = {}
                 np.random.seed(int(mask_wid))
                 start_time = time.time()
-                for name, param in model.named_parameters():
+                for name, param in sorted(model.named_parameters()):
                     param = param.to(config.device)
                     param_shape = param.shape
                     random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
@@ -458,7 +458,7 @@ def main(config):
             mask_seed = block_to_mask_window_id(next_upload_block)
             print(f'\nCreating upload mask for window: {mask_seed} ...')
             np.random.seed( int(mask_seed) )
-            for name, param in model.named_parameters():
+            for name, param in sorted(model.named_parameters()):
                 param = param.to(config.device)
                 param_shape = param.shape
                 random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
