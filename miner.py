@@ -293,7 +293,8 @@ def main(config):
                 for name, param in sorted(model.named_parameters()):
                     param = param.to(config.device)
                     next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
-                    mask_indices[name] = next_mask.to('cpu')
+                    indices = next_mask.flatten().nonzero(as_tuple=False).flatten()
+                    mask_indices[name] = indices.to('cpu')
                 torch.backends.cudnn.deterministic = False  # Enforce deterministic algorithms in cuDNN
                 torch.backends.cudnn.benchmark = True     # Disable cuDNN's auto-tuner that selects the best algorithms
                 print(f'\t\tCreating mask completed in {time.time() - start_time} seconds')
@@ -471,7 +472,8 @@ def main(config):
             for name, param in sorted(model.named_parameters()):
                 param = param.to(config.device)
                 next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
-                upload_mask[name] = next_mask.to('cpu')
+                indices = next_mask.flatten().nonzero(as_tuple=False).flatten()
+                upload_mask[name] = indices.to('cpu')
             torch.backends.cudnn.deterministic = False  # Enforce deterministic algorithms in cuDNN
             torch.backends.cudnn.benchmark = True     # Disable cuDNN's auto-tuner that selects the best algorithms
             print(f'\tCreating upload mask_wid mask completed in {time.time() - start_time} seconds')
