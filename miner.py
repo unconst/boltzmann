@@ -446,7 +446,7 @@ def main(config):
                 next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
                 next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
                 indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
-                mask_indices[name] = indices
+                upload_mask[name] = indices
             print(f'\tCreating upload mask_wid mask completed in {time.time() - start_time} seconds')
             
             # Mask the model values given the mask and produce a state dict.                
