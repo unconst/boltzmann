@@ -200,7 +200,7 @@ def main(config):
                             try:
                                 filename = obj['Key']
                                 hotkey, mask_wid = filename.split('-')[1], filename.split('-')[2].split('.')[0]
-                                if hotkey not in metagraph.hotkeys: continue # Not registered mask.
+                                if hotkey not in metagraph.hotkeys: continue # Miner is not registered on network.
                                 uid = metagraph.hotkeys.index(hotkey)
                                 if mask_wid in list(mask_filenames_per_mask_wid.keys()) and filename not in already_seen_masks:
                                     mask_info = SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, uid=uid, block=-1, mask_wid=mask_wid)
