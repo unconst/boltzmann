@@ -462,9 +462,9 @@ def main(config):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Validator script')
     parser.add_argument('--name', type=str, default=None, help='Optional name')
-    parser.add_argument('--bucket', type=str, default='aladdinformalised', help='S3 bucket name')
+    parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for eval.')
-    parser.add_argument('--netuid', type=int, default=220, help='Bittensor network uid.')
+    parser.add_argument('--netuid', type=int, default=212, help='Bittensor network uid.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
     parser.add_argument('--restart', action='store_true', help='Restart all evaluation history')
