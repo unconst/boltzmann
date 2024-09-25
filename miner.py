@@ -116,7 +116,7 @@ def main(config):
             print ('\nLoading hparams ...')
             start_time = time.time()
             new_hparams = load_hparams()
-            hparams_changed = any(getattr(new_hparams, key) != getattr(hparams, key) for key in set(vars(new_hparams)) | set(vars(hparams)))
+            hparams_changed = False
             hparams = new_hparams
             print(f'\tLoading hparams completed in {time.time() - start_time} seconds') 
 
@@ -205,15 +205,12 @@ def main(config):
                                 mask_wid = int(mask_wid)
                                 if hotkey not in metagraph.hotkeys: 
                                     failed_file_masks += 1
-                                    print (f'Discarding {filename}, {hotkey} not registered.')
                                     continue # Miner is not registered on network.
                                 elif filename in already_seen_masks:
                                     failed_file_masks += 1
-                                    print (f'Discarding {filename}, because already seen.')
                                     continue
                                 elif mask_wid not in all_mask_wids:
                                     failed_file_masks += 1
-                                    print (f'Discarding {filename}, because {mask_wid} not in {all_mask_wids}')
                                     continue
                                 else:
                                     uid = metagraph.hotkeys.index(hotkey)
