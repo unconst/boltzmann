@@ -311,7 +311,19 @@ def main(config):
                     continue
 
                 # Get or create the mask for the window.
-                mask_indices = get_mask_indicies_for_mask_window( mask_wid, hparams.compression )
+                print(f'\n\tCreating mask for mask_wid: {mask_wid} ...')
+                mask_indices = {}
+                start_time = time.time()
+                for name, param in sorted(model.named_parameters()):
+                    param = param.to(config.device)
+                    param_shape = param.shape
+                    np.random.seed( int(mask_wid) )
+                    random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
+                    next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
+                    next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
+                    indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
+                    mask_indices[name] = indices
+                print(f'\t\tCreating mask completed in {time.time() - start_time} seconds')
 
                 # Load all masks as state dicts.
                 print(f'\n\tLoading state dicts for mask_wid: {mask_wid} ...')
@@ -474,13 +486,23 @@ def main(config):
             
             # Select the block to produce a mask for.
             next_upload_block = subtensor.block
-            
-            # Get the mask seed for the upload.
+                        
+            # Get the proper mask for my upload block + page.
+            start_time = time.time()  # Start timing
+            mask_indices = {}
             mask_seed = block_to_mask_window_id(next_upload_block)
-            
-            # Get or create the mask for the window.
-            mask_indices = get_mask_indicies_for_mask_window( mask_wid , hparams.compression )
-            
+            print(f'\nCreating upload mask for window: {mask_seed} ...')
+            for name, param in sorted(model.named_parameters()):
+                param = param.to(config.device)
+                param_shape = param.shape
+                np.random.seed( int(mask_seed) )
+                random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
+                next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
+                next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
+                indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
+                mask_indices[name] = indices
+            print(f'\tCreating upload mask_wid mask completed in {time.time() - start_time} seconds')
+                        
             # Mask the model values given the mask and produce a state dict.                
             print(f'\nApply {mask_seed} upload mask to model ...')
             model_state_dict = model.state_dict()
@@ -546,7 +568,7 @@ if __name__ == "__main__":
     parser.add_argument('--name', type=str, default=None, help='Optional miner name')
     parser.add_argument('--netuid', type=int, default=212, help='Bittensor network UID.')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
-    parser.add_argument('--actual_batch_size', type=int, default=6, help='Training batch size per accumulation.')
+    parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')    
     bt.wallet.add_args(parser)
