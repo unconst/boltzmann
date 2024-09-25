@@ -114,7 +114,7 @@ def main(config):
             np.random.seed(int(mask_wid))
             random_values = np.random.RandomState(seed=int(mask_wid)).rand(*param_shape)  # Generate NumPy random values in [0, 1) with a fixed seed
             next_mask = (random_values < (1 / compression)).astype(np.float32)  # Apply compression ratio
-            next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
+            next_mask_tensor = torch.from_numpy(next_mask).to('cpu')
             indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
             mask_indices[name] = indices.to('cpu')
         print(f'\t\tCreating mask completed in {time.time() - start_time} seconds')
