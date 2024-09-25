@@ -254,7 +254,7 @@ def main(config):
                                     mask_filenames_per_mask_wid[mask_wid].append(mask_info)
                                     already_seen_masks.append( mask_info.filename )
                                     num_valid_masks += 1
-                                    print (f'Applying {filename}@{bucket}. Success.')
+                                    print (f'Applying uid:{uid} {filename}@{bucket}. Success.')
 
                             except Exception as e:
                                 print (f'Error getting mask file with error: {e} for filename: {filename}')
