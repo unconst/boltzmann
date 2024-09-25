@@ -278,11 +278,11 @@ def main(config):
                 # Init the mask indices using the block number.
                 print(f'\n\tCreating mask for mask_wid: {mask_wid} ...')
                 mask_indices = {}
-                np.random.seed(int(mask_wid))
                 start_time = time.time()
                 for name, param in sorted(model.named_parameters()):
                     param = param.to(config.device)
                     param_shape = param.shape
+                    np.random.seed( int(mask_wid) )
                     random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
                     next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
                     next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
@@ -457,10 +457,10 @@ def main(config):
             upload_mask = {}
             mask_seed = block_to_mask_window_id(next_upload_block)
             print(f'\nCreating upload mask for window: {mask_seed} ...')
-            np.random.seed( int(mask_seed) )
             for name, param in sorted(model.named_parameters()):
                 param = param.to(config.device)
                 param_shape = param.shape
+                np.random.seed( int(mask_seed) )
                 random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
                 next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
                 next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
