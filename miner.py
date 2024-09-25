@@ -24,6 +24,7 @@ import time
 import wandb
 import boto3
 import torch
+import botocore
 import tempfile
 import argparse
 import traceback
@@ -55,9 +56,13 @@ torch.backends.cudnn.allow_tf32 = True
 env_config = {**dotenv_values(".env"), **os.environ}  # Load environment variables.
 AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')  # AWS access key ID.
 AWS_SECRET_ACCESS_KEY = env_config.get('AWS_SECRET_ACCESS_KEY')  # AWS secret access key.
+client_config = botocore.config.Config(
+    max_pool_connections=256
+)
 CLIENT: boto3.client = boto3.client(
     's3',
     region_name='us-east-1',  # AWS region.
+    config = client_config,
     aws_access_key_id=AWS_ACCESS_KEY_ID,
     aws_secret_access_key=AWS_SECRET_ACCESS_KEY
 )
@@ -95,6 +100,7 @@ def main(config):
     hparams = load_hparams()
     print ( hparams ) 
     model = None
+    already_seen_masks = []
     upload_history = []  
     last_mask_sync = 0 
     last_master_sync = 0
@@ -127,9 +133,9 @@ def main(config):
                 start_time = time.time() 
                 try:
                     master_uid = int(metagraph.S.argmax())
-                    master_bucket = subtensor.get_commitment( config.netuid, master_uid )
+                    master_bucket = 'aladdinformalised' #'#subtensor.get_commitment( config.netuid, master_uid )
                     master_hotkey = metagraph.hotkeys[ master_uid ]
-                    master_filename = f'master-{master_hotkey}.pt'
+                    master_filename = f'master-5GvKEoc787uDV8etY1AM8vF385edu2iyqD1WfCjDugzLUiAL.pt'
                     unique_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
                     CLIENT.download_file( master_bucket, master_filename, unique_temp_file )
                     master_state_dict = torch.load( unique_temp_file, map_location='cpu', weights_only = True )
@@ -156,7 +162,7 @@ def main(config):
                     foreach = True,  # more memory usage, but faster
                 )
                 scheduler = CosineAnnealingLR( optimizer, T_max = hparams.cosine_epoch_length, eta_min=hparams.eta_min, last_epoch=-1 )
-                print(f'\tResetting optimizercompleted in {time.time() - start_time} seconds') 
+                print(f'\tResetting optimizer completed in {time.time() - start_time} seconds') 
 
 
             print(f'\nGetting blocks and buckets ...')
@@ -172,7 +178,7 @@ def main(config):
             # Or if we should just redownload and apply the same masks.
             block = subtensor.block
             all_sync_blocks = list(range(last_mask_sync - 2, block + 1))            
-            last_mask_sync = (block_to_mask_window_id(block) + 1) * hparams.mask_window_length
+            last_mask_sync = block
             # Get buckets per uid if needs update.
             if 'buckets' not in locals() or len(buckets) != len(metagraph.uids):
                 buckets = []
@@ -184,27 +190,40 @@ def main(config):
             print(f'\tGetting block completed in {time.time() - start_time} seconds')
 
             # For each bucket, get all files that need to be synced.
-            print(f'\nGetting masks names for blocks: {all_sync_blocks} and buckets: {set(buckets)}')
             num_valid_masks = 0
+            failed_buckets = 0
             start_time = time.time()
             mask_filenames_per_mask_wid = {block_to_mask_window_id(blk): [] for blk in all_sync_blocks}
+            print(f'\nGetting masks names for blocks: {all_sync_blocks}, windows: {list(mask_filenames_per_mask_wid.keys())} and buckets: {set(buckets)}')
             for bucket in list(set(buckets)):
                 if bucket is None:
                     continue
-                paginator = CLIENT.get_paginator('list_objects_v2')
-                page_iterator = paginator.paginate(Bucket=bucket, Prefix='mask-')
-                for page in page_iterator:
-                    for obj in page.get('Contents', []):
-                        try:
-                            hotkey, blk = obj['Key'].split('-')[1], obj['Key'].split('-')[2].split('.')[0]
-                            if int(blk) in all_sync_blocks:
-                                mask_wid = block_to_mask_window_id(int(blk))
-                                mask_info = SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=obj['Key'], uid=metagraph.hotkeys.index(hotkey), block=int(blk), mask_wid=mask_wid)
-                                mask_filenames_per_mask_wid[mask_wid].append(mask_info)
-                                num_valid_masks += 1
-                        except:
-                            continue
-            print(f'\tGetting masks names for blocks: {all_sync_blocks} completed in {time.time() - start_time} seconds')
+                try:
+                    paginator = CLIENT.get_paginator('list_objects_v2')
+                    page_iterator = paginator.paginate(Bucket=bucket, Prefix='mask-')
+                    for page in page_iterator:
+                        if 'Contents' not in page: continue
+                        for obj in page.get('Contents', []):
+                            try:
+                                filename = obj['Key']
+                                hotkey, blk = filename.split('-')[1], filename.split('-')[2].split('.')[0]
+                                if int(blk) in all_sync_blocks and filename not in already_seen_masks:
+                                    mask_wid = block_to_mask_window_id(int(blk))
+                                    mask_info = SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, uid=metagraph.hotkeys.index(hotkey), block=int(blk), mask_wid=mask_wid)
+                                    mask_filenames_per_mask_wid[mask_wid].append(mask_info)
+                                    already_seen_masks.append( mask_info.filename )
+                                    num_valid_masks += 1
+                            except:
+                                continue
+                except Exception as e: 
+                    failed_buckets += 1
+                    print (f'\tFailed listing objects in bucket: {bucket} with error: {e}')
+                    continue
+            print(f'\tGetting {num_valid_masks} masks for buckets: {len(buckets) - failed_buckets}/{len(buckets)} for buckets {buckets} completed in {time.time() - start_time} seconds')
+            
+            # Clean history for memory reasons.
+            if len(already_seen_masks) > 256:
+                already_seen_masks = already_seen_masks[-256:]
 
             # Get the mask for mask_wids.
             print(f'\nDownloading {num_valid_masks} masks for: {all_sync_blocks}')
@@ -223,6 +242,7 @@ def main(config):
                 start_time = time.time()
                 temp_files = []
                 n_downloaded = 0
+                failed_downloaded = 0
                 def download_file(mask_info):
                     try:
                         temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
@@ -239,7 +259,9 @@ def main(config):
                         if result:
                             temp_files.append(result)
                             n_downloaded += 1
-                print(f'\t\tDownloading {n_downloaded} masks completed in {time.time() - start_time} seconds')
+                        else:
+                            failed_downloaded += 1
+                print(f'\t\tDownloading {n_downloaded}/{n_downloaded + failed_downloaded} masks completed in {time.time() - start_time} seconds')
 
                 # Break the loop when there is nothing to download.
                 if n_downloaded == 0:
@@ -261,36 +283,45 @@ def main(config):
                 print(f'\n\tLoading state dicts for mask_wid: {mask_wid} ...')
                 start_time = time.time()
                 mask_count = 0
+                masks_failed = 0
+                mask_successes = 0
                 masks_dicts_values = {}
                 for info in temp_files:
-                    masks_per_id_per_uid[info.mask_wid][info.uid] = {}
-                    mask = torch.load(info.temp_file, map_location='cpu')
-                    mask_count += 1
-                    for name in mask.keys():
-                        mask_values = mask[name]['values']
-                        if torch.isnan(mask_values).any():
-                            continue
-                        param_shape = model.get_parameter(name).shape
-                        indices = mask_indices[name]
-                        decompressed = torch.zeros(param_shape, device='cpu').flatten()
-                        decompressed[indices] = mask_values
-                        masks_per_id_per_uid[info.mask_wid][info.uid][name] = decompressed.view(param_shape)
-                        if name not in masks_dicts_values:
-                            masks_dicts_values[name] = decompressed.view(param_shape)
-                        else:
-                            masks_dicts_values[name] += decompressed.view(param_shape)
+                    try:
+                        masks_per_id_per_uid[info.mask_wid][info.uid] = {}
+                        mask = torch.load(info.temp_file, map_location='cpu', weights_only=True)
+                        mask_count += 1
+                        for name in mask.keys():
+                            mask_values = mask[name]['values']
+                            if torch.isnan(mask_values).any():
+                                continue
+                            param_shape = model.get_parameter(name).shape
+                            indices = mask_indices[name]
+                            decompressed = torch.zeros(param_shape, device='cpu').flatten()
+                            decompressed[indices] = mask_values
+                            masks_per_id_per_uid[info.mask_wid][info.uid][name] = decompressed.view(param_shape)
+                            if name not in masks_dicts_values:
+                                masks_dicts_values[name] = decompressed.view(param_shape)
+                            else:
+                                masks_dicts_values[name] += decompressed.view(param_shape)
+                        mask_successes += 1
+                    except Exception as e: 
+                        print (f'Loading mask {info} failed with error: {e}')
+                        masks_failed += 1
+                        pass
                 mask_count_per_id[mask_wid] = mask_count
-                print(f'\t\tLoading state dicts completed in {time.time() - start_time} seconds')
+                if config.use_wandb: wandb.log({"mask_success_rate": avg_masks_per_mask_wid})
+                print(f'\t\tLoading {mask_successes}/{mask_successes + masks_failed} state dicts completed in {time.time() - start_time} seconds')
 
                 # Average the masks before applying.
-                print(f'\n\tAveraging {mask_count} masks for mask_wid: {mask_wid} ...')
+                print(f'\n\tAveraging {mask_successes} successful masks for mask_wid: {mask_wid} ...')
                 start_time = time.time()
                 for key in masks_dicts_values.keys():
-                    masks_dicts_values[key] /= mask_count
+                    masks_dicts_values[key] /= mask_successes
                 print(f'\t\tAveraged state dicts in {time.time() - start_time} seconds')
 
                 # Set the average into the model.
-                print(f'\n\tApplying {mask_count} masks for mask_wid: {mask_wid} ...')
+                print(f'\n\tApplying {mask_successes} masks for mask_wid: {mask_wid} ...')
                 start_time = time.time()  # Start timing
                 for name, param in model.named_parameters():
                     indices = mask_indices[name]
@@ -323,9 +354,10 @@ def main(config):
             if config.use_wandb: wandb.log({"avg_masks_per_mask_wid": avg_masks_per_mask_wid})
 
             # Print completion
+            print(f'\tDownloading masks for blocks: {all_sync_blocks} and mask_wids: {list(mask_filenames_per_mask_wid.keys())} in {time.time() - full_sync_start_time} seconds')
             del mask_filenames_per_mask_wid
             torch.cuda.empty_cache()
-            print(f'\tDownloading masks for blocks: {all_sync_blocks} and mask_wids: {mask_filenames_per_mask_wid.keys()} in {time.time() - full_sync_start_time} seconds')
+            
             # Get the pages for this block and my_uid.
             # This is global and deterministic
             n_pages = max(1, int(hparams.desired_batch_size * 0.01))
@@ -430,7 +462,7 @@ def main(config):
             print(f'\tApplied mask to model completed in: {time.time() - start_time} seconds')
 
             # Upload the state dict of my masked weights.
-            print('\nUploading mask ...')
+            print(f'\nUploading mask for block:{next_upload_block} in mask window: {block_to_mask_window_id(next_upload_block)}...')
             start_time = time.time()
             upload_filename = f'mask-{wallet.hotkey.ss58_address}-{next_upload_block}.pt'
             with io.BytesIO() as module_buffer:
