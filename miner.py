@@ -94,7 +94,7 @@ def main(config):
 
     # Initialize Weights and Biases (wandb) for experiment tracking if enabled.
     if config.use_wandb:
-        run = wandb.init(project='cont', resume='allow', name=f'M{my_uid}', config=config)
+        run = wandb.init(project='220', resume='allow', name=f'M{my_uid}', config=config)
         
     # Init training state.
     print('\n', '-' * 40, 'Hparams', '-' * 40)

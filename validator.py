@@ -76,7 +76,7 @@ def main(config):
 
     # Initialize Weights and Biases (wandb) for experiment tracking if enabled.
     if config.use_wandb:
-        run = wandb.init(project='cont', resume='allow', name=f'V{my_uid}', config=config)
+        run = wandb.init(project='220', resume='allow', name=f'V{my_uid}', config=config)
         
     # Init the master model
     hparams = load_hparams()
