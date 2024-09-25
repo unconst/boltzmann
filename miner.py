@@ -167,15 +167,8 @@ def main(config):
 
             print(f'\nGetting blocks and buckets ...')
             start_time = time.time()  # Start timing
-            # Function which maps from block to mask_wid such that multiple blocks share the same mask window id.
-            # This is used to ensure that the model is not updated too frequently and that the mask is shared.
-            # for multiple updates which fall across multiple blocks.
             def block_to_mask_window_id(block: int) -> int:
                 return int(block / hparams.mask_window_length)
-            # This fast forwards us to the block which shares no ids with the previous block.
-            # If we don't do this fast forward, then we will be downloading the same masks multiple times.
-            # TODO (const) consider if we should just remember the last mask id and download all masks for that id.
-            # Or if we should just redownload and apply the same masks.
             block = subtensor.block
             all_sync_blocks = list(range(last_mask_sync - 2, block + 1))            
             last_mask_sync = block
@@ -275,6 +268,7 @@ def main(config):
                 start_time = time.time()
                 for name, param in model.named_parameters():
                     param = param.to(config.device)
+                    param_shape = param.shape
                     random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
                     next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
                     next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
@@ -447,6 +441,7 @@ def main(config):
             np.random.seed( mask_seed )
             for name, param in model.named_parameters():
                 param = param.to(config.device)
+                param_shape = param.shape
                 random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
                 next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
                 next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
