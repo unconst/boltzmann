@@ -200,13 +200,15 @@ def main(config):
                             try:
                                 filename = obj['Key']
                                 hotkey, mask_wid = filename.split('-')[1], filename.split('-')[2].split('.')[0]
+                                if hotkey not in metagraph.hotkeys: continue # Not registered mask.
                                 uid = metagraph.hotkeys.index(hotkey)
                                 if mask_wid in list(mask_filenames_per_mask_wid.keys()) and filename not in already_seen_masks:
-                                    mask_info = SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, uid=metagraph.hotkeys.index(hotkey), block=-1, mask_wid=mask_wid)
+                                    mask_info = SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, uid=uid, block=-1, mask_wid=mask_wid)
                                     mask_filenames_per_mask_wid[mask_wid].append(mask_info)
                                     already_seen_masks.append( mask_info.filename )
                                     num_valid_masks += 1
-                            except:
+                            except Exception as e:
+                                print (f'Error getting mask file with error: {e} and filename: {filename}')
                                 continue
                 except Exception as e: 
                     failed_buckets += 1
@@ -438,10 +440,10 @@ def main(config):
             next_upload_block = subtensor.block
             
             # Get the proper mask for my upload block + page.
-            print(f'\nCreating upload mask ...')
             start_time = time.time()  # Start timing
             upload_mask = {}
             mask_seed = block_to_mask_window_id(next_upload_block)
+            print(f'\nCreating upload mask for window: {mask_seed} ...')
             np.random.seed( mask_seed )
             for name, param in model.named_parameters():
                 param = param.to(config.device)
@@ -454,7 +456,7 @@ def main(config):
             print(f'\tCreating upload mask_wid mask completed in {time.time() - start_time} seconds')
             
             # Mask the model values given the mask and produce a state dict.                
-            print('\nApply upload mask to model ...')
+            print(f'\nApply {mask_seed} upload mask to model ...')
             model_state_dict = model.state_dict()
             for name, param in model.named_parameters():
                 param_mask = upload_mask[name].to(param.device)
