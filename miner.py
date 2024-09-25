@@ -110,7 +110,7 @@ def main(config):
         print(f'\n\tCreating mask for mask_wid: {mask_wid} ...')
         mask_indices = {}
         start_time = time.time()
-        for name, param_shape in param_shapes:
+        for name, param_shape in param_shapes.items():
             np.random.seed(int(mask_wid))
             random_values = np.random.RandomState(seed=int(mask_wid)).rand(*param_shape)  # Generate NumPy random values in [0, 1) with a fixed seed
             next_mask = (random_values < (1 / compression)).astype(np.float32)  # Apply compression ratio
