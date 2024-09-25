@@ -219,7 +219,7 @@ def main(config):
                     failed_buckets += 1
                     print (f'\tFailed listing objects in bucket: {bucket} with error: {e}')
                     continue
-            print(f'\tGetting {num_valid_masks} masks for buckets: {len(buckets) - failed_buckets}/{len(buckets)} for buckets {buckets} completed in {time.time() - start_time} seconds')
+            print(f'\tGetting {num_valid_masks} masks for buckets: {len(buckets) - failed_buckets}/{len(buckets)} for buckets {set(buckets)} completed in {time.time() - start_time} seconds')
             
             # Clean history for memory reasons.
             if len(already_seen_masks) > 256:
