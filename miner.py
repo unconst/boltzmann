@@ -199,11 +199,10 @@ def main(config):
                         for obj in page.get('Contents', []):
                             try:
                                 filename = obj['Key']
-                                hotkey, blk = filename.split('-')[1], filename.split('-')[2].split('.')[0]
+                                hotkey, mask_wid = filename.split('-')[1], filename.split('-')[2].split('.')[0]
                                 uid = metagraph.hotkeys.index(hotkey)
-                                if int(blk) in all_sync_blocks and filename not in already_seen_masks:
-                                    mask_wid = block_to_mask_window_id(int(blk))
-                                    mask_info = SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, uid=metagraph.hotkeys.index(hotkey), block=int(blk), mask_wid=mask_wid)
+                                if mask_wid in list(mask_filenames_per_mask_wid.keys()) and filename not in already_seen_masks:
+                                    mask_info = SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, uid=metagraph.hotkeys.index(hotkey), block=-1, mask_wid=mask_wid)
                                     mask_filenames_per_mask_wid[mask_wid].append(mask_info)
                                     already_seen_masks.append( mask_info.filename )
                                     num_valid_masks += 1
@@ -469,9 +468,9 @@ def main(config):
             print(f'\tApplied mask to model completed in: {time.time() - start_time} seconds')
 
             # Upload the state dict of my masked weights.
-            print(f'\nUploading mask for block:{next_upload_block} in mask window: {block_to_mask_window_id(next_upload_block)}...')
+            print(f'\nUploading mask for block:{next_upload_block} in mask window: {mask_seed}...')
             start_time = time.time()
-            upload_filename = f'mask-{wallet.hotkey.ss58_address}-{next_upload_block}.pt'
+            upload_filename = f'mask-{wallet.hotkey.ss58_address}-{mask_seed}.pt'
             with io.BytesIO() as module_buffer:
                 torch.save(model_state_dict, module_buffer)
                 module_buffer.seek(0)  # Reset the buffer's position to the beginning.
