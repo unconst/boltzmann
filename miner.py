@@ -315,7 +315,7 @@ def main(config):
                         masks_failed += 1
                         pass
                 mask_count_per_id[mask_wid] = mask_count
-                if config.use_wandb: wandb.log({"mask_success_rate": avg_masks_per_mask_wid})
+                if config.use_wandb: wandb.log({"mask_success_rate": (mask_successes)/(mask_successes + masks_failed)})
                 print(f'\t\tLoading {mask_successes}/{mask_successes + masks_failed} state dicts completed in {time.time() - start_time} seconds')
 
                 # Average the masks before applying.
