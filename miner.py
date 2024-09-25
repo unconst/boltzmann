@@ -271,10 +271,8 @@ def main(config):
             # Get the mask for mask_wids.
             print(f'\nDownloading {num_valid_masks} masks for: {all_sync_blocks}')
             full_sync_start_time = time.time()
-            masks_per_id_per_uid = {}
             mask_count_per_id = {}
             for mask_wid in mask_filenames_per_mask_wid.keys():
-                masks_per_id_per_uid[mask_wid] = {}
                 # Get the number of masks for this step.
                 num_masks_for_mask_wid = len(mask_filenames_per_mask_wid[mask_wid])
                 if num_masks_for_mask_wid == 0:
@@ -334,8 +332,7 @@ def main(config):
                 masks_dicts_values = {}
                 for info in temp_files:
                     try:
-                        masks_per_id_per_uid[info.mask_wid][info.uid] = {}
-                        mask = torch.load(info.temp_file, map_location='cpu', weights_only=True)
+                        mask = torch.load(info.temp_file, map_location='cuda', weights_only=True)
                         mask_count += 1
                         for name in mask.keys():
                             mask_values = mask[name]['values']
@@ -343,9 +340,8 @@ def main(config):
                                 continue
                             param_shape = model.get_parameter(name).shape
                             indices = mask_indices[name]
-                            decompressed = torch.zeros(param_shape, device='cpu').flatten()
+                            decompressed = torch.zeros(param_shape, device='cuda').flatten()
                             decompressed[indices] = mask_values
-                            masks_per_id_per_uid[info.mask_wid][info.uid][name] = decompressed.view(param_shape)
                             if name not in masks_dicts_values:
                                 masks_dicts_values[name] = decompressed.view(param_shape)
                             else:

@@ -12,7 +12,7 @@
     "max_position_embeddings": 2048,
     "mask_window_length": 10,
     "desired_batch_size": 128,
-    "learning_rate": 0.0004,
+    "learning_rate": 0.001,
     "optimizer_beta1": 0.9,
     "optimizer_beta2": 0.95,
     "optimizer_weight_decay": 0.1,
