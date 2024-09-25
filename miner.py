@@ -346,6 +346,8 @@ def main(config):
                                 masks_dicts_values[name] = decompressed.view(param_shape)
                             else:
                                 masks_dicts_values[name] += decompressed.view(param_shape)
+                                decompressed.to('cpu')
+                                del decompressed # clean up after.
                         mask_successes += 1
                     except Exception as e: 
                         print (f'Loading mask {info} failed with error: {e}')
