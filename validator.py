@@ -201,12 +201,17 @@ def main(config):
                 print(f'Creating mask for mask_wid: {mask_wid} ...')
                 mask_indices = {}
                 torch.manual_seed(mask_wid)
+                torch.cuda.manual_seed(mask_wid)  # For CUDA operations if running on GPU
+                torch.backends.cudnn.deterministic = True  # Enforce deterministic algorithms in cuDNN
+                torch.backends.cudnn.benchmark = False     # Disable cuDNN's auto-tuner that selects the best algorithms
                 start_time = time.time()
                 for name, param in model.named_parameters():
                     param = param.to(config.device)
                     next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
                     indices = next_mask.flatten().nonzero(as_tuple=False).flatten()
                     mask_indices[name] = indices
+                torch.backends.cudnn.deterministic = False  # Enforce deterministic algorithms in cuDNN
+                torch.backends.cudnn.benchmark = True     # Disable cuDNN's auto-tuner that selects the best algorithms
                 print(f'Creating mask completed in {time.time() - start_time} seconds')
 
                 # Load all masks as state dicts.
