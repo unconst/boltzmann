@@ -207,6 +207,8 @@ def main(config):
                                     mask_filenames_per_mask_wid[mask_wid].append(mask_info)
                                     already_seen_masks.append( mask_info.filename )
                                     num_valid_masks += 1
+                                else:
+                                    print (f'File discarded mask_wid:{mask_wid}, hotkey:{hotkey}, filename: {filename}')
                             except Exception as e:
                                 print (f'Error getting mask file with error: {e} and filename: {filename}')
                                 continue
