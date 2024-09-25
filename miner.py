@@ -185,8 +185,10 @@ def main(config):
             # For each bucket, get all files that need to be synced.
             num_valid_masks = 0
             failed_buckets = 0
+            failed_file_masks = 0
             start_time = time.time()
-            mask_filenames_per_mask_wid = {block_to_mask_window_id(blk): [] for blk in all_sync_blocks}
+            mask_filenames_per_mask_wid = {int(block_to_mask_window_id(blk)): [] for blk in all_sync_blocks}
+            all_mask_wids = set(list(mask_filenames_per_mask_wid.keys()))
             print(f'\nGetting masks names for blocks: {all_sync_blocks}, windows: {list(mask_filenames_per_mask_wid.keys())} and buckets: {set(buckets)}')
             for bucket in list(set(buckets)):
                 if bucket is None:
@@ -200,23 +202,35 @@ def main(config):
                             try:
                                 filename = obj['Key']
                                 hotkey, mask_wid = filename.split('-')[1], filename.split('-')[2].split('.')[0]
-                                if hotkey not in metagraph.hotkeys: continue # Miner is not registered on network.
-                                uid = metagraph.hotkeys.index(hotkey)
-                                if mask_wid in list(mask_filenames_per_mask_wid.keys()) and filename not in already_seen_masks:
-                                    mask_info = SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, uid=uid, block=-1, mask_wid=mask_wid)
+                                mask_wid = int(mask_wid)
+                                if hotkey not in metagraph.hotkeys: 
+                                    failed_file_masks += 1
+                                    print (f'Discarding {filename}, {hotkey} not registered.')
+                                    continue # Miner is not registered on network.
+                                elif filename in already_seen_masks:
+                                    failed_file_masks += 1
+                                    print (f'Discarding {filename}, because already seen.')
+                                    continue
+                                elif mask_wid not in all_mask_wids:
+                                    failed_file_masks += 1
+                                    print (f'Discarding {filename}, because {mask_wid} not in {all_mask_wids}')
+                                    continue
+                                else:
+                                    uid = metagraph.hotkeys.index(hotkey)
+                                    mask_info = SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, uid=uid, block=-1, mask_wid=int(mask_wid))
                                     mask_filenames_per_mask_wid[mask_wid].append(mask_info)
                                     already_seen_masks.append( mask_info.filename )
                                     num_valid_masks += 1
-                                else:
-                                    print (f'File discarded mask_wid:{mask_wid}, hotkey:{hotkey}, filename: {filename}')
+                                    print (f'Applying {filename}. Success.')
+
                             except Exception as e:
-                                print (f'Error getting mask file with error: {e} and filename: {filename}')
+                                print (f'Error getting mask file with error: {e} for filename: {filename}')
                                 continue
                 except Exception as e: 
                     failed_buckets += 1
                     print (f'\tFailed listing objects in bucket: {bucket} with error: {e}')
                     continue
-            print(f'\tGetting {num_valid_masks} masks for buckets: {len(buckets) - failed_buckets}/{len(buckets)} for buckets {set(buckets)} completed in {time.time() - start_time} seconds')
+            print(f'\tGetting masks: {num_valid_masks}/{num_valid_masks + failed_file_masks} masks for buckets: {len(buckets) - failed_buckets}/{len(buckets)} for buckets {set(buckets)} completed in {time.time() - start_time} seconds')
             
             # Clean history for memory reasons.
             if len(already_seen_masks) > 256:
@@ -267,7 +281,7 @@ def main(config):
                 # Init the mask indices using the block number.
                 print(f'\n\tCreating mask for mask_wid: {mask_wid} ...')
                 mask_indices = {}
-                np.random.seed(mask_wid)
+                np.random.seed(int(mask_wid))
                 start_time = time.time()
                 for name, param in model.named_parameters():
                     param = param.to(config.device)
@@ -446,7 +460,7 @@ def main(config):
             upload_mask = {}
             mask_seed = block_to_mask_window_id(next_upload_block)
             print(f'\nCreating upload mask for window: {mask_seed} ...')
-            np.random.seed( mask_seed )
+            np.random.seed( int(mask_seed) )
             for name, param in model.named_parameters():
                 param = param.to(config.device)
                 param_shape = param.shape
