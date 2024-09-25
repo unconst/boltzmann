@@ -136,9 +136,7 @@ def main(config):
             # Load hparams.
             print ('\nLoading hparams ...')
             start_time = time.time()
-            new_hparams = load_hparams()
-            hparams_changed = False
-            hparams = new_hparams
+            hparams = load_hparams()
             print(f'\tLoading hparams completed in {time.time() - start_time} seconds') 
 
             # Sync the current chain state and hparams.
@@ -176,7 +174,7 @@ def main(config):
             # Reset the optimizer if we need to.
             if (
                 'optimizer' not in locals() or 
-                optimizer == None or 
+                optimizer is None or 
                 prev_learning_rate != hparams.learning_rate or 
                 prev_optimizer_beta1 != hparams.optimizer_beta1 or 
                 prev_optimizer_beta2 != hparams.optimizer_beta2 or 
@@ -186,7 +184,7 @@ def main(config):
             ):
                 print(f'\nResetting optimizer ...') 
                 start_time = time.time()
-                prev_learning_rate = hparams.learning_rate,
+                prev_learning_rate = hparams.learning_rate
                 prev_optimizer_beta1 = hparams.optimizer_beta1
                 prev_optimizer_beta2 = hparams.optimizer_beta2
                 prev_optimizer_weight_decay = hparams.optimizer_weight_decay
