@@ -33,6 +33,7 @@ from tqdm import tqdm
 import bittensor as bt
 import concurrent.futures  
 import torch.optim as optim
+from functools import lru_cache
 from typing import List, Tuple
 from dotenv import dotenv_values
 from types import SimpleNamespace
@@ -100,6 +101,26 @@ def main(config):
     hparams = load_hparams()
     print ( hparams ) 
     model = None
+    
+    # Build a LRU for the masks.
+    # This function is called often so we want to pre a
+    @lru_cache(maxsize=10)
+    def get_mask_indicies_for_mask_window( mask_wid:int ):
+        print(f'\n\tCreating mask for mask_wid: {mask_wid} ...')
+        mask_indices = {}
+        start_time = time.time()
+        for name, param in sorted(model.named_parameters()):
+            param = param.to(config.device)
+            param_shape = param.shape
+            np.random.seed(int(mask_wid))
+            random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
+            next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
+            next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
+            indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
+            mask_indices[name] = indices
+        print(f'\t\tCreating mask completed in {time.time() - start_time} seconds')
+        return mask_indices
+        
     already_seen_masks = []
     upload_history = []  
     last_mask_sync = 0 
@@ -235,7 +256,7 @@ def main(config):
                                     mask_filenames_per_mask_wid[mask_wid].append(mask_info)
                                     already_seen_masks.append( mask_info.filename )
                                     num_valid_masks += 1
-                                    print (f'Applying {filename}. Success.')
+                                    print (f'Applying {filename}@{bucket}. Success.')
 
                             except Exception as e:
                                 print (f'Error getting mask file with error: {e} for filename: {filename}')
@@ -292,20 +313,8 @@ def main(config):
                 if n_downloaded == 0:
                     continue
 
-                # Init the mask indices using the block number.
-                print(f'\n\tCreating mask for mask_wid: {mask_wid} ...')
-                mask_indices = {}
-                start_time = time.time()
-                for name, param in sorted(model.named_parameters()):
-                    param = param.to(config.device)
-                    param_shape = param.shape
-                    np.random.seed( int(mask_wid) )
-                    random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
-                    next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
-                    next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
-                    indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
-                    mask_indices[name] = indices
-                print(f'\t\tCreating mask completed in {time.time() - start_time} seconds')
+                # Get or create the mask for the window.
+                mask_indices = get_mask_indicies_for_mask_window( mask_wid )
 
                 # Load all masks as state dicts.
                 print(f'\n\tLoading state dicts for mask_wid: {mask_wid} ...')
@@ -387,7 +396,7 @@ def main(config):
             if config.use_wandb: wandb.log({"avg_masks_per_mask_wid": avg_masks_per_mask_wid})
 
             # Print completion
-            print(f'\tDownloading masks for blocks: {all_sync_blocks} and mask_wids: {list(mask_filenames_per_mask_wid.keys())} in {time.time() - full_sync_start_time} seconds')
+            print(f'Downloading masks for blocks: {all_sync_blocks} and mask_wids: {list(mask_filenames_per_mask_wid.keys())} in {time.time() - full_sync_start_time} seconds')
             del mask_filenames_per_mask_wid
             torch.cuda.empty_cache()
             
@@ -469,34 +478,24 @@ def main(config):
             # Select the block to produce a mask for.
             next_upload_block = subtensor.block
             
-            # Get the proper mask for my upload block + page.
-            start_time = time.time()  # Start timing
-            upload_mask = {}
+            # Get the mask seed for the upload.
             mask_seed = block_to_mask_window_id(next_upload_block)
-            print(f'\nCreating upload mask for window: {mask_seed} ...')
-            for name, param in sorted(model.named_parameters()):
-                param = param.to(config.device)
-                param_shape = param.shape
-                np.random.seed( int(mask_seed) )
-                random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
-                next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
-                next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
-                indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
-                upload_mask[name] = indices
-            print(f'\tCreating upload mask_wid mask completed in {time.time() - start_time} seconds')
+            
+            # Get or create the mask for the window.
+            mask_indices = get_mask_indicies_for_mask_window( mask_wid )
             
             # Mask the model values given the mask and produce a state dict.                
             print(f'\nApply {mask_seed} upload mask to model ...')
             model_state_dict = model.state_dict()
             for name, param in model.named_parameters():
-                param_mask = upload_mask[name].to(param.device)
+                param_mask = mask_indices[name].to(param.device)
                 param_flat = param.flatten()
                 mask_flat = param_mask.flatten()
                 unmasked_indices = mask_flat.nonzero(as_tuple=False).flatten()
                 unmasked_params = param_flat[unmasked_indices]
                 model_state_dict[name] = {'values': unmasked_params.to('cpu')}
                 del unmasked_indices
-            del upload_mask
+            del mask_indices
             print(f'\tApplied mask to model completed in: {time.time() - start_time} seconds')
 
             # Upload the state dict of my masked weights.
