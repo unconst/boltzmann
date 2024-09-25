@@ -309,35 +309,40 @@ def main(config):
                 mask_count_per_id[mask_wid] = mask_count
                 if config.use_wandb: wandb.log({"mask_success_rate": (mask_successes)/(mask_successes + masks_failed)})
                 print(f'\t\tLoading {mask_successes}/{mask_successes + masks_failed} state dicts completed in {time.time() - start_time} seconds')
+                
+                # Check for no masks.
+                if mask_successes != 0:
+                    # Average the masks before applying.
+                    print(f'\n\tAveraging {mask_successes} successful masks for mask_wid: {mask_wid} ...')
+                    start_time = time.time()
+                    for key in masks_dicts_values.keys():
+                        masks_dicts_values[key] /= mask_successes
+                    print(f'\t\tAveraged state dicts in {time.time() - start_time} seconds')
 
-                # Average the masks before applying.
-                print(f'\n\tAveraging {mask_successes} successful masks for mask_wid: {mask_wid} ...')
-                start_time = time.time()
-                for key in masks_dicts_values.keys():
-                    masks_dicts_values[key] /= mask_successes
-                print(f'\t\tAveraged state dicts in {time.time() - start_time} seconds')
-
-                # Set the average into the model.
-                print(f'\n\tApplying {mask_successes} masks for mask_wid: {mask_wid} ...')
-                start_time = time.time()  # Start timing
-                for name, param in model.named_parameters():
-                    indices = mask_indices[name]
-                    if name in masks_dicts_values:
-                        if masks_dicts_values[name].shape == param.shape:
-                            # Apply the mask values to the flattened param data.
-                            on_device = masks_dicts_values[name].to(model.device).flatten()
-                            param_flat = param.data.flatten()
-                            param_flat[indices] = on_device[indices]
-                            param.data.copy_(param_flat.view(param.shape))
-                            del on_device, param_flat
-                        else:
-                            print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
-                for key in masks_dicts_values.keys():
-                    masks_dicts_values[key] = masks_dicts_values[key].cpu()
-                for key in mask_indices.keys():
-                    mask_indices[key] = mask_indices[key].cpu()
-                del mask_indices, masks_dicts_values
-                print(f'\t\tApplying {mask_count} masks completed in {time.time() - start_time} seconds')
+                    # Set the average into the model.
+                    print(f'\n\tApplying {mask_successes} masks for mask_wid: {mask_wid} ...')
+                    start_time = time.time()  # Start timing
+                    for name, param in model.named_parameters():
+                        indices = mask_indices[name]
+                        if name in masks_dicts_values:
+                            if masks_dicts_values[name].shape == param.shape:
+                                # Apply the mask values to the flattened param data.
+                                on_device = masks_dicts_values[name].to(model.device).flatten()
+                                param_flat = param.data.flatten()
+                                param_flat[indices] = on_device[indices]
+                                param.data.copy_(param_flat.view(param.shape))
+                                del on_device, param_flat
+                            else:
+                                print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
+                    for key in masks_dicts_values.keys():
+                        masks_dicts_values[key] = masks_dicts_values[key].cpu()
+                    for key in mask_indices.keys():
+                        mask_indices[key] = mask_indices[key].cpu()
+                    del mask_indices, masks_dicts_values
+                    print(f'\t\tApplying {mask_count} masks completed in {time.time() - start_time} seconds')
+                else:
+                    print(f'\t\tNot successful masks added to average.')
+                    continue
 
                 # Delete files and clean up.
                 print(f'\n\tDeleting files for mask_wid: {mask_wid} ...')
