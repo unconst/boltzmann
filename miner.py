@@ -100,7 +100,7 @@ def main(config):
     print('\n', '-' * 40, 'Hparams', '-' * 40)
     hparams = load_hparams()
     print ( hparams ) 
-    model = None
+    model = LlamaForCausalLM( config = hparams.model_config )
     
     # Build a LRU for the masks.
     # This function is called often so we want to pre a
