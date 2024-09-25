@@ -207,6 +207,7 @@ def main(config):
                             try:
                                 filename = obj['Key']
                                 hotkey, blk = filename.split('-')[1], filename.split('-')[2].split('.')[0]
+                                uid = metagraph.hotkeys.index(hotkey)
                                 if int(blk) in all_sync_blocks and filename not in already_seen_masks:
                                     mask_wid = block_to_mask_window_id(int(blk))
                                     mask_info = SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, uid=metagraph.hotkeys.index(hotkey), block=int(blk), mask_wid=mask_wid)
@@ -270,18 +271,15 @@ def main(config):
                 # Init the mask indices using the block number.
                 print(f'\n\tCreating mask for mask_wid: {mask_wid} ...')
                 mask_indices = {}
-                torch.manual_seed(mask_wid)
-                torch.cuda.manual_seed(mask_wid)  # For CUDA operations if running on GPU
-                torch.backends.cudnn.deterministic = True  # Enforce deterministic algorithms in cuDNN
-                torch.backends.cudnn.benchmark = False     # Disable cuDNN's auto-tuner that selects the best algorithms
+                np.random.seed(mask_wid)
                 start_time = time.time()
                 for name, param in model.named_parameters():
                     param = param.to(config.device)
-                    next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
-                    indices = next_mask.flatten().nonzero(as_tuple=False).flatten()
+                    random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
+                    next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
+                    next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
+                    indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
                     mask_indices[name] = indices
-                torch.backends.cudnn.deterministic = False  # Enforce deterministic algorithms in cuDNN
-                torch.backends.cudnn.benchmark = True     # Disable cuDNN's auto-tuner that selects the best algorithms
                 print(f'\t\tCreating mask completed in {time.time() - start_time} seconds')
 
                 # Load all masks as state dicts.
@@ -446,16 +444,14 @@ def main(config):
             start_time = time.time()  # Start timing
             upload_mask = {}
             mask_seed = block_to_mask_window_id(next_upload_block)
-            torch.manual_seed(mask_seed)
-            torch.cuda.manual_seed(mask_seed)  # For CUDA operations if running on GPU
-            torch.backends.cudnn.deterministic = True  # Enforce deterministic algorithms in cuDNN
-            torch.backends.cudnn.benchmark = False     # Disable cuDNN's auto-tuner that selects the best algorithms
+            np.random.seed( mask_seed )
             for name, param in model.named_parameters():
                 param = param.to(config.device)
-                next_mask = (torch.rand(param.shape, device=config.device) < (1 / hparams.compression)).float()
-                upload_mask[name] = next_mask.to('cpu')
-            torch.backends.cudnn.deterministic = False  # Enforce deterministic algorithms in cuDNN
-            torch.backends.cudnn.benchmark = True     # Disable cuDNN's auto-tuner that selects the best algorithms
+                random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
+                next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
+                next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
+                indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
+                mask_indices[name] = indices
             print(f'\tCreating upload mask_wid mask completed in {time.time() - start_time} seconds')
             
             # Mask the model values given the mask and produce a state dict.                
