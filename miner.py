@@ -323,9 +323,11 @@ def main(config):
             if config.use_wandb: wandb.log({"avg_masks_per_mask_wid": avg_masks_per_mask_wid})
 
             # Print completion
+            # del mask_filenames_per_mask_wid
+            # torch.cuda.empty_cache()
+            print(f'\tDownloading masks for blocks: {all_sync_blocks} and mask_wids: {mask_filenames_per_mask_wid.keys()} in {time.time() - full_sync_start_time} seconds')
             del mask_filenames_per_mask_wid
             torch.cuda.empty_cache()
-            print(f'\tDownloading masks for blocks: {all_sync_blocks} and mask_wids: {mask_filenames_per_mask_wid.keys()} in {time.time() - full_sync_start_time} seconds')
             # Get the pages for this block and my_uid.
             # This is global and deterministic
             n_pages = max(1, int(hparams.desired_batch_size * 0.01))
@@ -478,7 +480,7 @@ def main(config):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Miner script')    
     parser.add_argument('--name', type=str, default=None, help='Optional miner name')
-    parser.add_argument('--netuid', type=int, default=212, help='Bittensor network UID.')
+    parser.add_argument('--netuid', type=int, default=220, help='Bittensor network UID.')
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
     parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')

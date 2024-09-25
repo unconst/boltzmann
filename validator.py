@@ -100,6 +100,9 @@ def main(config):
     last_n = int(metagraph.n)
     scores = torch.zeros( last_n, dtype = torch.float32 )
     last_mask_sync = subtensor.block
+    update_master = True
+    master_exists_in_bucket = True
+    # n_downloaded = 0
     while True:
         try:
             # Load the latest chain state and reset my connection.
@@ -146,6 +149,9 @@ def main(config):
                 paginator = CLIENT.get_paginator('list_objects_v2')
                 page_iterator = paginator.paginate(Bucket=bucket, Prefix='mask-')
                 for page in page_iterator:
+                    if 'Contents' not in page:
+                        # No objects found in this page, continue to the next page or bucket
+                        continue
                     for obj in page['Contents']:
                         try:
                             hotkey, blk = obj['Key'].split('-')[1], obj['Key'].split('-')[2].split('.')[0]
@@ -195,6 +201,7 @@ def main(config):
 
                 # Break the loop when there is nothing to download.
                 if n_downloaded == 0:
+                    update_master = False
                     continue
 
                 # Init the mask indices using the block number.
@@ -273,43 +280,63 @@ def main(config):
             # Print completion
             torch.cuda.empty_cache()
             print(f'Downloading masks for blocks: {all_sync_blocks} and mask_wids: {mask_filenames_per_mask_wid.keys()} in {time.time() - full_sync_start_time} seconds')
-            
-            # Upload a full copy of the model weights to master
-            print('Uploading master ...')
-            start_time = time.time()
-            # Save the model's state dictionary
-            model_state_dict = model.state_dict()
-            # Generate filenames for temporary and master objects
-            temp_key = f"master-temp-{uuid.uuid4()}.pt"
-            master_key = f"master-{wallet.hotkey.ss58_address}.pt"
-            # Use an in-memory buffer to serialize the model
-            with io.BytesIO() as module_buffer:
-                # Serialize the model state dict to the buffer
-                torch.save(model_state_dict, module_buffer)
-                module_buffer.seek(0)  # Reset buffer position to the beginning
-                # Upload the buffer to S3 with the temporary key
-                CLIENT.upload_fileobj(module_buffer, config.bucket, temp_key)
-                print(f'Temporary model uploaded as {temp_key}')
 
-            # Set the ACL to make the temporary object publicly readable
-            CLIENT.put_object_acl(
-                Bucket=config.bucket,
-                Key=temp_key,
-                ACL='public-read'
-            )
-            # Atomically copy the temporary object to the master key
-            CLIENT.copy_object(
-                Bucket=config.bucket,
-                CopySource={'Bucket': config.bucket, 'Key': temp_key},
-                Key=master_key,
-                ACL='public-read'
-            )
-            print(f'Model atomically copied to {master_key}')
-            # Delete the temporary object to clean up
-            CLIENT.delete_object(Bucket=config.bucket, Key=temp_key)
-            print(f'Temporary object {temp_key} deleted')
-            elapsed_time = time.time() - start_time
-            print(f'Uploading master completed in {elapsed_time} seconds.')
+            # Function to check if master exists in the bucket
+            def check_master_exists(bucket: str, wallet_address: str) -> bool:
+                master_key = f"master-{wallet.hotkey.ss58_address}.pt"
+                try:
+                    CLIENT.head_object(Bucket=bucket, Key=master_key)
+                    return True
+                except CLIENT.exceptions.ClientError as e:
+                    if e.response['Error']['Code'] == "404":
+                        return False
+                    else:
+                        # Something else has gone wrong.
+                        raise
+
+            # Check if we need to upload the master
+            if update_master or not check_master_exists(config.bucket, wallet.hotkey.ss58_address):
+                # Upload a full copy of the model weights to master
+                print('Uploading master ...')
+                start_time = time.time()
+                # Save the model's state dictionary
+                model_state_dict = model.state_dict()
+                # Generate filenames for temporary and master objects
+                temp_key = f"master-temp-{uuid.uuid4()}.pt"
+                master_key = f"master-{wallet.hotkey.ss58_address}.pt"
+                # Use an in-memory buffer to serialize the model
+                with io.BytesIO() as module_buffer:
+                    # Serialize the model state dict to the buffer
+                    torch.save(model_state_dict, module_buffer)
+                    module_buffer.seek(0)  # Reset buffer position to the beginning
+                    # Upload the buffer to S3 with the temporary key
+                    CLIENT.upload_fileobj(module_buffer, config.bucket, temp_key)
+                    print(f'Temporary model uploaded as {temp_key}')
+
+                # Set the ACL to make the temporary object publicly readable
+                CLIENT.put_object_acl(
+                    Bucket=config.bucket,
+                    Key=temp_key,
+                    ACL='public-read'
+                )
+                # Atomically copy the temporary object to the master key
+                CLIENT.copy_object(
+                    Bucket=config.bucket,
+                    CopySource={'Bucket': config.bucket, 'Key': temp_key},
+                    Key=master_key,
+                    ACL='public-read'
+                )
+                print(f'Model atomically copied to {master_key}')
+                # Delete the temporary object to clean up
+                CLIENT.delete_object(Bucket=config.bucket, Key=temp_key)
+                print(f'Temporary object {temp_key} deleted')
+                elapsed_time = time.time() - start_time
+                print(f'Uploading master completed in {elapsed_time} seconds.')
+            else:
+                # No updates to master and master exists, restarting validation cycle
+                print("No updates to master and master exists. Restarting validation cycle.")
+                time.sleep(5)  # Wait for a short period before retrying.
+                continue
         
             id_to_eval = None
             if len(list(masks_per_id_per_uid.keys())) == 0:
@@ -435,9 +462,9 @@ def main(config):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Validator script')
     parser.add_argument('--name', type=str, default=None, help='Optional name')
-    parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
+    parser.add_argument('--bucket', type=str, default='aladdinformalised', help='S3 bucket name')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for eval.')
-    parser.add_argument('--netuid', type=int, default=212, help='Bittensor network uid.')
+    parser.add_argument('--netuid', type=int, default=220, help='Bittensor network uid.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
     parser.add_argument('--restart', action='store_true', help='Restart all evaluation history')
