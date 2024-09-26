@@ -236,7 +236,9 @@ def main(config):
                         for obj in page.get('Contents', []):
                             try:
                                 filename = obj['Key']
-                                hotkey, mask_wid = filename.split('-')[1], filename.split('-')[2].split('.')[0]
+                                parts = filename.split('-')
+                                hotkey = parts[1]
+                                mask_wid = parts[2].split('.')[0]
                                 mask_wid = int(mask_wid)
                                 if hotkey not in metagraph.hotkeys: 
                                     failed_file_masks += 1
@@ -494,7 +496,7 @@ def main(config):
                 param = param.to(config.device)
                 param_shape = param.shape
                 np.random.seed( int(mask_seed) )
-                random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1)
+                random_values = np.random.rand(*param_shape)  # Generate NumPy random values in [0, 1) 
                 next_mask = (random_values < (1 / hparams.compression)).astype(np.float32)  # Apply compression ratio
                 next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
                 indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
@@ -518,7 +520,7 @@ def main(config):
             # Upload the state dict of my masked weights.
             print(f'\nUploading mask for block:{next_upload_block} in mask window: {mask_seed}...')
             start_time = time.time()
-            upload_filename = f'mask-{wallet.hotkey.ss58_address}-{mask_seed}.pt'
+            upload_filename = f'mask-{wallet.hotkey.ss58_address}-{mask_seed}-{next_upload_block}-{int(time.time())}.pt'
             with io.BytesIO() as module_buffer:
                 torch.save(model_state_dict, module_buffer)
                 module_buffer.seek(0)  # Reset the buffer's position to the beginning.

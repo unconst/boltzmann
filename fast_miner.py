@@ -336,8 +336,7 @@ def main(config):
                         mask_count += 1
                         for name in mask.keys():
                             mask_values = mask[name]['values']
-                            if torch.isnan(mask_values).any():
-                                continue
+                            if torch.isnan(mask_values).any(): continue # contains nans.
                             param_shape = model.get_parameter(name).shape
                             indices = mask_indices[name]
                             decompressed = torch.zeros(param_shape, device=config.device).flatten()
