@@ -19,6 +19,6 @@
     "grad_clip": 1.0,
     "cosine_epoch_length": 1000,
     "eta_min": 1e-05,
-    "max_history": 5,
+    "max_history": 6,
     "pages_window_speed": 10
 }
