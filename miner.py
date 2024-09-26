@@ -495,6 +495,7 @@ def main(config):
                 wandb.log({
                     "global_steps_per_second": global_steps_per_second,
                     "global_step_time": global_step_total_time,
+                    "global_tokens_per_second": hparams.sequence_length * config.actual_batch_size * total_steps / global_step_total_time 
                 })
             print (f'\nGlobal step completed in {global_step_total_time} seconds\n')
                  
