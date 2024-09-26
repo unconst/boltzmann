@@ -331,9 +331,6 @@ def main(config):
                                 masks_dicts_values[name] = decompressed.view(param_shape)
                             else:
                                 masks_dicts_values[name] += decompressed.view(param_shape)
-                                decompressed.to('cpu')
-                            decompressed.to('cpu')
-                            mask_values.to('cpu')
                             del decompressed, mask_values
                         mask_successes += 1
                     except Exception as e: 
