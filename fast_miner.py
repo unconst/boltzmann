@@ -332,7 +332,7 @@ def main(config):
                 masks_dicts_values = {}
                 for info in temp_files:
                     try:
-                        mask = torch.load(info.temp_file, map_location='cpu', weights_only=True)
+                        mask = torch.load(info.temp_file, map_location=torch.device(config.device), weights_only=True)
                         mask_count += 1
                         for name in mask.keys():
                             mask_values = mask[name]['values']
