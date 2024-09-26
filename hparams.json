@@ -1,6 +1,6 @@
 {
     "epoch_length": 250000,
-    "compression": 1000,
+    "compression": 300,
     "sequence_length": 2048,
     "tokenizer_name": "togethercomputer/LLaMA-2-7B-32K",
     "num_hidden_layers": 16,
