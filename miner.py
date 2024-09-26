@@ -310,7 +310,7 @@ def main(config):
                     indices = rng.choice(param_size, size=num_indices, replace=False)
                     mask_indices[name] = torch.from_numpy(indices).long().cpu()
                 # Compute a hash of all the sizes of all the mask_indices
-                sizes_hash = hashlib.md5(str([indices.numel() for indices in mask_indices.values()]).encode('utf-8')).hexdigest()
+                sizes_hash = hashlib.md5(str([indices[0].item() for indices in mask_indices.values() if indices.numel() > 0]).encode('utf-8')).hexdigest()
                 print(f'\t\tHash: {sizes_hash}')
                 print(f'\t\tCreating mask completed in {time.time() - create_mask_start_time} seconds')
 
@@ -331,7 +331,7 @@ def main(config):
                             del values
                         mask_successes += 1
                     except Exception as e: 
-                        print (f'Loading mask {info} failed with error: {e}')
+                        print (f'Loading mask {info} failed with error: {e} -- name: {name} -- values: {values.shape} -- indices: {indices.shape} -- param: {param.shape}')
                         masks_failed += 1
                         pass
                 mask_count_per_id[mask_wid] = mask_count
@@ -449,7 +449,7 @@ def main(config):
                 num_indices = max(1, param_size // hparams.compression)
                 indices = rng.choice(param_size, size=num_indices, replace=False)
                 mask_indices[name] = torch.from_numpy(indices).long().cpu()
-            sizes_hash = hashlib.md5(str([indices.numel() for indices in mask_indices.values()]).encode('utf-8')).hexdigest()
+            sizes_hash = hashlib.md5(str([indices[0].item() for indices in mask_indices.values() if indices.numel() > 0]).encode('utf-8')).hexdigest()
             print(f'\t\tHash: {sizes_hash}')
             print(f'\tCreating upload mask completed in {time.time() - create_upload_mask_start_time} seconds')
      
