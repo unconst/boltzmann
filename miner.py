@@ -333,7 +333,7 @@ def main(config):
                 masks_dicts_values = {}
                 for info in temp_files:
                     try:
-                        mask = torch.load(info.temp_file, map_location='cuda', weights_only=True)
+                        mask = torch.load(info.temp_file, map_location=torch.device(config.device), weights_only=True)
                         mask_count += 1
                         for name in mask.keys():
                             mask_values = mask[name]['values']
@@ -341,14 +341,16 @@ def main(config):
                                 continue
                             param_shape = model.get_parameter(name).shape
                             indices = mask_indices[name]
-                            decompressed = torch.zeros(param_shape, device='cuda').flatten()
+                            decompressed = torch.zeros(param_shape, device=config.device).flatten()
                             decompressed[indices] = mask_values
                             if name not in masks_dicts_values:
                                 masks_dicts_values[name] = decompressed.view(param_shape)
                             else:
                                 masks_dicts_values[name] += decompressed.view(param_shape)
                                 decompressed.to('cpu')
-                                del decompressed # clean up after.
+                            decompressed.to('cpu')
+                            mask_values.to('cpu')
+                            del decompressed, mask_values
                         mask_successes += 1
                     except Exception as e: 
                         print (f'Loading mask {info} failed with error: {e}')
