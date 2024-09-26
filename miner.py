@@ -109,20 +109,6 @@ def main(config):
     hparams = load_hparams()
     print ( hparams ) 
     model = LlamaForCausalLM( config = hparams.model_config )
-    
-    # Build a LRU for the masks.
-    # This function is called often so we want to precompute the parameter sizes.
-    param_sizes = [(name, param.numel()) for name, param in sorted(model.named_parameters())]
-    @lru_cache(maxsize=4)
-    def get_mask_indices_for_mask_window(mask_seed: int, compression: int):
-        start_time: float = time.time()
-        mask_indices = {}
-        rng = np.random.default_rng(int(mask_seed))
-        for name, param_size in param_sizes:
-            num_indices = max(1, param_size // compression)
-            indices = rng.choice(param_size, size=num_indices, replace=False)
-            mask_indices[name] = torch.from_numpy(indices)
-        return mask_indices
         
     already_seen_masks = []
     upload_history = []  
@@ -255,7 +241,7 @@ def main(config):
                                     mask_filenames_per_mask_wid[mask_wid].append(mask_info)
                                     already_seen_masks.append( mask_info.filename )
                                     num_valid_masks += 1
-                                    print (f'Applying uid:{uid} {filename}@{bucket}. Success.')
+                                    print (f'\t - Applying uid:{uid} {filename}@{bucket}. Success.')
 
                             except Exception as e:
                                 print (f'Error getting mask file with error: {e} for filename: {filename}')
@@ -314,7 +300,13 @@ def main(config):
                 # Get or create the mask for the window.
                 print(f'\n\tCreating mask for mask_wid: {mask_wid} and compression: {hparams.compression} ...')
                 create_mask_start_time = time.time()
-                mask_indices = get_mask_indices_for_mask_window( mask_wid, hparams.compression )
+                mask_indices = {}
+                rng = np.random.default_rng(int(mask_wid))
+                for name, param in sorted(model.named_parameters()):
+                    param_size = param.numel()
+                    num_indices = max(1, param_size // hparams.compression)
+                    indices = rng.choice(param_size, size=num_indices, replace=False)
+                    mask_indices[name] = torch.from_numpy(indices)
                 print(f'\t\tCreating mask completed in {time.time() - create_mask_start_time} seconds')
 
                 # Load all masks as state dicts.
@@ -330,10 +322,9 @@ def main(config):
                         mask_count += 1
                         for name in mask.keys():
                             mask_values = mask[name]['values']
-                            if torch.isnan(mask_values).any():
-                                continue
+                            if torch.isnan(mask_values).any(): continue
                             param_shape = model.get_parameter(name).shape
-                            indices = mask_indices[name]
+                            indices = mask_indices[name].to(config.device)
                             decompressed = torch.zeros(param_shape, device=config.device).flatten()
                             decompressed[indices] = mask_values
                             if name not in masks_dicts_values:
@@ -377,18 +368,17 @@ def main(config):
                                 del on_device, param_flat
                             else:
                                 print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
-                    for key in masks_dicts_values.keys():
-                        masks_dicts_values[key] = masks_dicts_values[key].cpu()
-                    for key in mask_indices.keys():
-                        mask_indices[key] = mask_indices[key].cpu()
-                    del mask_indices, masks_dicts_values
                     print(f'\t\tApplying {mask_count} masks completed in {time.time() - apply_masks_start_time} seconds')
                 else:
                     print(f'\t\tNot successful masks added to average.')
                     continue
-
-                # Delete files and clean up.
+                
                 print(f'\n\tDeleting files for mask_wid: {mask_wid} ...')
+                for key in masks_dicts_values.keys():
+                    masks_dicts_values[key] = masks_dicts_values[key].cpu()
+                for key in mask_indices.keys():
+                    mask_indices[key] = mask_indices[key].cpu()
+                del mask_indices, masks_dicts_values
                 delete_files_start_time = time.time()
                 for info in temp_files:
                     os.remove(info.temp_file)
@@ -399,7 +389,7 @@ def main(config):
             if config.use_wandb: wandb.log({"avg_masks_per_mask_wid": avg_masks_per_mask_wid})
 
             # Print completion
-            print(f'Downloading masks for blocks: {all_sync_blocks} and mask_wids: {list(mask_filenames_per_mask_wid.keys())} in {time.time() - download_masks_start_time} seconds')
+            print(f'\nDownloading masks for blocks: {all_sync_blocks} and mask_wids: {list(mask_filenames_per_mask_wid.keys())} in {time.time() - download_masks_start_time} seconds')
             del mask_filenames_per_mask_wid
             torch.cuda.empty_cache()
             
@@ -483,7 +473,13 @@ def main(config):
             mask_seed = int(block_to_mask_window_id( next_upload_block ))
             print(f'\nCreating upload mask for mask_wid: {mask_seed} and compression: {hparams.compression} ...')
             create_upload_mask_start_time = time.time()
-            mask_indices = get_mask_indices_for_mask_window( mask_seed, hparams.compression )
+            mask_indices = {}
+            rng = np.random.default_rng(int(mask_seed))
+            for name, param in sorted(model.named_parameters()):
+                param_size = param.numel()
+                num_indices = max(1, param_size // hparams.compression)
+                indices = rng.choice(param_size, size=num_indices, replace=False)
+                mask_indices[name] = torch.from_numpy(indices)
             print(f'\tCreating upload mask completed in {time.time() - create_upload_mask_start_time} seconds')
      
             # Mask the model values given the mask and produce a state dict.                
