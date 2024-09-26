@@ -110,7 +110,7 @@ def main(config):
     hparams = load_hparams()
     print ( hparams ) 
     model = LlamaForCausalLM( config = hparams.model_config )
-    names_and_sizes = [ (name, param.numel()) for name, param in sorted(model.named_parameters()) ]
+    names_and_sizes = [ (name, param.numel(), max(1, int(param.numel() // hparams.compression)) ) for name, param in sorted(model.named_parameters()) ]
         
     already_seen_masks = []
     upload_history = []  
@@ -305,12 +305,11 @@ def main(config):
                 mask_seed_rng = int(hashlib.md5(str(mask_wid).encode('utf-8')).hexdigest(), 16) % (2**32)
                 rng = np.random.default_rng(mask_seed_rng)
                 print(f'\n\tCreating mask for mask_wid: {mask_wid} and rng: {mask_seed_rng} and compression: {hparams.compression} ...')
-                for name, param_size in names_and_sizes:
-                    num_indices = max(1, param_size // hparams.compression)
-                    indices = rng.choice(param_size, size=num_indices, replace=False)
-                    mask_indices[name] = torch.from_numpy(indices).long().cpu()
+                for name_l, param_size_l, num_indices_l in names_and_sizes:
+                    indices_l = rng.choice( param_size_l, size = num_indices_l, replace=False)
+                    mask_indices[ name_l ] = torch.from_numpy( indices_l ).long().cpu()
                 # Compute a hash of all the sizes of all the mask_indices
-                sizes_hash = hashlib.md5(str([indices[0].item() for indices in mask_indices.values() if indices.numel() > 0]).encode('utf-8')).hexdigest()
+                sizes_hash = hashlib.md5(str([str(indices.shape) for indices in mask_indices.values() if indices.numel() > 0]).encode('utf-8')).hexdigest()
                 print(f'\t\tHash: {sizes_hash}')
                 print(f'\t\tCreating mask completed in {time.time() - create_mask_start_time} seconds')
 
@@ -324,14 +323,15 @@ def main(config):
                     try:
                         mask_count += 1
                         mask = torch.load(info.temp_file, map_location=torch.device(config.device), weights_only=True)
-                        for name, param in model.named_parameters():
-                            values = mask[name]['values'].to(config.device)
-                            indices = mask_indices[name].to(config.device)
-                            param.data.view(-1)[indices] += values  # Add the masked values to the local for averaging later.
-                            del values
+                        for name_k, _, _ in names_and_sizes:
+                            param_k = model.get_parameter(name_k)
+                            values_k = mask[name_k].to(config.device)
+                            indices_k = mask_indices[name_k].to(config.device)
+                            param_k.data.view(-1)[indices_k] += values_k  # Add the masked values to the local for averaging later.
+                            del values_k
                         mask_successes += 1
                     except Exception as e: 
-                        print (f'Loading mask {info} failed with error: {e} -- name: {name} -- values: {values.shape} -- indices: {indices.shape} -- param: {param.shape}')
+                        print (f'Loading mask {info} failed with error: {e} -- name: {name_k} -- values: {values_k.shape} -- indices: {indices_k.shape} -- param: {param_k.shape}')
                         masks_failed += 1
                         pass
                 mask_count_per_id[mask_wid] = mask_count
@@ -445,11 +445,11 @@ def main(config):
             mask_seed_rng = int(hashlib.md5(str(mask_seed).encode('utf-8')).hexdigest(), 16) % (2**32)
             rng = np.random.default_rng(mask_seed_rng)
             print(f'\nCreating mask for mask_wid: {mask_seed} and rng: {mask_seed_rng} and compression: {hparams.compression} ...')
-            for name, param_size in names_and_sizes:
-                num_indices = max(1, param_size // hparams.compression)
-                indices = rng.choice(param_size, size=num_indices, replace=False)
-                mask_indices[name] = torch.from_numpy(indices).long().cpu()
-            sizes_hash = hashlib.md5(str([indices[0].item() for indices in mask_indices.values() if indices.numel() > 0]).encode('utf-8')).hexdigest()
+            for name_j, param_size_j, num_indices_j in names_and_sizes:
+                indices_j = rng.choice(param_size_j, size=num_indices_j, replace=False)
+                indices_tensor = torch.from_numpy(indices_j).long().cpu()
+                mask_indices[name_j] = indices_tensor
+            sizes_hash = hashlib.md5(str([str(indices.shape) for indices in mask_indices.values() if indices.numel() > 0]).encode('utf-8')).hexdigest()
             print(f'\t\tHash: {sizes_hash}')
             print(f'\tCreating upload mask completed in {time.time() - create_upload_mask_start_time} seconds')
      
@@ -457,14 +457,9 @@ def main(config):
             print(f'\nApply {mask_seed} upload mask to model ...')
             apply_upload_mask_start_time = time.time()
             model_state_dict = model.state_dict()
-            for name, param in model.named_parameters():
-                param_mask = mask_indices[name].to(param.device)
-                param_flat = param.flatten()
-                mask_flat = param_mask.flatten()
-                unmasked_indices = mask_flat.nonzero(as_tuple=False).flatten()
-                unmasked_params = param_flat[unmasked_indices]
-                model_state_dict[name] = {'values': unmasked_params.to('cpu')}
-                del unmasked_indices
+            for name_i, _, _ in names_and_sizes:
+                param_i = model.get_parameter( name_i )
+                model_state_dict[name_i] = param_i.flatten()[mask_indices[name_i].to(config.device)].cpu()
             del mask_indices
             print(f'\tApplied mask to model completed in: {time.time() - apply_upload_mask_start_time} seconds')
 
