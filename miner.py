@@ -302,7 +302,7 @@ def main(config):
                 # Get or create the mask for the window.
                 create_mask_start_time = time.time()
                 mask_indices = {}
-                mask_seed_rng = int(hashlib.md5(str(mask_seed).encode('utf-8')).hexdigest(), 16) % (2**32)
+                mask_seed_rng = int(hashlib.md5(str(mask_wid).encode('utf-8')).hexdigest(), 16) % (2**32)
                 rng = np.random.default_rng(mask_seed_rng)
                 print(f'\n\tCreating mask for mask_wid: {mask_wid} and rng: {mask_seed_rng} and compression: {hparams.compression} ...')
                 for name, param_size in names_and_sizes:
