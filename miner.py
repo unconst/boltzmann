@@ -308,7 +308,10 @@ def main(config):
                 for name, param_size in names_and_sizes:
                     num_indices = max(1, param_size // hparams.compression)
                     indices = rng.choice(param_size, size=num_indices, replace=False)
-                    mask_indices[name] = torch.from_numpy(indices).long()
+                    mask_indices[name] = torch.from_numpy(indices).long().cpu()
+                # Compute a hash of all the sizes of all the mask_indices
+                sizes_hash = hashlib.md5(str([indices.numel() for indices in mask_indices.values()]).encode('utf-8')).hexdigest()
+                print(f'\t\tHash: {sizes_hash}')
                 print(f'\t\tCreating mask completed in {time.time() - create_mask_start_time} seconds')
 
                 # Load all masks as state dicts.
@@ -317,23 +320,15 @@ def main(config):
                 mask_count = 0
                 masks_failed = 0
                 mask_successes = 0
-                masks_dicts_values = {}
                 for info in temp_files:
                     try:
-                        mask = torch.load(info.temp_file, map_location=torch.device(config.device), weights_only=True)
                         mask_count += 1
-                        for name in mask.keys():
-                            mask_values = mask[name]['values']
-                            if torch.isnan(mask_values).any(): continue
-                            param_shape = model.get_parameter(name).shape
+                        mask = torch.load(info.temp_file, map_location=torch.device(config.device), weights_only=True)
+                        for name, param in model.named_parameters():
+                            values = mask[name]['values'].to(config.device)
                             indices = mask_indices[name].to(config.device)
-                            decompressed = torch.zeros(param_shape, device=config.device).flatten()
-                            decompressed[indices] = mask_values
-                            if name not in masks_dicts_values:
-                                masks_dicts_values[name] = decompressed.view(param_shape)
-                            else:
-                                masks_dicts_values[name] += decompressed.view(param_shape)
-                            del decompressed, mask_values
+                            param.data.view(-1)[indices] += values  # Add the masked values to the local for averaging later.
+                            del values
                         mask_successes += 1
                     except Exception as e: 
                         print (f'Loading mask {info} failed with error: {e}')
@@ -343,41 +338,16 @@ def main(config):
                 if config.use_wandb: wandb.log({"mask_success_rate": (mask_successes)/(mask_successes + masks_failed)})
                 print(f'\t\tLoading {mask_successes}/{mask_successes + masks_failed} state dicts completed in {time.time() - load_state_dicts_start_time} seconds')
                 
-                # Check for no masks.
-                if mask_successes != 0:
-                    # Average the masks before applying.
-                    print(f'\n\tAveraging {mask_successes} successful masks for mask_wid: {mask_wid} ...')
-                    average_masks_start_time = time.time()
-                    for key in masks_dicts_values.keys():
-                        masks_dicts_values[key] /= mask_successes
-                    print(f'\t\tAveraged state dicts in {time.time() - average_masks_start_time} seconds')
+                # Average the values under the mask.
+                print(f'\n\tAveraging {mask_successes} successful masks for mask_wid: {mask_wid} ...')
+                average_masks_start_time = time.time()
+                for name, param in model.named_parameters():
+                    indices = mask_indices[name].to(config.device)
+                    param.data.view(-1)[indices] /= (mask_successes + 1)  # Average (only) the masked values
+                print(f'\t\tAveraged state dicts in {time.time() - average_masks_start_time} seconds')
 
-                    # Set the average into the model.
-                    print(f'\n\tApplying {mask_successes} masks for mask_wid: {mask_wid} ...')
-                    apply_masks_start_time = time.time()  # Start timing
-                    for name, param in model.named_parameters():
-                        indices = mask_indices[name]
-                        if name in masks_dicts_values:
-                            if masks_dicts_values[name].shape == param.shape:
-                                # Apply the mask values to the flattened param data.
-                                on_device = masks_dicts_values[name].to(model.device).flatten()
-                                param_flat = param.data.flatten()
-                                param_flat[indices] = on_device[indices]
-                                param.data.copy_(param_flat.view(param.shape))
-                                del on_device, param_flat
-                            else:
-                                print(f"Shape mismatch for {name}: expected {param.shape}, got {masks_dicts_values[name].shape}")
-                    print(f'\t\tApplying {mask_count} masks completed in {time.time() - apply_masks_start_time} seconds')
-                else:
-                    print(f'\t\tNot successful masks added to average.')
-                    continue
-                
                 print(f'\n\tDeleting files for mask_wid: {mask_wid} ...')
-                for key in masks_dicts_values.keys():
-                    masks_dicts_values[key] = masks_dicts_values[key].cpu()
-                for key in mask_indices.keys():
-                    mask_indices[key] = mask_indices[key].cpu()
-                del mask_indices, masks_dicts_values
+                del mask_indices
                 delete_files_start_time = time.time()
                 for info in temp_files:
                     os.remove(info.temp_file)
@@ -440,13 +410,13 @@ def main(config):
                 optimizer.step()
                 scheduler.step()  # Update the learning rate.
                 optimizer.zero_grad()
+                
+                # Clean lingering objects
+                del input_ids, labels, outputs
+                torch.cuda.empty_cache() # Empty cache at end of step.
             except AssertionError as e:
                 print(f"\tAn error occurred during the optimizer step: {e}")
-            
-            # Clean lingering objects
-            del input_ids, labels, outputs
-            torch.cuda.empty_cache() # Empty cache at end of step.
-            
+                        
             # Calculate, print and logg average loss
             average_loss = total_loss / total_steps
             total_time = time.time() - train_pages_start_time
@@ -478,7 +448,9 @@ def main(config):
             for name, param_size in names_and_sizes:
                 num_indices = max(1, param_size // hparams.compression)
                 indices = rng.choice(param_size, size=num_indices, replace=False)
-                mask_indices[name] = torch.from_numpy(indices).long()
+                mask_indices[name] = torch.from_numpy(indices).long().cpu()
+            sizes_hash = hashlib.md5(str([indices.numel() for indices in mask_indices.values()]).encode('utf-8')).hexdigest()
+            print(f'\t\tHash: {sizes_hash}')
             print(f'\tCreating upload mask completed in {time.time() - create_upload_mask_start_time} seconds')
      
             # Mask the model values given the mask and produce a state dict.                
