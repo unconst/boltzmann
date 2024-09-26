@@ -24,6 +24,7 @@ import time
 import wandb
 import boto3
 import torch
+import hashlib
 import botocore
 import tempfile
 import argparse
@@ -109,6 +110,7 @@ def main(config):
     hparams = load_hparams()
     print ( hparams ) 
     model = LlamaForCausalLM( config = hparams.model_config )
+    names_and_sizes = [ (name, param.numel()) for name, param in sorted(model.named_parameters()) ]
         
     already_seen_masks = []
     upload_history = []  
@@ -298,15 +300,15 @@ def main(config):
                     continue
 
                 # Get or create the mask for the window.
-                print(f'\n\tCreating mask for mask_wid: {mask_wid} and compression: {hparams.compression} ...')
                 create_mask_start_time = time.time()
                 mask_indices = {}
-                rng = np.random.default_rng(int(mask_wid))
-                for name, param in sorted(model.named_parameters()):
-                    param_size = param.numel()
+                mask_seed_rng = int(hashlib.md5(str(mask_seed).encode('utf-8')).hexdigest(), 16) % (2**32)
+                rng = np.random.default_rng(mask_seed_rng)
+                print(f'\n\tCreating mask for mask_wid: {mask_wid} and rng: {mask_seed_rng} and compression: {hparams.compression} ...')
+                for name, param_size in names_and_sizes:
                     num_indices = max(1, param_size // hparams.compression)
                     indices = rng.choice(param_size, size=num_indices, replace=False)
-                    mask_indices[name] = torch.from_numpy(indices)
+                    mask_indices[name] = torch.from_numpy(indices).long()
                 print(f'\t\tCreating mask completed in {time.time() - create_mask_start_time} seconds')
 
                 # Load all masks as state dicts.
@@ -468,15 +470,15 @@ def main(config):
                         
             # Get the proper mask for my upload block + page.
             mask_seed = int(block_to_mask_window_id( next_upload_block ))
-            print(f'\nCreating upload mask for mask_wid: {mask_seed} and compression: {hparams.compression} ...')
             create_upload_mask_start_time = time.time()
             mask_indices = {}
-            rng = np.random.default_rng(int(mask_seed))
-            for name, param in sorted(model.named_parameters()):
-                param_size = param.numel()
+            mask_seed_rng = int(hashlib.md5(str(mask_seed).encode('utf-8')).hexdigest(), 16) % (2**32)
+            rng = np.random.default_rng(mask_seed_rng)
+            print(f'\nCreating mask for mask_wid: {mask_seed} and rng: {mask_seed_rng} and compression: {hparams.compression} ...')
+            for name, param_size in names_and_sizes:
                 num_indices = max(1, param_size // hparams.compression)
                 indices = rng.choice(param_size, size=num_indices, replace=False)
-                mask_indices[name] = torch.from_numpy(indices)
+                mask_indices[name] = torch.from_numpy(indices).long()
             print(f'\tCreating upload mask completed in {time.time() - create_upload_mask_start_time} seconds')
      
             # Mask the model values given the mask and produce a state dict.                
