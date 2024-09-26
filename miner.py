@@ -238,8 +238,7 @@ def main(config):
                                 filename = obj['Key']
                                 parts = filename.split('-')
                                 hotkey = parts[1]
-                                mask_wid = parts[2].split('.')[0]
-                                mask_wid = int(mask_wid)
+                                mask_wid = int(parts[2].split('.')[0])
                                 if hotkey not in metagraph.hotkeys: 
                                     failed_file_masks += 1
                                     continue # Miner is not registered on network.
@@ -491,6 +490,9 @@ def main(config):
             start_time = time.time()  # Start timing
             mask_indices = {}
             mask_seed = block_to_mask_window_id(next_upload_block)
+            if 'last_seed' in locals() and mask_seed == last_seed:
+                mask_seed += 1
+            last_seed = mask_seed
             print(f'\nCreating upload mask for window: {mask_seed} ...')
             for name, param in sorted(model.named_parameters()):
                 param = param.to(config.device)
@@ -520,7 +522,7 @@ def main(config):
             # Upload the state dict of my masked weights.
             print(f'\nUploading mask for block:{next_upload_block} in mask window: {mask_seed}...')
             start_time = time.time()
-            upload_filename = f'mask-{wallet.hotkey.ss58_address}-{mask_seed}-{next_upload_block}-{int(time.time())}.pt'
+            upload_filename = f'mask-{wallet.hotkey.ss58_address}-{mask_seed}.pt'
             with io.BytesIO() as module_buffer:
                 torch.save(model_state_dict, module_buffer)
                 module_buffer.seek(0)  # Reset the buffer's position to the beginning.
