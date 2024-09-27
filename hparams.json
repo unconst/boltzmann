@@ -1,6 +1,6 @@
 {
     "epoch_length": 250000,
-    "compression": 1000,
+    "compression": 300,
     "sequence_length": 2048,
     "tokenizer_name": "togethercomputer/LLaMA-2-7B-32K",
     "num_hidden_layers": 16,
@@ -11,7 +11,7 @@
     "activation_function": "swiGLU",
     "max_position_embeddings": 2048,
     "mask_window_length": 1,
-    "desired_batch_size": 128,
+    "desired_batch_size": 256,
     "learning_rate": 0.001,
     "optimizer_beta1": 0.9,
     "optimizer_beta2": 0.95,

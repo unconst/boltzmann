@@ -16,6 +16,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 test*
+asyncio_miner.py
 *.ipynb
 venv/
 wandb/
