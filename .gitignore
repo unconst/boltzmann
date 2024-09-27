@@ -16,6 +16,8 @@
 # DEALINGS IN THE SOFTWARE.
 
 test*
+models/
+lm-evaluation-harness/
 asyncio_miner.py
 *.ipynb
 venv/

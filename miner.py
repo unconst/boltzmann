@@ -98,12 +98,12 @@ def main(config):
     if config.use_wandb:
         # Check for existing runs with the same name and delete them
         api = wandb.Api()
-        runs = api.runs(path="220-A")
+        runs = api.runs(path="220A")
         for run in runs:
             if run.name == f'M{my_uid}':
                 print (f'Deleting old run: {run}')
                 run.delete()        
-        run = wandb.init(project='220', resume='allow', name=f'M{my_uid}', config=config)
+        run = wandb.init(project='220A', resume='allow', name=f'M{my_uid}', config=config)
         
     # Init training state.
     print('\n', '-' * 40, 'Hparams', '-' * 40)
@@ -463,9 +463,9 @@ def main(config):
             
             # Every steps_per_master_upload steps we upload the master state of the model
             # This can be used for eval etc.
-            if global_step % hparams.steps_per_master_upload == 1 and not config.baseline:
+            if global_step % hparams.steps_per_master_upload == 1:
                 # Upload a full copy of the model weights to master
-                print('Uploading master ...')
+                print('\nUploading master ...')
                 start_time = time.time()
                 model_state_dict = model.state_dict()
                 upload_filename = f'master-{wallet.hotkey.ss58_address}.pt'
@@ -479,7 +479,7 @@ def main(config):
                     GrantRead='uri="http://acs.amazonaws.com/groups/global/AllUsers"',
                     GrantReadACP='uri="http://acs.amazonaws.com/groups/global/AllUsers"'
                 )
-                print(f'Uploading master completed in {time.time() - start_time} seconds.')
+                print(f'Uploading master {upload_filename}@{config.bucket} completed in {time.time() - start_time} seconds.')
 
             # Delete old mask files and clean.
             print('\nDeleting history ...')
