@@ -95,24 +95,7 @@ def main(config):
         except Exception as e:
             raise ValueError("There is no master to continue from. Run with --restart")
     model.to(config.device)
-    
-    # Build a LRU for the masks.
-    # This function is called often so we want to pre a
-    param_shapes = {name: param.shape for name, param in sorted(model.named_parameters())}
-    @lru_cache(maxsize=5)
-    def get_mask_indicies_for_mask_window( mask_wid:int, compression: int ):
-        print(f'\n\tCreating mask for mask_wid: {mask_wid} ...')
-        mask_indices = {}
-        start_time = time.time()
-        for name, param_shape in param_shapes:
-            np.random.seed(int(mask_wid))
-            random_values = np.random.RandomState(seed=int(mask_wid)).rand(*param_shape)  # Generate NumPy random values in [0, 1) with a fixed seed
-            next_mask = (random_values < (1 / compression)).astype(np.float32)  # Apply compression ratio
-            next_mask_tensor = torch.from_numpy(next_mask).to(config.device)
-            indices = next_mask_tensor.flatten().nonzero(as_tuple=False).flatten()
-            mask_indices[name] = indices
-        print(f'\t\tCreating mask completed in {time.time() - start_time} seconds')
-        return mask_indices
+
         
     # Start.
     last_n = int(metagraph.n)

@@ -115,18 +115,18 @@ def main(config):
     upload_history = []  
     last_mask_sync = 0 
     last_master_sync = 0
-    n_steps = 0
+    global_step = 0
     while True:
         try:   
-            print('\n', '-' * 40, f'Global Step: {n_steps}', '-' * 40) 
+            print('\n', '-' * 40, f'Global Step: {global_step}', '-' * 40) 
             # Start timing for the entire step
             global_step_start_time = time.time()
-            n_steps += 1
+            global_step += 1
             
             # Load hparams.
             # Only sync chain state every 5 steps.
-            if n_steps % 5 == 0:
-                print (f'\nLoading chain state on step {n_steps} ...')
+            if global_step % 5 == 0:
+                print (f'\nLoading chain state on step {global_step} ...')
                 load_chain_state_start_time = time.time()
                 hparams = load_hparams()
                 subtensor = bt.subtensor(config=config)
@@ -456,6 +456,26 @@ def main(config):
             )
             upload_history.append(upload_filename)
             print(f'\tUploading mask to: {upload_filename} completed in {time.time() - upload_mask_start_time} seconds')
+            
+            # Every steps_per_master_upload steps we upload the master state of the model
+            # This can be used for eval etc.
+            if global_step % hparams.steps_per_master_upload == 0:
+                # Upload a full copy of the model weights to master
+                print('Uploading master ...')
+                start_time = time.time()
+                model_state_dict = model.state_dict()
+                upload_filename = f'master-{wallet.hotkey.ss58_address}.pt'
+                with io.BytesIO() as module_buffer:
+                    torch.save(model_state_dict, module_buffer)
+                    module_buffer.seek(0)  # Reset the buffer's position to the beginning.
+                    CLIENT.upload_fileobj(module_buffer, config.bucket, upload_filename)
+                CLIENT.put_object_acl(
+                    Bucket=config.bucket,
+                    Key=upload_filename,
+                    GrantRead='uri="http://acs.amazonaws.com/groups/global/AllUsers"',
+                    GrantReadACP='uri="http://acs.amazonaws.com/groups/global/AllUsers"'
+                )
+                print(f'Uploading master completed in {time.time() - start_time} seconds.')
 
             # Delete old mask files and clean.
             print('\nDeleting history ...')
