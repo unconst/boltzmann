@@ -459,7 +459,7 @@ def main(config):
             
             # Every steps_per_master_upload steps we upload the master state of the model
             # This can be used for eval etc.
-            if global_step % hparams.steps_per_master_upload == 0:
+            if global_step % hparams.steps_per_master_upload == 1:
                 # Upload a full copy of the model weights to master
                 print('Uploading master ...')
                 start_time = time.time()
