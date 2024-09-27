@@ -20,12 +20,12 @@ def main(config):
     if config.use_wandb:
         # Check for existing runs with the same name and delete them
         api = wandb.Api()
-        runs = api.runs(path="220A")
+        runs = api.runs(path=config.project)
         for run in runs:
             if run.name == f'Eval':
                 print(f'Deleting old run: {run}')
                 run.delete()
-        run = wandb.init(project='220A', resume='allow', name='Eval', config=config)
+        run = wandb.init(project=config.project, resume='allow', name='Eval', config=config)
 
     while True:
         
@@ -123,6 +123,7 @@ def main(config):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Miner script')
+    parser.add_argument('--project', type=str, default='220A', help='Optional wandb project name')
     parser.add_argument('--netuid', type=int, default=220, help='Bittensor network UID.')
     parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
