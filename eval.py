@@ -110,7 +110,7 @@ def main(config):
                     if metric_value is not None:
                         print(f"{uid}/{task_name}:  {metric_value}")
                         if config.use_wandb:
-                            wandb.log({f"{uid}/{task_name}": metric_value})
+                            wandb.log({f"{task_name}": metric_value})
                     else:
                         print(f"{uid} - {task_name} not found in results")
 
