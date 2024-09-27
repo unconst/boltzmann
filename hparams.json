@@ -20,5 +20,6 @@
     "cosine_epoch_length": 1000,
     "eta_min": 1e-05,
     "max_history": 6,
-    "pages_window_speed": 10
+    "pages_window_speed": 10,
+    "steps_per_master_upload": 1000,
 }
