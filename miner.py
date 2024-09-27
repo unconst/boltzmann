@@ -98,7 +98,7 @@ def main(config):
     if config.use_wandb:
         # Check for existing runs with the same name and delete them
         api = wandb.Api()
-        runs = api.runs(path="220")
+        runs = api.runs(path="220-A")
         for run in runs:
             if run.name == f'M{my_uid}':
                 print (f'Deleting old run: {run}')
