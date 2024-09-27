@@ -19,12 +19,14 @@ def main(config):
     # Initialize Weights and Biases (wandb) for experiment tracking if enabled.
     if config.use_wandb:
         # Check for existing runs with the same name and delete them
-        api = wandb.Api()
-        runs = api.runs(path=config.project)
-        for run in runs:
-            if run.name == f'Eval':
-                print(f'Deleting old run: {run}')
-                run.delete()
+        try:
+            api = wandb.Api()
+            runs = api.runs(path=config.project)
+            for run in runs:
+                if run.name == f'Eval':
+                    print(f'Deleting old run: {run}')
+                    run.delete()
+        except: pass
         run = wandb.init(project=config.project, resume='allow', name='Eval', config=config)
 
     while True:
