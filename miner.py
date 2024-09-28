@@ -236,6 +236,7 @@ def main(config):
                                     if hotkey not in metagraph.hotkeys: failed_file_masks += 1; continue # Miner is not registered on network.
                                     elif filename in already_seen_masks: failed_file_masks += 1; continue
                                     elif mask_wid not in all_mask_wids: failed_file_masks += 1; continue
+                                    elif hotkey == wallet.hotkey.ss58_address: continue # Dont download your own mask
                                     else:
                                         uid = metagraph.hotkeys.index(hotkey)
                                         mask_info = SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, uid=uid, block=-1, mask_wid=int(mask_wid))
