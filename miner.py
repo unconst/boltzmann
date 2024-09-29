@@ -40,6 +40,7 @@ from dotenv import dotenv_values
 from types import SimpleNamespace
 from transformers import LlamaForCausalLM 
 from torch.optim.lr_scheduler import CosineAnnealingLR
+import threading
 
 from hparams import load_hparams
 from dataset import SubsetFineWebEdu2Loader
@@ -261,94 +262,129 @@ def main(config):
                 download_masks_start_time = time.time()
                 full_sync_start_time = time.time()
                 mask_count_per_id = {}
-                for mask_wid in mask_filenames_per_mask_wid.keys():
-                    # Get the number of masks for this step.
-                    num_masks_for_mask_wid = len(mask_filenames_per_mask_wid[mask_wid])
-                    if num_masks_for_mask_wid == 0:
-                        continue
+                # Inline function to process each mask_wid
+                def process_mask_wid_inline(
+                    mask_wid, mask_infos, model, hparams, config, CLIENT, use_wandb
+                ):
+                    try:
+                        # Get the number of masks for this mask_wid.
+                        num_masks_for_mask_wid = len(mask_infos)
+                        if num_masks_for_mask_wid == 0:
+                            return
 
-                    # Download the masks from all valid files
-                    print(f'\n\tDownloading {num_masks_for_mask_wid} mask for mask_wid: {mask_wid} ... ')
-                    download_file_start_time = time.time()
-                    temp_files = []
-                    n_downloaded = 0
-                    failed_downloaded = 0
-                    def download_file(mask_info):
-                        try:
-                            temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
-                            CLIENT.download_file(mask_info.bucket, mask_info.filename, temp_file)
-                            mask_info = SimpleNamespace(**vars(mask_info), temp_file=temp_file)
-                            return mask_info
-                        except:
-                            return None
+                        # Download the masks from all valid files
+                        print(f'\n\tProcessing mask_wid: {mask_wid} with {num_masks_for_mask_wid} masks...')
+                        download_file_start_time = time.time()
+                        temp_files = []
+                        n_downloaded = 0
+                        failed_downloaded = 0
 
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=len(mask_filenames_per_mask_wid[mask_wid])) as executor:
-                        futures = [executor.submit(download_file, mask_info) for mask_info in mask_filenames_per_mask_wid[mask_wid]]
-                        for future in concurrent.futures.as_completed(futures):
-                            result = future.result()
-                            if result:
-                                temp_files.append(result)
-                                n_downloaded += 1
-                            else:
-                                failed_downloaded += 1
-                    print(f'\t\tDownloading {n_downloaded}/{n_downloaded + failed_downloaded} masks completed in {time.time() - download_file_start_time} seconds')
+                        def download_file(mask_info):
+                            try:
+                                temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
+                                CLIENT.download_file(mask_info.bucket, mask_info.filename, temp_file)
+                                mask_info = SimpleNamespace(**vars(mask_info), temp_file=temp_file)
+                                return mask_info
+                            except Exception as e:
+                                print(f'\t\tFailed to download mask {mask_info.filename}: {e}')
+                                return None
 
-                    # Break the loop when there is nothing to download.
-                    if n_downloaded == 0:
-                        continue
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=num_masks_for_mask_wid) as executor:
+                            download_futures = [executor.submit(download_file, mask_info) for mask_info in mask_infos]
+                            for future in concurrent.futures.as_completed(download_futures):
+                                result = future.result()
+                                if result:
+                                    temp_files.append(result)
+                                    n_downloaded += 1
+                                else:
+                                    failed_downloaded += 1
+                        print(f'\t\tDownloaded {n_downloaded}/{n_downloaded + failed_downloaded} masks for mask_wid: {mask_wid} in {time.time() - download_file_start_time} seconds')
 
-                    # Get or create the mask for the window.
-                    create_mask_start_time = time.time()
-                    mask_indices = {}
-                    mask_wid_rng = int(hashlib.md5(str(mask_wid).encode('utf-8')).hexdigest(), 16) % (2**32)
-                    rng = np.random.default_rng( int(hashlib.md5(str(mask_wid).encode('utf-8')).hexdigest(), 16) % (2**32) )
-                    print(f'\n\tCreating mask for mask_wid: {mask_wid} and rng: {mask_wid_rng} and compression: {hparams.compression} ...')
-                    for name, param in sorted( model.named_parameters() ):
-                        indices = rng.choice( param.numel(), size = max( 1, int( param.numel() // hparams.compression ) ), replace=False)
-                        mask_indices[ name ] = torch.from_numpy( indices ).long().cpu()
-                    print(f'\t\tCreating mask completed in {time.time() - create_mask_start_time} seconds')
+                        # Break the loop when there is nothing to download.
+                        if n_downloaded == 0:
+                            return
 
-                    # Load all masks as state dicts.
-                    print(f'\n\tLoading state dicts for mask_wid: {mask_wid} ...')
-                    load_state_dicts_start_time = time.time()
-                    mask_count = 0
-                    masks_failed = 0
-                    mask_successes = 0
-                    mask_successes_per_param = {name: 0 for name, _ in model.named_parameters()}
-                    for info in temp_files:
-                        try:
-                            mask_count += 1
-                            mask = torch.load(info.temp_file, map_location=torch.device(model.device), weights_only=True)
-                            for name, param in sorted(model.named_parameters()):
-                                values = mask[name].to(model.device)
-                                indices = mask_indices[name].to(model.device)
-                                param.data.view(-1)[indices] += values  # Add the masked values to the local for averaging later.
-                                mask_successes_per_param[name] += 1
-                                del values
-                            mask_successes += 1
-                        except Exception as e:
-                            print(f'Loading mask {info} failed with error: {e} -- name: {name} -- values: {values.shape} -- indices: {indices.shape} -- param: {param.shape}')
-                            masks_failed += 1
-                            pass
-                    mask_count_per_id[mask_wid] = mask_count
-                    if config.use_wandb: wandb.log({"mask_success_rate": (mask_successes)/(mask_successes + masks_failed)})
-                    print(f'\t\tLoading {mask_successes}/{mask_successes + masks_failed} state dicts completed in {time.time() - load_state_dicts_start_time} seconds')
+                        # Generate mask indices
+                        create_mask_start_time = time.time()
+                        mask_indices = {}
+                        mask_wid_rng = int(hashlib.md5(str(mask_wid).encode('utf-8')).hexdigest(), 16) % (2**32)
+                        rng = np.random.default_rng(mask_wid_rng)
+                        print(f'\n\tCreating mask for mask_wid: {mask_wid} and rng: {mask_wid_rng} and compression: {hparams.compression} ...')
+                        for name, param in sorted(model.named_parameters()):
+                            indices = rng.choice(param.numel(), size=max(1, int(param.numel() // hparams.compression)), replace=False)
+                            mask_indices[name] = torch.from_numpy(indices).long().cpu()
+                        print(f'\t\tCreating mask completed in {time.time() - create_mask_start_time} seconds')
+
+                        # Load all masks as state dicts.
+                        print(f'\n\tLoading state dicts for mask_wid: {mask_wid} ...')
+                        load_state_dicts_start_time = time.time()
+                        mask_count = 0
+                        masks_failed = 0
+                        mask_successes = 0
+                        mask_successes_per_param = {name: 0 for name, _ in model.named_parameters()}
+                        for info in temp_files:
+                            try:
+                                mask_count += 1
+                                mask = torch.load(info.temp_file, map_location=torch.device(model.device), weights_only=True)
+                                for name, param in sorted(model.named_parameters()):
+                                    values = mask[name].to(model.device)
+                                    indices = mask_indices[name].to(model.device)
+                                    # Since multiple threads may attempt to update the model, use a lock
+                                    with threading.Lock():
+                                        param.data.view(-1)[indices] += values
+                                    mask_successes_per_param[name] += 1
+                                    del values
+                                mask_successes += 1
+                            except Exception as e:
+                                print(f'Loading mask {info.filename} failed with error: {e}')
+                                masks_failed += 1
+                                pass
+                        # Update mask count per id (you may need to synchronize access if used outside this function)
+                        mask_count_per_id[mask_wid] = mask_count  # Uncomment if used outside
+
+                        if use_wandb:
+                            wandb.log({"mask_success_rate": (mask_successes) / (mask_successes + masks_failed)})
+
+                        print(f'\t\tLoading {mask_successes}/{mask_successes + masks_failed} state dicts completed in {time.time() - load_state_dicts_start_time} seconds')
+
+                        # Average the values under the mask.
+                        print(f'\n\tAveraging {mask_successes} successful masks for mask_wid: {mask_wid} ...')
+                        average_masks_start_time = time.time()
+                        for name, param in model.named_parameters():
+                            indices = mask_indices[name].to(config.device)
+                            with threading.Lock():
+                                param.data.view(-1)[indices] /= (mask_successes_per_param[name] + 1)  # Average the masked values
+                        print(f'\t\tAveraged state dicts in {time.time() - average_masks_start_time} seconds')
+
+                        # Clean up
+                        print(f'\n\tDeleting files for mask_wid: {mask_wid} ...')
+                        del mask_indices
+                        delete_files_start_time = time.time()
+                        for info in temp_files:
+                            os.remove(info.temp_file)
+                        print(f'\t\tDeleting files completed in {time.time() - delete_files_start_time} seconds')
+                    except Exception as e:
+                        print(f'Error processing mask_wid {mask_wid}: {e}')
+                # Use ThreadPoolExecutor to process mask_wid in parallel
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    # Prepare futures for each mask_wid
+                    futures = []
+                    for mask_wid in mask_filenames_per_mask_wid.keys():
+                        futures.append(
+                            executor.submit(
+                                process_mask_wid_inline,
+                                mask_wid,
+                                mask_filenames_per_mask_wid[mask_wid],
+                                model,
+                                hparams,
+                                config,
+                                CLIENT,
+                                config.use_wandb
+                            )
+                        )
+                    # Wait for all the masks to finish downloading
+                    concurrent.futures.wait(futures)
                     
-                    # Average the values under the mask.
-                    print(f'\n\tAveraging {mask_successes} successful masks for mask_wid: {mask_wid} ...')
-                    average_masks_start_time = time.time()
-                    for name, param in model.named_parameters():
-                        indices = mask_indices[name].to(config.device)
-                        param.data.view(-1)[indices] /= (mask_successes_per_param[name] + 1)  # Average (only) the masked values
-                    print(f'\t\tAveraged state dicts in {time.time() - average_masks_start_time} seconds')
-
-                    print(f'\n\tDeleting files for mask_wid: {mask_wid} ...')
-                    del mask_indices
-                    delete_files_start_time = time.time()
-                    for info in temp_files:
-                        os.remove(info.temp_file)
-                    print(f'\t\tDeleting files completed in {time.time() - delete_files_start_time} seconds')
-
                 # Log the average number of masks applied per mask_wid
                 avg_masks_per_mask_wid = sum(mask_count_per_id.values()) / len(mask_count_per_id) if mask_count_per_id else 0
                 if config.use_wandb: wandb.log({"avg_masks_per_mask_wid": avg_masks_per_mask_wid})
