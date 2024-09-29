@@ -24,6 +24,7 @@ import time
 import wandb
 import boto3
 import torch
+import random
 import hashlib
 import botocore
 import tempfile
@@ -328,47 +329,65 @@ def main(config):
             torch.cuda.empty_cache()
 
             # Get a random mask to eval.
-            print(f'\n Evaling slices.')
+            print(f'\nEvaling slices.')
             mask_wid = max( list(mask_filenames_per_mask_wid.keys()) )
             for miner_uid in random.sample(metagraph.uids, hparams.validator_evals_per_step ):
 
                 try:
                     # Get the mask implied for this window.         
+                    print(f'\nLoading miner mask for uid: {miner_uid}')
+                    load_mask_start_time = time.time()
                     miner_bucket = subtensor.get_commitment(config.netuid, miner_uid)    
                     miner_mask_filename = f"mask-{metagraph.hotkeys[miner_uid]}-{mask_wid}.pt"   
                     mask_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
-                    CLIENT.download_file( miner_bucket, miner_mask_filename, mask_temp_file)
                     mask_values = torch.load( mask_temp_file, map_location = torch.device(model.device), weights_only=True )
-
+                    load_mask_end_time = time.time()
+                    print(f'\t\tLoading miner mask completed in {load_mask_end_time - load_mask_start_time} seconds')
+                    
                     # Create the mask for the window.
                     create_mask_start_time = time.time()
                     mask_indices = {}
                     mask_wid_rng = int(hashlib.md5(str(mask_wid).encode('utf-8')).hexdigest(), 16) % (2**32)
-                    rng = np.random.default_rng( int(hashlib.md5(str(mask_wid).encode('utf-8')).hexdigest(), 16) % (2**32) )
+                    rng = np.random.default_rng(mask_wid_rng)
                     print(f'\n\tCreating mask for mask_wid: {mask_wid} and rng: {mask_wid_rng} and compression: {hparams.compression} ...')
-                    for name, param in sorted( model.named_parameters() ):
-                        indices = rng.choice( param.numel(), size = max( 1, int( param.numel() // hparams.compression ) ), replace=False)
-                        mask_indices[ name ] = torch.from_numpy( indices ).long().cpu()
-                    print(f'\t\tCreating mask completed in {time.time() - create_mask_start_time} seconds')
+                    for name, param in sorted(model.named_parameters()):
+                        indices = rng.choice(param.numel(), size=max(1, int(param.numel() // hparams.compression)), replace=False)
+                        mask_indices[name] = torch.from_numpy(indices).long().cpu()
+                    create_mask_end_time = time.time()
+                    print(f'\t\tCreating mask completed in {create_mask_end_time - create_mask_start_time} seconds')
                     
                     # Prepare a validation dataset unknown to miners
+                    print(f'Starting to generate pages for mask_wid: {mask_wid}, miner_uid: {miner_uid}')
+                    generate_pages_start_time = time.time()
                     pages = random.sample(SubsetFineWebEdu2Loader.next_pages(
-                        offset = mask_wid * hparams.pages_window_speed,
-                        n_pages = 10,
-                        seed = miner_uid 
-                    ), hparams.validator_pages_per_eval )
+                        offset=mask_wid * hparams.pages_window_speed,
+                        n_pages=10,
+                        seed=miner_uid 
+                    ), hparams.validator_pages_per_eval)
+                    generate_pages_end_time = time.time()
+                    print(f'Generated pages: {pages} in {generate_pages_end_time - generate_pages_start_time} seconds')
+
+                    print(f'Starting to create dataset with batch_size: {config.actual_batch_size}, sequence_length: {hparams.sequence_length}')
+                    create_dataset_start_time = time.time()
                     dataset = SubsetFineWebEdu2Loader(
-                        batch_size = config.actual_batch_size,
-                        sequence_length = hparams.sequence_length,
-                        pages_info = pages,
-                        tokenizer = hparams.tokenizer
+                        batch_size=config.actual_batch_size,
+                        sequence_length=hparams.sequence_length,
+                        pages_info=pages,
+                        tokenizer=hparams.tokenizer_name
                     )
+                    create_dataset_end_time = time.time()
+                    print(f'Dataset created with {len(dataset)} batches in {create_dataset_end_time - create_dataset_start_time} seconds')
 
                     # Step 1: Zero the gradients of the model
+                    print("Step 1: Zeroing the gradients of the model...")
+                    step_start_time = time.time()
                     model.zero_grad()
+                    step_end_time = time.time()
+                    print(f"Step 1 completed in {step_end_time - step_start_time} seconds.")
 
                     # Step 2: Compute the gradient of the loss over the validation set
-                    print("Computing gradient over the validation set...")
+                    print("Step 2: Computing gradient over the validation set...")
+                    step_start_time = time.time()
                     for idx, batch in enumerate(dataset):
                         input_ids = torch.tensor(batch, dtype=torch.long).to(model.device)
                         labels = input_ids.clone()
@@ -377,8 +396,12 @@ def main(config):
                             outputs = model(input_ids=input_ids, labels=labels)
                             loss = outputs.loss
                             loss.backward()  # Compute gradients
+                    step_end_time = time.time()
+                    print(f"Step 2 completed in {step_end_time - step_start_time} seconds.")
 
                     # Collect the gradients
+                    print("Step 3: Collecting gradients...")
+                    step_start_time = time.time()
                     gradients = {}
                     for name, param in model.named_parameters():
                         if param.grad is not None:
@@ -386,9 +409,12 @@ def main(config):
                         else:
                             # If the parameter did not receive a gradient, we set it to zero
                             gradients[name] = torch.zeros_like(param.data)
+                    step_end_time = time.time()
+                    print(f"Step 3 completed in {step_end_time - step_start_time} seconds.")
 
-                    # Step 3: Flatten the gradients and the miner's update (mask values)
-                    print("Flattening gradients and miner's update...")
+                    # Step 4: Flatten the gradients and the miner's update (mask values)
+                    print("Step 4: Flattening gradients and miner's update...")
+                    step_start_time = time.time()
                     gradient_vector = []
                     update_vector = []
                     for name in sorted(model.state_dict().keys()):
@@ -414,26 +440,43 @@ def main(config):
                     # Concatenate all parameter gradients and updates into single tensors
                     gradient_vector = torch.cat(gradient_vector)
                     update_vector = torch.cat(update_vector)
+                    step_end_time = time.time()
+                    print(f"Step 4 completed in {step_end_time - step_start_time} seconds.")
 
-                    # Step 4: Compute the dot product between the gradient vector and the miner's update vector
-                    print("Computing the dot product between the gradient and the miner's update...")
+                    # Step 5: Compute the dot product between the gradient vector and the miner's update vector
+                    print("Step 5: Computing the dot product between the gradient and the miner's update...")
+                    step_start_time = time.time()
                     dot_product = torch.dot(gradient_vector, update_vector)
+                    step_end_time = time.time()
+                    print(f"Step 5 completed in {step_end_time - step_start_time} seconds.")
                     
                     # Optional regularization term
+                    print("Step 6: Computing regularization term...")
+                    step_start_time = time.time()
                     lambda_reg = 0.01  # Regularization coefficient; adjust as needed
                     update_norm = torch.norm(update_vector)
                     regularization = lambda_reg * update_norm.item()
+                    step_end_time = time.time()
+                    print(f"Step 6 completed in {step_end_time - step_start_time} seconds.")
 
-                    # Step 5: Compute the reward
+                    # Step 7: Compute the reward
+                    print("Step 7: Computing the reward...")
+                    step_start_time = time.time()
                     reward = max(0.0, -dot_product.item() - regularization)
-                    print(f"Miner reward: {reward}")
+                    step_end_time = time.time()
+                    print(f"Step 7 completed in {step_end_time - step_start_time} seconds.")
                                         
                     # Set the weights
-                    weights[ miner_uid ] = (reward * hparams.weights_alpha) + ((1 - hparams.weights_alpha) * weights[ miner_uid ] )
+                    print("Step 8: Setting the weights...")
+                    step_start_time = time.time()
+                    weights[miner_uid] = (reward * hparams.weights_alpha) + ((1 - hparams.weights_alpha) * weights[miner_uid])
+                    step_end_time = time.time()
+                    print(f"Step 8 completed in {step_end_time - step_start_time} seconds.")
+                    
                     # Log the reward to wandb
                     if config.use_wandb:
-                        wandb.log({f"R/{miner_uid}": reward, f"W/{miner_uid}": weights[ miner_uid ] })
-
+                        wandb.log({f"R/{miner_uid}": reward, f"W/{miner_uid}": weights[miner_uid]})
+                        step_end_time = time.time()
 
                     # Clean up to free memory
                     del gradients
@@ -441,29 +484,11 @@ def main(config):
                     del update_vector
                     del mask_indices
                     del mask_values
-                    os.remove( mask_temp_file )      
-                    
+                    os.remove(mask_temp_file)      
                 # We can't download the mask for the miner.    
                 except Exception as e:
+                    print(f"Error: {e}")
                     weights[ miner_uid ] = ( 0.0 * hparams.weights_alpha ) + ( (1 - hparams.weights_alpha) * weights[ miner_uid ] )
-                        
-            # Calculate, print and log average loss
-            average_loss = total_loss / total_steps
-            total_time = time.time() - train_pages_start_time
-            steps_per_second = total_steps / total_time
-            batches_per_second = config.actual_batch_size * total_steps / total_time
-            tokens_per_second = hparams.sequence_length * config.actual_batch_size * total_steps / total_time
-            if config.use_wandb:
-                wandb.log({
-                    "step_loss": average_loss,
-                    "learning_rate": scheduler.get_last_lr()[0],
-                    "incentive": float(metagraph.I[my_uid]),
-                    "steps_per_second": steps_per_second,
-                    "batches_per_second": batches_per_second,
-                    "tokens_per_second": tokens_per_second
-                })
-            print('\tloss:', average_loss, 'learning_rate:', scheduler.get_last_lr()[0])
-            print(f'\tTraining completed in {total_time} seconds, Steps per second: {steps_per_second}, Batches per second: {batches_per_second}, Tokens per second: {tokens_per_second}')
                                     
             # Every steps_per_master_upload steps we upload the master state of the model
             # This can be used for eval etc.
