@@ -172,7 +172,7 @@ def main(config):
             # Get buckets per uid if needs update.
             if 'buckets' not in locals() or len(buckets) != len(metagraph.uids):
                 buckets = []
-                for uid in metagraph.uids:
+                for uid in tqdm(metagraph.uids):
                     try:
                         buckets.append(subtensor.get_commitment(config.netuid, uid))
                     except:
@@ -330,7 +330,7 @@ def main(config):
             # Get a random mask to eval.
             print(f'\n Evaling slices.')
             mask_wid = max( list(mask_filenames_per_mask_wid.keys()) )
-            for miner_uid in metagraph.uids:
+            for miner_uid in random.sample(metagraph.uids, hparams.validator_evals_per_step ):
 
                 try:
                     # Get the mask implied for this window.         
@@ -352,11 +352,11 @@ def main(config):
                     print(f'\t\tCreating mask completed in {time.time() - create_mask_start_time} seconds')
                     
                     # Prepare a validation dataset unknown to miners
-                    pages = random.choice( SubsetFineWebEdu2Loader.next_pages(
+                    pages = random.sample(SubsetFineWebEdu2Loader.next_pages(
                         offset = mask_wid * hparams.pages_window_speed,
                         n_pages = 10,
                         seed = miner_uid 
-                    ) )
+                    ), hparams.validator_pages_per_eval )
                     dataset = SubsetFineWebEdu2Loader(
                         batch_size = config.actual_batch_size,
                         sequence_length = hparams.sequence_length,
@@ -427,9 +427,13 @@ def main(config):
                     # Step 5: Compute the reward
                     reward = max(0.0, -dot_product.item() - regularization)
                     print(f"Miner reward: {reward}")
-                    
+                                        
                     # Set the weights
                     weights[ miner_uid ] = (reward * hparams.weights_alpha) + ((1 - hparams.weights_alpha) * weights[ miner_uid ] )
+                    # Log the reward to wandb
+                    if config.use_wandb:
+                        wandb.log({f"R/{miner_uid}": reward, f"W/{miner_uid}": weights[ miner_uid ] })
+
 
                     # Clean up to free memory
                     del gradients
