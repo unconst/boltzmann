@@ -6,6 +6,7 @@ import time
 import torch
 import wandb
 import boto3
+import shutil
 import argparse
 import tempfile
 import traceback
@@ -70,8 +71,15 @@ def main(config):
                 model_state_dict = torch.load(temp_file, map_location='cpu', weights_only = True)
                 model.load_state_dict(model_state_dict)
 
-                print(f"Saving model to models/{uid}...")
+                # Delete the temp file after loading the model state dict
+                os.remove(temp_file)
+
                 model_save_path = f'models/{uid}'
+                if os.path.exists(model_save_path):
+                    print(f"Deleting existing model at {model_save_path}...")
+                    shutil.rmtree(model_save_path)
+
+                print(f"Saving model to models/{uid}...")
                 os.makedirs(model_save_path, exist_ok=True)
                 model.save_pretrained(model_save_path)
                 
@@ -113,6 +121,13 @@ def main(config):
                             wandb.log({f"{task_name}": metric_value})
                     else:
                         print(f"{uid} - {task_name} not found in results")
+
+                # Delete the model after running the eval off the device
+                del model
+                torch.cuda.empty_cache()
+
+                # Delete the storage of the model
+                shutil.rmtree(model_save_path)
 
             # Error in eval loop.
             except KeyboardInterrupt:
