@@ -337,7 +337,8 @@ def main(config):
                     miner_bucket = subtensor.get_commitment(config.netuid, miner_uid)    
                     miner_mask_filename = f"mask-{metagraph.hotkeys[miner_uid]}-{mask_wid}.pt"   
                     mask_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
-                    CLIENT.download_file( miner_bucket, miner_mask_filename, temp_file)
+                    CLIENT.download_file( miner_bucket, miner_mask_filename, mask_temp_file)
+                    mask_values = torch.load( mask_temp_file, map_location = torch.device(model.device), weights_only=True )
 
                     # Create the mask for the window.
                     create_mask_start_time = time.time()
@@ -368,7 +369,7 @@ def main(config):
 
                     # Step 2: Compute the gradient of the loss over the validation set
                     print("Computing gradient over the validation set...")
-                    for idx, batch in enumerate(D_valid):
+                    for idx, batch in enumerate(dataset):
                         input_ids = torch.tensor(batch, dtype=torch.long).to(model.device)
                         labels = input_ids.clone()
                         labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
@@ -428,7 +429,7 @@ def main(config):
                     print(f"Miner reward: {reward}")
                     
                     # Set the weights
-                    weights[ miner_uid ] = (reward * hparams.weights_alpha) + (0.1 * weights[ miner_uid ] )
+                    weights[ miner_uid ] = (reward * hparams.weights_alpha) + ((1 - hparams.weights_alpha) * weights[ miner_uid ] )
 
                     # Clean up to free memory
                     del gradients
@@ -511,7 +512,6 @@ if __name__ == "__main__":
     parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
     parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
-    parser.add_argument('--baseline', action='store_true', help='Runs a miner which does not peer. ')    
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')    
     bt.wallet.add_args(parser)
     bt.subtensor.add_args(parser)    
