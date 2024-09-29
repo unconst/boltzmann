@@ -21,5 +21,6 @@
     "eta_min": 1e-05,
     "max_history": 6,
     "pages_window_speed": 10,
-    "steps_per_master_upload": 256
+    "steps_per_master_upload": 256,
+    "weights_alpha": 0.9
 }
