@@ -461,7 +461,7 @@ def main(config):
                     # Optional regularization term
                     print("Step 6: Computing regularization term...")
                     step_start_time = time.time()
-                    lambda_reg = 0.01  # Regularization coefficient; adjust as needed
+                    lambda_reg = hparams.update_norm_regularization  # Regularization coefficient; adjust as needed
                     update_norm = torch.norm(update_vector)
                     regularization = lambda_reg * update_norm.item()
                     step_end_time = time.time()
