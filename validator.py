@@ -174,10 +174,11 @@ def main(config):
             if 'buckets' not in locals() or len(buckets) != len(metagraph.uids):
                 buckets = []
                 for uid in tqdm(metagraph.uids):
-                    try:
-                        buckets.append(subtensor.get_commitment(config.netuid, uid))
-                    except:
-                        buckets.append(None)
+                    buckets.append('decis')
+                    # try:
+                    #     buckets.append(subtensor.get_commitment(config.netuid, uid))
+                    # except:
+                    #     buckets.append(None)
             print(f'\tGetting block completed in {time.time() - get_blocks_and_buckets_start_time} seconds')
 
             # For each bucket, get all files that need to be synced.
@@ -331,8 +332,13 @@ def main(config):
             # Get a random mask to eval.
             print(f'\nEvaling slices.')
             mask_wid = max( list(mask_filenames_per_mask_wid.keys()) )
-            for miner_uid in random.sample(metagraph.uids, hparams.validator_evals_per_step ):
-
+            n_evals = 0
+            while n_evals < hparams.validator_evals_per_step:
+                
+                # randomly select a miner to eval.
+                n_evals += 1
+                miner_uid = random.choice( list(metagraph.uids) )
+                
                 try:
                     # Get the mask implied for this window.         
                     print(f'\nLoading miner mask for uid: {miner_uid}')
@@ -340,6 +346,7 @@ def main(config):
                     miner_bucket = subtensor.get_commitment(config.netuid, miner_uid)    
                     miner_mask_filename = f"mask-{metagraph.hotkeys[miner_uid]}-{mask_wid}.pt"   
                     mask_temp_file = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.pt")
+                    CLIENT.download_file(miner_bucket, miner_mask_filename, mask_temp_file)
                     mask_values = torch.load( mask_temp_file, map_location = torch.device(model.device), weights_only=True )
                     load_mask_end_time = time.time()
                     print(f'\t\tLoading miner mask completed in {load_mask_end_time - load_mask_start_time} seconds')
@@ -373,10 +380,10 @@ def main(config):
                         batch_size=config.actual_batch_size,
                         sequence_length=hparams.sequence_length,
                         pages_info=pages,
-                        tokenizer=hparams.tokenizer_name
+                        tokenizer=hparams.tokenizer
                     )
                     create_dataset_end_time = time.time()
-                    print(f'Dataset created with {len(dataset)} batches in {create_dataset_end_time - create_dataset_start_time} seconds')
+                    print(f'Dataset created with {dataset} batches in {create_dataset_end_time - create_dataset_start_time} seconds')
 
                     # Step 1: Zero the gradients of the model
                     print("Step 1: Zeroing the gradients of the model...")
@@ -448,6 +455,7 @@ def main(config):
                     step_start_time = time.time()
                     dot_product = torch.dot(gradient_vector, update_vector)
                     step_end_time = time.time()
+                    print(f'dot_product: {dot_product}')
                     print(f"Step 5 completed in {step_end_time - step_start_time} seconds.")
                     
                     # Optional regularization term
@@ -457,6 +465,8 @@ def main(config):
                     update_norm = torch.norm(update_vector)
                     regularization = lambda_reg * update_norm.item()
                     step_end_time = time.time()
+                    print(f'update_norm: {update_norm}')
+                    print(f'regularization: {regularization}')
                     print(f"Step 6 completed in {step_end_time - step_start_time} seconds.")
 
                     # Step 7: Compute the reward
@@ -464,6 +474,7 @@ def main(config):
                     step_start_time = time.time()
                     reward = max(0.0, -dot_product.item() - regularization)
                     step_end_time = time.time()
+                    print(f'reward: {reward}')
                     print(f"Step 7 completed in {step_end_time - step_start_time} seconds.")
                                         
                     # Set the weights
@@ -471,6 +482,7 @@ def main(config):
                     step_start_time = time.time()
                     weights[miner_uid] = (reward * hparams.weights_alpha) + ((1 - hparams.weights_alpha) * weights[miner_uid])
                     step_end_time = time.time()
+                    print(f'weights[{miner_uid}]: {weights[miner_uid]}')
                     print(f"Step 8 completed in {step_end_time - step_start_time} seconds.")
                     
                     # Log the reward to wandb
@@ -487,7 +499,7 @@ def main(config):
                     os.remove(mask_temp_file)      
                 # We can't download the mask for the miner.    
                 except Exception as e:
-                    print(f"Error: {e}")
+                    print(f"Miner eval failed with error: {e}, setting score of zero.")
                     weights[ miner_uid ] = ( 0.0 * hparams.weights_alpha ) + ( (1 - hparams.weights_alpha) * weights[ miner_uid ] )
                                     
             # Every steps_per_master_upload steps we upload the master state of the model
