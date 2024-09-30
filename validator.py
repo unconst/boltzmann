@@ -102,11 +102,11 @@ def main(config):
         try:
             runs = api.runs(path=config.project)
             for run in runs:
-                if run.name == f'M{my_uid}':
+                if run.name == f'V{my_uid}':
                     print(f'Deleting old run: {run}')
                     run.delete()
         except: pass
-        run = wandb.init(project=config.project, resume='allow', name=f'M{my_uid}', config=config)
+        run = wandb.init(project=config.project, resume='allow', name=f'V{my_uid}', config=config)
         
     # Init training state.
     print('\n', '-' * 40, 'Hparams', '-' * 40)
