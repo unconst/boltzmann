@@ -521,18 +521,7 @@ def main(config):
                     GrantReadACP='uri="http://acs.amazonaws.com/groups/global/AllUsers"'
                 )
                 print(f'Uploading master {upload_filename}@{config.bucket} completed in {time.time() - start_time} seconds.')
-            
-            # Calculate and log global steps per second
-            global_step_total_time = time.time() - global_step_start_time
-            global_steps_per_second = 1 / global_step_total_time
-            if config.use_wandb:
-                wandb.log({
-                    "global_steps_per_second": global_steps_per_second,
-                    "global_step_time": global_step_total_time,
-                    "global_tokens_per_second": hparams.sequence_length * config.actual_batch_size * total_steps / global_step_total_time 
-                })
-            print (f'\nGlobal step completed in {global_step_total_time} seconds\n')
-                 
+                  
         # Handle keyboard interrupts to allow graceful shutdown.
         except (KeyboardInterrupt, SystemExit):
             # Clean up by deleting the model from S3 if it exists.
