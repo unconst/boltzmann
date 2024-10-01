@@ -190,6 +190,21 @@ def main(config):
                 scheduler = CosineAnnealingLR( optimizer, T_max = hparams.cosine_epoch_length, eta_min=hparams.eta_min, last_epoch=-1 )
                 print(f'\tResetting optimizer completed in {time.time() - reset_optimizer_start_time} seconds') 
 
+            # Get the pages for this block and my_uid.
+            # This is global and deterministic
+            n_pages = max(1, int(hparams.desired_batch_size * 0.01))
+            print (f'\nLoading {n_pages} pages ...')
+            pages = SubsetFineWebEdu2Loader.next_pages(
+                offset = subtensor.block + hparams.pages_window_speed,
+                n_pages = n_pages,
+                seed = my_uid 
+            )
+            dataset = SubsetFineWebEdu2Loader(
+                batch_size = config.actual_batch_size,
+                sequence_length = hparams.sequence_length,
+                pages_info = pages,
+                tokenizer = hparams.tokenizer
+            )
 
             # If not baseline, peer with other miners.
             if not config.baseline:
@@ -396,26 +411,7 @@ def main(config):
                 del mask_filenames_per_mask_wid
                 torch.cuda.empty_cache()
                 
-            # Get the pages for this block and my_uid.
-            # This is global and deterministic
-            n_pages = max(1, int(hparams.desired_batch_size * 0.01))
-            print (f'\nLoading {n_pages} pages ...')
-            load_pages_start_time = time.time()  # Start timing
-            pages = SubsetFineWebEdu2Loader.next_pages(
-                offset = subtensor.block + hparams.pages_window_speed,
-                n_pages = n_pages,
-                seed = my_uid 
-            )
-            dataset = SubsetFineWebEdu2Loader(
-                batch_size = config.actual_batch_size,
-                sequence_length = hparams.sequence_length,
-                pages_info = pages,
-                tokenizer = hparams.tokenizer
-            )
-            # TODO: see if wrapping dataloader is faster, with multiple workers and pin_memory=True
-            # dataset = torch.utils.data.DataLoader( dataset, batch_size=1, shuffle=True, num_workers=8, pin_memory=True )
-            print(f'\tLoading {n_pages} pages completed in {time.time() - load_pages_start_time} seconds')
-            
+
             # Train my model on the current page.
             print (f'\nTraining {n_pages} pages ...')
             train_pages_start_time = time.time()
