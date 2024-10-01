@@ -254,7 +254,7 @@ class Miner:
                         lambda_reg = self.hparams.update_norm_regularization  # Regularization coefficient; adjust as needed
                         update_norm = torch.norm(update_vector)
                         regularization = lambda_reg * update_norm.item()
-                        reward = max(0.0, -dot_product.item() - regularization)
+                        reward = -dot_product.item() - regularization
                         self.weights[miner_uid] = (reward * self.hparams.weights_alpha) + ((1 - self.hparams.weights_alpha) * self.weights[miner_uid])
                         if self.config.use_wandb:
                             wandb.log({

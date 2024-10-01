@@ -277,7 +277,6 @@ class Miner:
                         "learning_rate": self.scheduler.get_last_lr()[0],
                         "seconds_per_step": seconds_per_step,
                         "steps_per_second": steps_per_second,
-                        "tokens_per_global_step": tokens_per_second / seconds_per_step 
                     })
                 print (f'\nGlobal step completed in {seconds_per_step} seconds\n')
                 

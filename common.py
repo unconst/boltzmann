@@ -79,7 +79,9 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
     slices_per_param = {name: 0 for name, _ in model.named_parameters()}
     for file_i in slice_files:
         try:
-            slice_i = torch.load(file_i, map_location = torch.device( model.device ), weights_only = True)
+            lock_i = FileLock(file_i)
+            with lock.acquire(timeout=1):
+                slice_i = torch.load(file_i, map_location = torch.device( model.device ), weights_only = True)
             for name, param in model.named_parameters():
                 if name not in indices or name not in slice_i:
                     continue
