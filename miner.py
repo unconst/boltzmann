@@ -48,7 +48,7 @@ class Miner:
     def config():
         parser = argparse.ArgumentParser(description='Miner script')    
         parser.add_argument('--project', type=str, default='220A', help='Optional wandb project name')
-        parser.add_argument('--netuid', type=int, default=220, help='Bittensor network UID.')
+        parser.add_argument('--netuid', type=int, default=222, help='Bittensor network UID.')
         parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
         parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
         parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
@@ -254,6 +254,8 @@ class Miner:
                     pages_info = pages,
                     tokenizer = self.hparams.tokenizer
                 )
+                # Asynchronously initialize the dataset
+                await dataset.initialize()
                 print (f'[train]: Loaded dataset pages: {[p[1] for p in pages]}')
 
                 # Train my model on the current page.
