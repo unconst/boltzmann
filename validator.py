@@ -22,6 +22,7 @@ import sys
 import time
 import wandb
 import torch
+import random
 import asyncio
 import argparse
 import threading
@@ -129,7 +130,8 @@ class Miner:
         self.current_window = self.block_to_window( self.current_block )
         self.block_event = asyncio.Event()
         self.new_window_event = asyncio.Event()
-        self.stop_event = asyncio.Event()        
+        self.stop_event = asyncio.Event()       
+        self.weights = torch.zeros( self.metagraph.n, dtype = torch.float32 ) 
         print ( self.hparams )
 
     async def run(self):
@@ -148,152 +150,125 @@ class Miner:
                 # Download files.    
                 logger.info(f"\tDownloading slices for: {[self.current_window-1, self.current_window]}")
                 start_time = time.time()
-                files = await download_files_for_buckets_and_slices(buckets=self.buckets, slices=[self.current_window-1, self.current_window])
+                files = await download_files_for_buckets_and_windows(buckets=self.buckets, windows=[self.current_window-1, self.current_window])
                 logger.info(f"\t\tDownloaded {sum([len(files[k]) for k in files])} slices for: {[self.current_window-1, self.current_window]} "
                             f"in {time.time() - start_time} seconds")
                 
-                # Apply slices from previous window.
-                logger.info(f"\tLoading slices from: {self.current_window - 1}")
+                # Apply slices to the model from the previous window.
+                logger.info(f"\Applying slices from window: {self.current_window - 1} to model.")
                 start_time = time.time()
-                indices = await get_indices_for_window(self.model, self.current_window - 1, self.hparams.compression)
-                slice_files = await load_files_for_window(slice = self.current_window - 1)
-                logger.info(f"\t\tLoaded {len(slice_files)} slices for: {self.current_window - 1} "
-                            f"in {time.time() - start_time} seconds")
-
-                # Apply slices to model and average them.
-                logger.info(f"\tApplying {len(slice_files)} slices to model.")
-                start_time = time.time()
-                slices_per_param = {name: 0 for name, _ in self.model.named_parameters()}
-                for file_i in slice_files:
-                    try:
-                        slice_i = torch.load(file_i, map_location=torch.device(self.model.device), weights_only=True)
-                        for name, param in self.model.named_parameters():
-                            if name not in indices or name not in slice_i:
-                                continue
-                            values = slice_i[name].to(self.model.device)
-                            indices_name = indices[name].to(self.model.device)
-                            param.data.view(-1)[indices_name] += values
-                            slices_per_param[name] += 1
-                            del values
-                    except Exception:
-                        logger.exception(f"Error applying slice from {file_i}")
-                logger.info(f"\t\tApplied {len(slice_files)} slices to model in {time.time() - start_time} seconds")
-
-                # Average them on the model.
-                logger.info(f"\tAveraging slices on model.")
-                for name, param in self.model.named_parameters():
-                    if name not in slices_per_param or name not in indices or slices_per_param[name] == 0:
-                        continue
-                    indices_name = indices[name].to(self.config.device)
-                    param.data.view(-1)[indices_name] /= (slices_per_param[name] + 1)
-                logger.info(f"\t\tAveraged slices on model in {time.time() - start_time} seconds")
+                slice_files = await apply_window_slices_to_model( model = self.model, window = self.current_window - 1, compression = self.hparams.compression)
+                logger.info(f"\t\Applied {len(slice_files)} slices to model in {time.time() - start_time} seconds")
                 
                 # Eval until slice changes.
+                logger.info('\n' + '-' * 40 + ' Eval ' + '-' * 40)
                 eval_window = self.current_window - 1
-                while start_slice != self.current_window:
-                    logger.info(f"\tEval Step.")
+                while eval_window != self.current_window:
+                    try:
+                        logger.info(f"\tEval Step:")
 
-                    # Get random UID to eval.
-                    miner_uid = random.choice( list(metagraph.uids) )
-                    logger.info(f"\tEvalling {miner_uid}")
+                        # Get random UID to eval.
+                        miner_uid = random.choice( list(self.metagraph.uids) )
+                        miner_filename = os.path.join(tempfile.gettempdir(), f"slice-{eval_window}-{self.metagraph.hotkeys[miner_uid]}.pt")
+                        logger.info(f"\t\tUid: {miner_uid}")
+                        logger.info(f"\t\tWindow: {eval_window}")
+                        logger.info(f"\t\tFilename: {miner_filename}")
+                        
+                        # Load the slice for this window.
+                        try:
+                            slice_values = torch.load(miner_filename, map_location=torch.device(self.model.device), weights_only=True)
+                            slice_indicies = await get_indices_for_window( window = eval_window ) 
+                        except:
+                            raise ValueError(f'Miner did not upload a slice for window: {eval_window}')                           
+                        logger.info(f"\tLoaded values and indicies.")
+            
+                        # Train for the current slice.
+                        pages = SubsetFineWebEdu2Loader.next_pages(
+                            offset = self.current_block * self.hparams.pages_window_speed,
+                            n_pages = 1,
+                            seed = miner_uid
+                        )
+                        dataset = SubsetFineWebEdu2Loader(
+                            batch_size = self.config.actual_batch_size,
+                            sequence_length = self.hparams.sequence_length,
+                            pages_info = pages,
+                            tokenizer = self.hparams.tokenizer
+                        )
+                        logger.info(f"\tEval pages: {[p[1] for p in pages]} dataset for offset: {self.current_block * self.hparams.pages_window_speed} ")
+                        
+                        # Zero grad on the model and compute loss.
+                        self.model.zero_grad()
+                        for idx, batch in enumerate(dataset):
+                            input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
+                            labels = input_ids.clone()
+                            labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
+                            with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):
+                                outputs = self.model(input_ids=input_ids, labels=labels)
+                                loss = outputs.loss
+                                loss.backward()  # Compute gradients
+                        print(f"\tComputed gradient on model for pages")
 
-                    miner_filename = os.path.join(tempfile.gettempdir(), f"slice-{eval_window}-{metagraph.hotkeys[miner_uid]}")
-                    logger.info(f"\tslice filename: {miner_filename}")
-                    
-                    slice_indicies = await load_files_for_window(slice = eval_window )
-                    logger.info(f"\tLoaded window slice.")
+                        # Collect the gradients
+                        gradients = {}
+                        for name, param in model.named_parameters():
+                            if param.grad is not None:
+                                gradients[name] = param.grad.detach().clone()
+                            else:
+                                # If the parameter did not receive a gradient, we set it to zero
+                                gradients[name] = torch.zeros_like(param.data)
+                        print(f"\tCollected gradients.")
 
-                    # Train for the current slice.
-                    pages = SubsetFineWebEdu2Loader.next_pages(
-                        offset = self.current_block * self.hparams.pages_window_speed,
-                        n_pages = 1,
-                        seed = miner_uid
-                    )
-                    dataset = SubsetFineWebEdu2Loader(
-                        batch_size = self.config.actual_batch_size,
-                        sequence_length = self.hparams.sequence_length,
-                        pages_info = pages,
-                        tokenizer = self.hparams.tokenizer
-                    )
-                    logger.info(f"\tLoaded eval pages: {[p[1] for p in pages]} dataset for offset: {self.current_block * self.hparams.pages_window_speed} ")
-                    
-                    # Zero grad on the model and compute loss.
-                    model.zero_grad()
-                    for idx, batch in enumerate(dataset):
-                        input_ids = torch.tensor(batch, dtype=torch.long).to(model.device)
-                        labels = input_ids.clone()
-                        labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
-                        with torch.amp.autocast(device_type=model.device.type, dtype=torch.bfloat16):
-                            outputs = model(input_ids=input_ids, labels=labels)
-                            loss = outputs.loss
-                            loss.backward()  # Compute gradients
-                    print(f"\tComputed gradient on model for pages")
+                        # Step 4: Flatten the gradients and the miner's update (slice values)
+                        step_start_time = time.time()
+                        gradient_vector = []
+                        update_vector = []
+                        for name in sorted(model.state_dict().keys()):
+                            if name in gradients and name in slice_values:
+                                # If there are gradients and values, add them.
+                                grad = gradients[name].view(-1)
+                                update = torch.zeros_like(grad)
+                                indices = slice_indices[name].to(model.device)
+                                values = slice_values[name].to(model.device)
+                                update[indices] = values
+                                gradient_vector.append(grad)
+                                update_vector.append(update)
+                            else:
+                                # If no gradient or update, append zeros
+                                size = model.state_dict()[name].numel()
+                                gradient_vector.append(torch.zeros(size, device=model.device))
+                                update_vector.append(torch.zeros(size, device=model.device))
+                        # Concatenate all parameter gradients and updates into single tensors
+                        gradient_vector = torch.cat(gradient_vector)
+                        update_vector = torch.cat(update_vector)
+                        step_end_time = time.time()
+                        print(f"\tFlatten gradients.")
 
-                    # Collect the gradients
-                    gradients = {}
-                    for name, param in model.named_parameters():
-                        if param.grad is not None:
-                            gradients[name] = param.grad.detach().clone()
-                        else:
-                            # If the parameter did not receive a gradient, we set it to zero
-                            gradients[name] = torch.zeros_like(param.data)
-                    print(f"\tCollected gradients.")
-
-                    # Step 4: Flatten the gradients and the miner's update (slice values)
-                    step_start_time = time.time()
-                    gradient_vector = []
-                    update_vector = []
-                    for name in sorted(model.state_dict().keys()):
-                        # Ensure we're working with parameters that have gradients and updates
-                        if name in gradients and name in slice_values:
-                            grad = gradients[name].view(-1)
-                            # Initialize a zero vector for the parameter
-                            update = torch.zeros_like(grad)
-                            # Get the indices and values of the miner's update (slice)
-                            indices = slice_indices[name].to(model.device)
-                            values = slice_values[name].to(model.device)
-                            # Place the values at the correct indices
-                            update[indices] = values
-                            # Append to the vectors
-                            gradient_vector.append(grad)
-                            update_vector.append(update)
-                        else:
-                            # If no gradient or update, append zeros
-                            size = model.state_dict()[name].numel()
-                            gradient_vector.append(torch.zeros(size, device=model.device))
-                            update_vector.append(torch.zeros(size, device=model.device))
-                    # Concatenate all parameter gradients and updates into single tensors
-                    gradient_vector = torch.cat(gradient_vector)
-                    update_vector = torch.cat(update_vector)
-                    step_end_time = time.time()
-                    print(f"\tFlatten gradients.")
-
-                    # Compute reward.
-                    dot_product = torch.dot(gradient_vector, update_vector)
-                    lambda_reg = hparams.update_norm_regularization  # Regularization coefficient; adjust as needed
-                    update_norm = torch.norm(update_vector)
-                    regularization = lambda_reg * update_norm.item()
-                    reward = max(0.0, -dot_product.item() - regularization)
-                    weights[miner_uid] = (reward * hparams.weights_alpha) + ((1 - hparams.weights_alpha) * weights[miner_uid])
-                    if config.use_wandb:
-                        wandb.log({f"R/{miner_uid}": reward, f"W/{miner_uid}": weights[miner_uid]})
-                    print(f'\tupdate_norm: {update_norm}')
-                    print(f'\tregularization: {regularization}')
-                    print(f'\tdot_product: {dot_product}')
-                    print(f'\treward: {reward}')
-                    print(f'\tweights: {weights[miner_uid]}')
-                                        
-                    # Clean up to free memory
-                    del gradients
-                    del gradient_vector
-                    del update_vector
-                    del slice_indices
-                    del slice_values
-                    os.remove(slice_temp_file)      
-                # We can't download the slice for the miner.    
-                except Exception as e:
-                    print(f"Miner eval failed with error: {e}, setting score of zero.")
-                    weights[ miner_uid ] = ( 0.0 * hparams.weights_alpha ) + ( (1 - hparams.weights_alpha) * weights[ miner_uid ] )
+                        # Compute reward.
+                        dot_product = torch.dot(gradient_vector, update_vector)
+                        lambda_reg = self.hparams.update_norm_regularization  # Regularization coefficient; adjust as needed
+                        update_norm = torch.norm(update_vector)
+                        regularization = lambda_reg * update_norm.item()
+                        reward = max(0.0, -dot_product.item() - regularization)
+                        self.weights[miner_uid] = (reward * self.hparams.weights_alpha) + ((1 - self.hparams.weights_alpha) * self.weights[miner_uid])
+                        if config.use_wandb:
+                            wandb.log({f"R/{miner_uid}": reward, f"W/{miner_uid}": self.weights[miner_uid]})
+                        print(f'\tupdate_norm: {update_norm}')
+                        print(f'\tregularization: {regularization}')
+                        print(f'\tdot_product: {dot_product}')
+                        print(f'\treward: {reward}')
+                        print(f'\tweights: {self.weights[miner_uid]}')
+                                            
+                        # Clean up to free memory
+                        del gradients
+                        del gradient_vector
+                        del update_vector
+                        del slice_indices
+                        del slice_values
+                        
+                    # We can't download the slice for the miner.    
+                    except Exception as e:
+                        print(f"Miner eval failed with error: {e}, setting score of zero.")
+                        self.weights[ miner_uid ] = ( 0.0 * self.hparams.weights_alpha ) + ( (1 - self.hparams.weights_alpha) * self.weights[ miner_uid ] )
 
                 # Delete lingering files 
                 logger.info(f"\tCleaning space.")
@@ -313,7 +288,7 @@ class Miner:
 
     # Returns the slice window based on a block.
     def block_to_window(self, block: int) -> int:
-        return int(block / self.hparams.window_length)
+        return int(block / self.hparams.mask_window_length)
 
     # A listener thread which posts the block event
     # when the chain announces a new block.
@@ -335,7 +310,7 @@ class Miner:
             self.block_event.clear()
 
     # Helper for waiting on slice time.
-    async def wait_for_new_slice(self):
+    async def wait_for_new_window(self):
         while True:
             await self.new_window_event.wait()
             self.new_window_event.clear()

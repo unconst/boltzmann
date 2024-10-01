@@ -55,6 +55,50 @@ asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 # Define a semaphore to limit concurrent downloads (adjust as needed)
 semaphore = asyncio.Semaphore(1000)
 
+async def apply_window_slices_to_model(model: torch.nn.Module, window: int, compression: int) -> List[str]:
+    """
+    Applies slices from a specific window to the given model.
+
+    Args:
+        model (torch.nn.Module): The PyTorch model to which the slices will be applied.
+        window (int): The window identifier.
+        compression (int): The compression factor.
+
+    Returns:
+        slice_files: (List[str]): A list of all the files applied.
+    """
+    # First get the indices associated with the window given the model.
+    indices = await get_indices_for_window(model, window, compression)
+    
+    # Load all the slices associated with this window.
+    slice_files = await load_files_for_window(window=window)
+    
+    # Add the slices to the model
+    slices_per_param = {name: 0 for name, _ in model.named_parameters()}
+    for file_i in slice_files:
+        try:
+            slice_i = torch.load(file_i, map_location = torch.device( model.device), weights_only=True)
+            for name, param in model.named_parameters():
+                if name not in indices or name not in slice_i:
+                    continue
+                values = slice_i[name].to(model.device)
+                indices_name = indices[name].to(model.device)
+                param.data.view(-1)[indices_name] += values
+                slices_per_param[name] += 1
+                del values
+        except Exception:
+            logger.exception(f"Error applying slice from {file_i}")
+
+    # Average them on the model.
+    for name, param in model.named_parameters():
+        if name not in slices_per_param or name not in indices or slices_per_param[name] == 0:
+            continue
+        indices_name = indices[name].to(model.device)
+        param.data.view(-1)[indices_name] /= (slices_per_param[name] + 1)
+        
+    # Return a list of the files applied.
+    return slice_files
+
 async def upload_slice_for_window(bucket: str, model: torch.nn.Module, window: int, wallet: 'bt.wallet', compression: int):
     """
     Uploads a compressed slice of a PyTorch model to an S3 bucket.
@@ -304,7 +348,7 @@ async def process_bucket(s3_client, bucket: str, windows: List[int]):
     files = []
     paginator = s3_client.get_paginator('list_objects_v2')
 
-    for window in window:
+    for window in windows:
         prefix = f'slice-{window}'
         logger.debug(f"Listing objects with prefix {prefix}")
         async for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
@@ -318,11 +362,11 @@ async def process_bucket(s3_client, bucket: str, windows: List[int]):
                 logger.trace(f"Processing object with key {filename}")
                 try:
                     parts = filename.split('-')
-                    file_window = int(parts[1])
-                    hotkey = parts[2].split('.')[0]
-                    logger.trace(f"Parsed filename {filename} into window {file_window} and hotkey {hotkey}")
-                    if file_window == window:
-                        download_tasks.append(handle_file(s3_client, bucket, filename, hotkey, file_window))
+                    slice_window = int(parts[1])
+                    slice_hotkey = parts[2].split('.')[0]
+                    logger.trace(f"Parsed filename {filename} into window {slice_window} and hotkey {slice_hotkey}")
+                    if slice_window == window:
+                        download_tasks.append(handle_file(s3_client, bucket, filename, slice_hotkey, slice_window))
                 except Exception:
                     logger.exception(f"Error processing filename {filename}")
                     continue

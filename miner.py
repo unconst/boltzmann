@@ -147,47 +147,18 @@ class Miner:
                 self.global_step += 1
 
                 # Download files.    
-                logger.info(f"\tDownloading windows for: {[self.current_window-1, self.current_window]}")
+                logger.info(f"\tDownloading for windows: {[self.current_window-1, self.current_window]}")
                 start_time = time.time()
                 files = await download_files_for_buckets_and_windows(buckets=self.buckets, windows=[self.current_window-1, self.current_window])
-                logger.info(f"\t\tDownloaded {sum([len(files[k]) for k in files])} windows for: {[self.current_window-1, self.current_window]} "
-                            f"in {time.time() - start_time} seconds")
+                downloaded_per_step = sum([len(files[k]) for k in files])
+                logger.info(f"\t\tDownloaded {downloaded_per_step} for windows: {[self.current_window-1, self.current_window]} in {time.time() - start_time} seconds")
                 
-                # Apply windows from previous window.
-                logger.info(f"\tLoading window from: {self.current_window - 1}")
+                # Apply slices to the model from the previous window.
+                logger.info(f"\tApplying slices from window: {self.current_window - 1} to model.")
                 start_time = time.time()
-                indices = await get_indices_for_window(self.model, self.current_window - 1, self.hparams.compression)
-                slice_files = await load_files_for_window( window = self.current_window - 1)
-                logger.info(f"\t\tLoaded {len(slice_files)} window for: {self.current_window - 1} "
-                            f"in {time.time() - start_time} seconds")
-
-                # Apply window to model and average them.
-                logger.info(f"\tApplying {len(slice_files)} windows to model.")
-                start_time = time.time()
-                slices_per_param = {name: 0 for name, _ in self.model.named_parameters()}
-                for file_i in slice_files:
-                    try:
-                        slice_i = torch.load(file_i, map_location=torch.device(self.model.device), weights_only=True)
-                        for name, param in self.model.named_parameters():
-                            if name not in indices or name not in slice_i:
-                                continue
-                            values = slice_i[name].to(self.model.device)
-                            indices_name = indices[name].to(self.model.device)
-                            param.data.view(-1)[indices_name] += values
-                            slices_per_param[name] += 1
-                            del values
-                    except Exception:
-                        logger.exception(f"Error applying slice from {file_i}")
-                logger.info(f"\t\tApplied {len(slice_files)} slices to model in {time.time() - start_time} seconds")
-
-                # Average them on the model.
-                logger.info(f"\tAveraging slices on model.")
-                for name, param in self.model.named_parameters():
-                    if name not in slices_per_param or name not in indices or slices_per_param[name] == 0:
-                        continue
-                    indices_name = indices[name].to(self.config.device)
-                    param.data.view(-1)[indices_name] /= (slices_per_param[name] + 1)
-                logger.info(f"\t\tAveraged slices on model in {time.time() - start_time} seconds")
+                slice_files = await apply_window_slices_to_model( model = self.model, window = self.current_window - 1, compression = self.hparams.compression)
+                applied_per_step = len(slice_files)
+                logger.info(f"\t\tApplied {applied_per_step} slices to model in {time.time() - start_time} seconds")
                 
                 # Train for the current window.
                 logger.info(f"\tLoading {self.optimal_pages_per_step} page dataset")
@@ -204,6 +175,7 @@ class Miner:
                     pages_info = pages,
                     tokenizer = self.hparams.tokenizer
                 )
+                pages_per_step = len(pages)
                 logger.info(f"\t\tLoaded dataset pages: {[p[1] for p in pages]} in {time.time() - start_time} seconds")
 
                 # Train the model on the current page.
@@ -213,6 +185,7 @@ class Miner:
                 self.optimizer.zero_grad()  # Clear any lingering grads.
                 total_loss = 0.0
                 total_steps = self.hparams.desired_batch_size // self.config.actual_batch_size
+                window_exhuasted = False
                 for idx, batch in enumerate(dataset):
                     input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
                     labels = input_ids.clone()
@@ -222,16 +195,15 @@ class Miner:
                     total_loss += outputs.loss.item()
                     loss = outputs.loss / (total_steps + 1)  # Divide by number of accumulations.
                     loss.backward()
-                    # Break on total steps or if we have a new slice.
-                    if idx >= total_steps - 1:
-                        logger.info('\t\tBreak training, no more steps.')
-                        self.optimal_pages_per_step += 1
-                        break
-                    elif start_window != self.current_window:
-                        logger.info(f'\t\tBreak training, new window {start_window} != {self.current_window}')
-                        self.optimal_pages_per_step = max(1, self.optimal_pages_per_step - 1)
+                    if start_window != self.current_window:
+                        window_exhuasted = True
                         break
                 
+                # Update training pages based on window exhuastion.
+                if window_exhuasted:
+                    self.optimal_pages_per_step = max(1, self.optimal_pages_per_step - 1)
+                else:
+                    self.optimal_pages_per_step += 1
 
                 # Apply step and clean memory.
                 if self.hparams.grad_clip:
@@ -245,19 +217,10 @@ class Miner:
                 # Calculate, print and log average loss
                 average_loss = total_loss / (idx + 1)
                 total_time = time.time() - start_time
-                steps_per_second = (idx + 1) / total_time
-                batches_per_second = self.config.actual_batch_size * (idx + 1) / total_time
-                tokens_per_second = self.hparams.sequence_length * self.config.actual_batch_size * (idx + 1) / total_time
-                if self.config.use_wandb:
-                    wandb.log({
-                        "step_loss": average_loss,
-                        "learning_rate": self.scheduler.get_last_lr()[0],
-                        "incentive": float(self.metagraph.I[self.uid]),
-                        "tokens_per_second": tokens_per_second
-                    })
+                tokens_per_step = self.hparams.sequence_length * self.config.actual_batch_size * (idx + 1)
+                tokens_per_second =  tokens_per_step / total_time
                 logger.info(f"\t\tLoss: {average_loss}, learning_rate: {self.scheduler.get_last_lr()[0]}")
-                logger.info(f"\t\tTraining completed in {total_time} seconds, Steps per second: {steps_per_second}, "
-                            f"Batches per second: {batches_per_second}, Tokens per second: {tokens_per_second}")
+                logger.info(f"\t\tTraining completed in {total_time} seconds, Tokens per step: {tokens_per_second}, Tokens per second: {tokens_per_second}")
 
                 # Upload our model slice to S3.
                 logger.info(f"\tUploading for window: {self.current_window}")
@@ -273,15 +236,23 @@ class Miner:
                 logger.info(f"\t\tFinished cleaning space in {time.time() - start_time} seconds.")
 
                 # Calculate and log global steps per second
-                global_step_total_time = time.time() - global_step_start_time
-                global_steps_per_second = 1 / global_step_total_time
+                seconds_per_step = time.time() - global_step_start_time
+                steps_per_second = 1 / seconds_per_step
                 if self.config.use_wandb:
                     wandb.log({
-                        "global_steps_per_second": global_steps_per_second,
-                        "global_step_time": global_step_total_time,
-                        "global_tokens_per_second": tokens_per_second / global_step_total_time 
+                        "step_loss": average_loss,
+                        "tokens_per_step": tokens_per_step,
+                        "tokens_per_second": tokens_per_second,
+                        "applied_per_step": applied_per_step,
+                        "pages_per_step": pages_per_step,
+                        "downloaded_per_step": downloaded_per_step,
+                        "incentive": float(self.metagraph.I[self.uid]),
+                        "learning_rate": self.scheduler.get_last_lr()[0],
+                        "seconds_per_step": seconds_per_step,
+                        "steps_per_second": steps_per_second,
+                        "tokens_per_global_step": tokens_per_second / seconds_per_step 
                     })
-                print (f'\nGlobal step completed in {global_step_total_time} seconds\n')
+                print (f'\nGlobal step completed in {seconds_per_step} seconds\n')
                 
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
@@ -295,7 +266,7 @@ class Miner:
 
     # Returns the slice window based on a block.
     def block_to_window(self, block: int) -> int:
-        return int(block / self.hparams.window_length)
+        return int(block / self.hparams.mask_window_length)
 
     # A listener thread which posts the block event
     # when the chain announces a new block.
