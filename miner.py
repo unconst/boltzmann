@@ -37,7 +37,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 # Import local files.
 from common import *
 from hparams import load_hparams
-from dataset import SubsetFineWebEdu2Loader
+from dataset import AsyncSubsetFineWebEdu2Loader
 
 # GPU optimizations.
 torch.backends.cudnn.benchmark = True
@@ -163,12 +163,12 @@ class Miner:
                 logger.info(f"\tLoading {self.optimal_pages_per_step} page dataset")
                 start_time = time.time()
                 start_window = self.current_window
-                pages = SubsetFineWebEdu2Loader.next_pages(
+                pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
                     offset = self.current_block * self.hparams.pages_window_speed,
                     n_pages = self.optimal_pages_per_step,
                     seed = self.uid
                 )
-                dataset = SubsetFineWebEdu2Loader(
+                dataset = await AsyncSubsetFineWebEdu2Loader.create(
                     batch_size = self.config.actual_batch_size,
                     sequence_length = self.hparams.sequence_length,
                     pages_info = pages,
@@ -200,9 +200,13 @@ class Miner:
                 
                 # Update training pages based on window exhuastion.
                 if window_exhuasted:
+                    # Did exhuast window during training, decrease number of pages.
                     self.optimal_pages_per_step = max(1, self.optimal_pages_per_step - 1)
-                else:
+                else: 
+                    # Did not exhuast window during training.
+                    # Waits until window is over.
                     self.optimal_pages_per_step += 1
+                    await self.wait_for_new_window()
 
                 # Apply step and clean memory.
                 if self.hparams.grad_clip:
@@ -293,5 +297,4 @@ class Miner:
             self.new_window_event.clear()
             
 if __name__ == "__main__":
-    miner = Miner()
-    asyncio.run(miner.run())
+    asyncio.run(Miner().run())

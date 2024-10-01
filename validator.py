@@ -38,7 +38,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 # Import local files.
 from common import *
 from hparams import load_hparams
-from dataset import SubsetFineWebEdu2Loader
+from dataset import AsyncSubsetFineWebEdu2Loader
 
 # GPU optimizations.
 torch.backends.cudnn.benchmark = True
@@ -182,12 +182,12 @@ class Miner:
                         logger.info(f"\tLoaded values and indicies.")
             
                         # Train for the current slice.
-                        pages = SubsetFineWebEdu2Loader.next_pages(
+                        pages = await SubsetFineWebEdu2Loader.next_pages(
                             offset = self.current_block * self.hparams.pages_window_speed,
                             n_pages = 1,
                             seed = miner_uid
                         )
-                        dataset = SubsetFineWebEdu2Loader(
+                        dataset = await SubsetFineWebEdu2Loader.create(
                             batch_size = self.config.actual_batch_size,
                             sequence_length = self.hparams.sequence_length,
                             pages_info = pages,

@@ -19,10 +19,12 @@ import time
 import typing
 import random
 import requests
+import asyncio
+import aiohttp
 import numpy as np
 from tqdm import tqdm
-from torch.utils.data import IterableDataset
 from transformers import AutoTokenizer
+from torch.utils.data import IterableDataset
 
 class SubsetLoader(IterableDataset):
     """
@@ -55,7 +57,9 @@ class SubsetLoader(IterableDataset):
         # Buffer to hold padded pages
         self.padded_buffer = []
 
-    def fetch_data_for_pages(self, pages):
+        self.lock = asyncio.Lock()  # For thread-safe operations
+
+    async def fetch_data_for_pages(self, pages):
         """
         Set the pages to be used to fill the buffer. Then fetch the page data
         to the buffer.
@@ -66,9 +70,48 @@ class SubsetLoader(IterableDataset):
         # Empty the buffer if it is not.
         self.buffer = []
 
-        for page in self.pages:
-            self._fetch_data_for_page(page)
+        async with aiohttp.ClientSession() as session:
+            tasks = [self._fetch_data_for_page(page, session) for page in self.pages]
+            await asyncio.gather(*tasks)
 
+    async def _fetch_data_for_page(self, page, session):
+        retry_limit = 10
+        attempt = 0
+        while attempt < retry_limit:
+            config_name, page_number, split = page
+
+            # Create the request parameters
+            params = dict(dataset=self.name,
+                          config=config_name,
+                          split=split,
+                          offset=page_number,
+                          limit=self.num_rows_per_page
+                          )
+
+            try:
+                async with session.get(self.rows_base_url, params=params) as response:
+                    response.raise_for_status()
+                    data = await response.json()
+
+                    # Prepare the data to append
+                    buffer_to_append = []
+                    for row in data["rows"]:
+                        content = row["row"]["text"]
+                        input_ids = self.tokenizer(content, truncation=True)["input_ids"]
+                        buffer_to_append.extend(input_ids)
+                        buffer_to_append.append(self.tokenizer.eos_token_id)
+
+                    async with self.lock:
+                        self.buffer.extend(buffer_to_append)
+                        self.pages.append((config_name, page_number, split))
+                    break  # Success, exit retry loop
+
+            except aiohttp.ClientResponseError as e:
+                attempt += 1
+                if attempt < retry_limit:
+                    await asyncio.sleep(5)
+                else:
+                    raise
 
     def _get_pad_size(self, input_ids):
         """
@@ -139,7 +182,7 @@ class SubsetLoader(IterableDataset):
         raise StopIteration
 
 
-class SubsetFineWebEdu2Loader(SubsetLoader):
+class AsyncSubsetFineWebEdu2Loader(SubsetLoader):
 
     name: str = "HuggingFaceFW/fineweb-edu-score-2"
     rows_base_url: str = "https://datasets-server.huggingface.co/rows"
@@ -148,28 +191,27 @@ class SubsetFineWebEdu2Loader(SubsetLoader):
     retry_limit: int = 10  # Number of retries
     retry_delay: int = 5  # Seconds to wait between retries
     num_rows_per_page: int = 100
-    
-    
+
     @staticmethod
-    def next_pages( offset: int, n_pages: int, seed: str, num_rows_per_page:int = 100 ):
-        configs_data = SubsetFineWebEdu2Loader.fetch_dataset_configs()
+    async def next_pages(offset: int, n_pages: int, seed: str, num_rows_per_page: int = 100):
+        configs_data = await AsyncSubsetFineWebEdu2Loader.fetch_dataset_configs()
         rng = np.random.default_rng(hash(seed) & 0xffffffff)  # Create a generator with a seed
-        rng.bit_generator.advance( offset )  # Efficiently skip ahead `n` steps
+        rng.bit_generator.advance(offset)  # Efficiently skip ahead `n` steps
         result = []
-        for _ in range( n_pages ):
-            config = rng.choice( list(configs_data.keys() ))
+        for _ in range(n_pages):
+            config = rng.choice(list(configs_data.keys()))
             choice = rng.integers(0, configs_data[config]['num_rows'] - 1 - num_rows_per_page)
-            result.append( (str(config), int(choice), configs_data[config]['split'] ) )
+            result.append((str(config), int(choice), configs_data[config]['split']))
         return result
 
     def __init__(
             self,
             batch_size=None,
             sequence_length=None,
-            num_pages = None,
-            pages_info = None,
-            tokenizer: AutoTokenizer=None,
-            pack_samples: bool=False,
+            num_pages=None,
+            pages_info=None,
+            tokenizer: AutoTokenizer = None,
+            pack_samples: bool = False,
     ):
         super().__init__(batch_size,
                          sequence_length,
@@ -177,152 +219,149 @@ class SubsetFineWebEdu2Loader(SubsetLoader):
                          tokenizer,
                          pack_samples)
 
-        # Get the dataset configs and their row sizes
-        self.configs_data = SubsetFineWebEdu2Loader.fetch_dataset_configs()
-        
-        if pages_info != None:
-            self._fetch( pages_info )
-            
+        # Initialize properties
+        self.configs_data = None
+        self.pages = []
+        self.buffer = []
+        self.lock = asyncio.Lock()  # For thread-safe operations
+
+    @classmethod
+    async def create(
+            cls,
+            batch_size=None,
+            sequence_length=None,
+            num_pages=None,
+            pages_info=None,
+            tokenizer: AutoTokenizer = None,
+            pack_samples: bool = False,
+    ):
+        self = cls(
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            num_pages=num_pages,
+            tokenizer=tokenizer,
+            pack_samples=pack_samples
+        )
+
+        # Fetch dataset configs asynchronously
+        self.configs_data = await cls.fetch_dataset_configs()
+
+        if pages_info is not None:
+            await self._fetch(pages_info)
         elif self.num_pages:
-            self._fetch_data_to_buffer(self.num_pages)
-            
-    def _fetch( self, page_info: typing.Tuple[ str, int, str ] ):
-        
+            await self._fetch_data_to_buffer(self.num_pages)
+
+        return self
+
+    async def _fetch(self, page_info: typing.Tuple[str, int, str]):
         self.pages = page_info
-        attempts = 0
         num_pages = len(self.pages)
-        for (config_name, page, split) in self.pages:
-            # Create the request parameters
-            params = dict(dataset=self.name,
-                        config=config_name,
-                        split=split,
-                        offset=page,
-                        limit=self.num_rows_per_page
-            )
-            try:
-                response = requests.get(self.rows_base_url, params=params)
-                response.raise_for_status()  # This will raise an HTTPError if the HTTP request returned an unsuccessful status code
-                for row in response.json()["rows"]:
-                    content = row["row"]["text"]
+        async with aiohttp.ClientSession() as session:
+            tasks = [self._fetch_data_for_page((config_name, page, split), session)
+                     for (config_name, page, split) in self.pages]
+            await asyncio.gather(*tasks)
 
-                    # get the tokenized and encoded sample
-                    input_ids = self.tokenizer(content, truncation=True)["input_ids"]
-                    self.buffer += input_ids
-                    self.buffer += [self.tokenizer.eos_token_id]
-
-                response.close()
-
-            except requests.exceptions.RequestException as e:
-
-                response.close()
-                attempts += 1
-                if attempts < num_pages * self.retry_limit:
-                    pass
-
-                else:
-                    raise
-            
-
-    def _fetch_data_to_buffer(self, num_pages):
+    async def _fetch_data_to_buffer(self, num_pages):
         """
         Randomly sample pages and add their data to the buffer.
         If a page is inaccessible, another one is sampled.
-        this method sets the `pages` property
+        This method sets the `pages` property.
         """
-
         self.pages = []
-        attempts = 0
+        pages_to_fetch = self.get_random_pages(num_pages)
 
-        while len(self.pages) < num_pages:
+        async with aiohttp.ClientSession() as session:
+            tasks = [self._fetch_data_for_page(page, session) for page in pages_to_fetch]
+            await asyncio.gather(*tasks)
 
-            # randomly sample one page
-            config_name, page, split = self.get_random_pages(num_pages = 1)[0]
-
-            # Create the request parameters
-            params = dict(dataset=self.name,
-                          config=config_name,
-                          split=split,
-                          offset=page,
-                          limit=self.num_rows_per_page
-            )
-
-            try:
-                response = requests.get(self.rows_base_url, params=params)
-
-                response.raise_for_status()  # This will raise an HTTPError if the HTTP request returned an unsuccessful status code
-
-                # Add the page since the request was successful
-                self.pages.append((config_name, page, split))
-
-                for row in response.json()["rows"]:
-                    content = row["row"]["text"]
-
-                    # get the tokenized and encoded sample
-                    input_ids = self.tokenizer(content, truncation=True)["input_ids"]
-                    self.buffer += input_ids
-                    self.buffer += [self.tokenizer.eos_token_id]
-
-                response.close()
-
-            except requests.exceptions.RequestException as e:
-
-                response.close()
-                attempts += 1
-                if attempts < num_pages * self.retry_limit:
-                    pass
-
-                else:
-                    raise
-
-    def fetch_data_to_rows(self, num_pages):
-
+    async def fetch_data_to_rows(self, num_pages):
         rows = []
-        attempts = 0
-        num_downloaded_pages = 0
+        pages_to_fetch = self.get_random_pages(num_pages)
 
-        while num_downloaded_pages < num_pages:
-
-            # randomly sample one page
-            config_name, page, split = self.get_random_pages(num_pages = 1)[0]
-
-            # Create the request parameters
-            params = dict(dataset=self.name,
-                          config=config_name,
-                          split=split,
-                          offset=page,
-                          limit=self.num_rows_per_page
-            )
-
-            try:
-                response = requests.get(self.rows_base_url, params=params)
-
-                response.raise_for_status()  # This will raise an HTTPError if the HTTP request returned an unsuccessful status code
-
-                num_downloaded_pages += 1
-
-                for row in response.json()["rows"]:
-                    rows.append(row["row"]["text"])
-
-            except requests.exceptions.RequestException as e:
-                attempts += 1
-                if attempts < num_pages * self.retry_limit:
-                    pass
-
-                else:
-                    raise
-
+        async with aiohttp.ClientSession() as session:
+            tasks = [self._fetch_rows_for_page(page, session) for page in pages_to_fetch]
+            results = await asyncio.gather(*tasks)
+            for page_rows in results:
+                rows.extend(page_rows)
 
         return rows
 
+    async def _fetch_data_for_page(self, page, session):
+        retry_limit = self.retry_limit
+        attempt = 0
+        while attempt < retry_limit:
+            config_name, page_number, split = page
+
+            # Create the request parameters
+            params = dict(dataset=self.name,
+                          config=config_name,
+                          split=split,
+                          offset=page_number,
+                          limit=self.num_rows_per_page
+                          )
+
+            try:
+                async with session.get(self.rows_base_url, params=params) as response:
+                    response.raise_for_status()
+                    data = await response.json()
+
+                    # Prepare the data to append
+                    buffer_to_append = []
+                    for row in data["rows"]:
+                        content = row["row"]["text"]
+                        input_ids = self.tokenizer(content, truncation=True)["input_ids"]
+                        buffer_to_append.extend(input_ids)
+                        buffer_to_append.append(self.tokenizer.eos_token_id)
+
+                    async with self.lock:
+                        self.buffer.extend(buffer_to_append)
+                        self.pages.append((config_name, page_number, split))
+                    break  # Success, exit retry loop
+
+            except aiohttp.ClientResponseError as e:
+                attempt += 1
+                if attempt < retry_limit:
+                    await asyncio.sleep(self.retry_delay)
+                else:
+                    raise
+
+    async def _fetch_rows_for_page(self, page, session):
+        retry_limit = self.retry_limit
+        attempt = 0
+        while attempt < retry_limit:
+            config_name, page_number, split = page
+
+            # Create the request parameters
+            params = dict(dataset=self.name,
+                          config=config_name,
+                          split=split,
+                          offset=page_number,
+                          limit=self.num_rows_per_page
+                          )
+
+            try:
+                async with session.get(self.rows_base_url, params=params) as response:
+                    response.raise_for_status()
+                    data = await response.json()
+
+                    # Collect the rows
+                    return [row["row"]["text"] for row in data["rows"]]
+
+            except aiohttp.ClientResponseError as e:
+                attempt += 1
+                if attempt < retry_limit:
+                    await asyncio.sleep(self.retry_delay)
+                else:
+                    raise
+
     def get_random_pages(self, num_pages):
         """
-        Randomly sample one page.
+        Randomly sample pages.
         A page is a row number of a given split of a given dataset dump.
         """
         pages = []
 
         for _ in range(num_pages):
-
             # Choose a random config
             config_name = random.choice(list(self.configs_data.keys()))
 
@@ -339,19 +378,18 @@ class SubsetFineWebEdu2Loader(SubsetLoader):
     def get_page_names(self):
         """
         This is a utility function that returns the page names that were used.
-        Each page as a single string instead of a tuple
+        Each page as a single string instead of a tuple.
         """
-
         page_names = []
 
         if hasattr(self, 'pages'):
             page_names = [f'{cfg_name}_{num_rows}_{split}' for
-                           cfg_name, num_rows, split in self.pages]
+                          cfg_name, num_rows, split in self.pages]
 
         return page_names
 
     @staticmethod
-    def fetch_dataset_configs() -> typing.Dict[str, typing.Dict]:
+    async def fetch_dataset_configs() -> typing.Dict[str, typing.Dict]:
         """
         Fetch the different dump names, aka configs, aka samples, of the
         dataset.
@@ -360,68 +398,46 @@ class SubsetFineWebEdu2Loader(SubsetLoader):
         """
         # Request parameters
         params = dict(
-            dataset = SubsetFineWebEdu2Loader.name
-            )
+            dataset=AsyncSubsetFineWebEdu2Loader.name
+        )
 
         attempt = 0
-        while attempt < SubsetFineWebEdu2Loader.retry_limit:
+        while attempt < AsyncSubsetFineWebEdu2Loader.retry_limit:
             try:
-                response = requests.get(SubsetFineWebEdu2Loader.size_base_url, params=params)
-                response.raise_for_status()  # This will raise an HTTPError if the HTTP request returned an unsuccessful status code
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(AsyncSubsetFineWebEdu2Loader.size_base_url, params=params) as response:
+                        response.raise_for_status()
 
-                # Extract the configs dict
-                configs_dict = response.json()['size']['splits']
+                        data = await response.json()
 
-                # Now create a dict with config names (except 'default') as
-                # keys, and the number of rows as values
-                configs_data = {entry['config']: {'num_rows': entry['num_rows'] ,
-                                                  'split': entry['split']}
-                                for entry in configs_dict
-                                if entry['config'] != 'default'
-                                }
+                        # Extract the configs dict
+                        configs_dict = data['size']['splits']
 
-                return configs_data
+                        # Now create a dict with config names (except 'default') as
+                        # keys, and the number of rows as values
+                        configs_data = {entry['config']: {'num_rows': entry['num_rows'],
+                                                          'split': entry['split']}
+                                        for entry in configs_dict
+                                        if entry['config'] != 'default'
+                                        }
 
-            except requests.exceptions.RequestException as e:
+                        return configs_data
+
+            except aiohttp.ClientResponseError as e:
                 attempt += 1
-                if attempt < SubsetFineWebEdu2Loader.retry_limit:
-                    time.sleep(SubsetFineWebEdu2Loader.retry_delay)  # Wait before the next retry
+                if attempt < AsyncSubsetFineWebEdu2Loader.retry_limit:
+                    await asyncio.sleep(AsyncSubsetFineWebEdu2Loader.retry_delay)
                 else:
                     raise
 
-    def _fetch_data_for_page(self, page):
-
-        retry_limit = 10
-
-        attempt = 0
-        while attempt < retry_limit:
-            config_name, page, split = page
-
-            # Create the request parameters
-            params = dict(dataset=self.name,
-                          config=config_name,
-                          split=split,
-                          offset=page,
-                          limit=self.num_rows_per_page
-            )
-
-            try:
-
-                response = requests.get(self.rows_base_url, params=params)
-
-                response.raise_for_status()  # This will raise an HTTPError if the HTTP request returned an unsuccessful status code
-
-                for row in response.json()["rows"]:
-                    content = row["row"]["text"]
-                    input_ids = self.tokenizer(content, truncation=True)["input_ids"]
-                    self.buffer += input_ids
-                    self.buffer += [self.tokenizer.eos_token_id]
-
-                break  # If the request was successful, break out of the retry loop
-
-            except requests.exceptions.RequestException as e:
-                attempt += 1
-                if attempt < self.retry_limit:
-                    time.sleep(self.retry_delay)  # Wait before the next retry
-                else:
-                    raise
+    @staticmethod
+    async def next_pages_async(offset: int, n_pages: int, seed: str, num_rows_per_page: int = 100):
+        configs_data = await AsyncSubsetFineWebEdu2Loader.fetch_dataset_configs()
+        rng = np.random.default_rng(hash(seed) & 0xffffffff)  # Create a generator with a seed
+        rng.bit_generator.advance(offset)  # Efficiently skip ahead `n` steps
+        result = []
+        for _ in range(n_pages):
+            config = rng.choice(list(configs_data.keys()))
+            choice = rng.integers(0, configs_data[config]['num_rows'] - 1 - num_rows_per_page)
+            result.append((str(config), int(choice), configs_data[config]['split']))
+        return result
