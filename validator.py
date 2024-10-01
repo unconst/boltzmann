@@ -133,7 +133,7 @@ class Miner:
             try:
                 # Start step.
                 logger.info('\n' + '-' * 40 + f' Step: {self.global_step} ' + '-' * 40)
-                logger.info(f"Step: {self.global_step}, slice: {self.current_window}, "
+                logger.info(f"Step: {self.global_step}, Window: {self.current_window}, "
                             f"Block: {self.current_block}, Time: {int(time.time())}")
                 self.global_step += 1
                 
