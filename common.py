@@ -406,7 +406,7 @@ async def delete_files_before_window(window_max: int):
     logger.debug(f"Deleting files with window id before {window_max}")
     temp_dir = tempfile.gettempdir()
     for filename in os.listdir(temp_dir):
-        if filename.startswith("slice-") and filename.endswith(".pt"):
+        if filename.startswith("slice-") and ( filename.endswith(".pt") or filename.endswith(".lock") ):
             try:
                 parts = filename.split('-')
                 window_id = int(parts[1])

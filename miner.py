@@ -20,6 +20,7 @@
 import os
 import sys 
 import time
+import math
 import wandb
 import torch
 import asyncio
@@ -123,10 +124,11 @@ class Miner:
 
         # Init run state.
         self.global_step = 0
-        self.optimal_pages_per_step = 4
+        self.last_window = 0
+        self.optimal_pages_per_step = 2.0
         self.current_block = self.subtensor.block
         self.current_window = self.block_to_window( self.current_block )
-        self.block_event = asyncio.Event()
+        self.new_block_event = asyncio.Event()
         self.new_window_event = asyncio.Event()
         self.stop_event = asyncio.Event()        
         print ( self.hparams )
@@ -136,13 +138,18 @@ class Miner:
         self.loop = asyncio.get_running_loop()
         self.listener = threading.Thread(target=self.block_listener, args=(self.loop,), daemon=True).start()
         while True:
-            
+
             try:
+                # Wait until we are on a new window.
+                global_step_start_time = time.time()
+                while self.current_window == self.last_window:
+                    await asyncio.sleep(0.1)
+                self.last_window = self.current_window
+                
                 # Start step.
-                logger.info('\n' + '-' * 40 + ' Step ' + '-' * 40)
+                logger.info('\n' + '-' * 40 + f' Step{self.global_step} ' + '-' * 40)
                 logger.info(f"Step: {self.global_step}, Window: {self.current_window}, "
                             f"Block: {self.current_block}, Time: {int(time.time())}")
-                global_step_start_time = time.time()
                 self.global_step += 1
 
                 # Download files.    
@@ -160,12 +167,12 @@ class Miner:
                 logger.info(f"\t\tApplied {applied_per_step} slices to model in {time.time() - start_time} seconds")
                 
                 # Train for the current window.
-                logger.info(f"\tLoading {self.optimal_pages_per_step} page dataset")
+                logger.info(f"\tLoading {int(math.ceil(self.optimal_pages_per_step))} page dataset")
                 start_time = time.time()
                 start_window = self.current_window
                 pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
                     offset = self.current_block * self.hparams.pages_window_speed,
-                    n_pages = self.optimal_pages_per_step,
+                    n_pages = int(math.ceil(self.optimal_pages_per_step)),
                     seed = self.uid
                 )
                 dataset = await AsyncSubsetFineWebEdu2Loader.create(
@@ -197,16 +204,17 @@ class Miner:
                     if start_window != self.current_window:
                         window_exhuasted = True
                         break
-                
+                    
                 # Update training pages based on window exhuastion.
                 if window_exhuasted:
                     # Did exhuast window during training, decrease number of pages.
-                    self.optimal_pages_per_step = max(1, self.optimal_pages_per_step - 1)
+                    logger.info(f"\t\tExhuasted window during training.")
+                    self.optimal_pages_per_step = max(1, self.optimal_pages_per_step * 0.9 )
                 else: 
                     # Did not exhuast window during training.
                     # Waits until window is over.
-                    self.optimal_pages_per_step += 1
-                    await self.wait_for_new_window()
+                    logger.info(f"\t\tExhuasted dataset during training.")
+                    self.optimal_pages_per_step *= 1.1
 
                 # Apply step and clean memory.
                 if self.hparams.grad_clip:
@@ -276,25 +284,13 @@ class Miner:
     def block_listener(self, loop):
         def handler(event, _u, _s):
             self.current_block = int(event['header']['number'])
-            loop.call_soon_threadsafe(self.block_event.set)
+            loop.call_soon_threadsafe(self.new_block_event.set)
             if self.block_to_window(self.current_block) != self.current_window:
                 self.current_window = self.block_to_window(self.current_block)
                 loop.call_soon_threadsafe(self.new_window_event.set)
                 logger.info(f"\t\tNew window: {self.current_window}")
         # Subscribe to block headers with the custom handler
         bt.subtensor(config=self.config).substrate.subscribe_block_headers(handler)
-
-    # Helper for waiting on block time
-    async def wait_for_new_block(self):
-        while True:
-            await self.block_event.wait()
-            self.block_event.clear()
-
-    # Helper for waiting on slice time.
-    async def wait_for_new_window(self):
-        while True:
-            await self.new_window_event.wait()
-            self.new_window_event.clear()
             
 if __name__ == "__main__":
     asyncio.run(Miner().run())
