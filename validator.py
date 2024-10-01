@@ -101,19 +101,8 @@ class Miner:
         self.hparams = load_hparams()
         self.model = LlamaForCausalLM(config=self.hparams.model_config)
         self.model.to(self.config.device)
-        self.model.train()
-        self.optimizer = optim.AdamW(
-            self.model.parameters(),
-            lr=self.hparams.learning_rate,  # Peak learning rate
-            betas=(self.hparams.optimizer_beta1, self.hparams.optimizer_beta2),  # B1 and B2
-            weight_decay=self.hparams.optimizer_weight_decay,  # Weight decay
-            foreach=True,  # more memory usage, but faster
-        )
-        self.scheduler = CosineAnnealingLR(
-            self.optimizer, T_max=self.hparams.cosine_epoch_length,
-            eta_min=self.hparams.eta_min, last_epoch=-1
-        )
-
+        self.model.eval()
+        
         # Init buckets.
         self.buckets = []
         for uid in tqdm(self.metagraph.uids):
