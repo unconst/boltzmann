@@ -117,6 +117,7 @@ class Miner:
         self.optimal_pages_per_step = 4
         self.current_block = self.subtensor.block
         self.current_window = self.block_to_window( self.current_block )
+        self.window_seeds = {self.current_window: self.window_to_seed( self.current_window) }
         self.block_event = asyncio.Event()
         self.new_window_event = asyncio.Event()
         self.stop_event = asyncio.Event()       
@@ -145,14 +146,19 @@ class Miner:
                 # Download files.    
                 logger.info(f"\tDownloading slices for windows: {[self.current_window-1, self.current_window]}")
                 start_time = time.time()
-                files = await download_files_for_buckets_and_windows(buckets=self.buckets, windows=[self.current_window-1, self.current_window])
+                files = await download_slices_for_buckets_and_windows(buckets=self.buckets, windows=[self.current_window-1, self.current_window])
                 downloaded_per_step = sum([len(files[k]) for k in files])
                 logger.info(f"\t\tDownloaded {downloaded_per_step} slices for windows: {[self.current_window-1, self.current_window]} in {time.time() - start_time} seconds")
                 
                 # Apply slices to the model from the previous window.
                 logger.info(f"\tApplying slices from window: {self.current_window - 1} to model.")
                 start_time = time.time()
-                slice_files = await apply_window_slices_to_model( model = self.model, window = self.current_window - 1, compression = self.hparams.compression)
+                slice_files = await apply_slices_to_model( 
+                    model = self.model, 
+                    window = self.current_window - 1, 
+                    seed = self.window_seeds[ self.current_window - 1 ],
+                    compression = self.hparams.compression
+                )
                 applied_per_step = len(slice_files)
                 logger.info(f"\t\tApplied {applied_per_step} slices to model in {time.time() - start_time} seconds")
                 
@@ -175,7 +181,12 @@ class Miner:
                         miner_hotkey = slice_filename.split('-')[2].split('.')[0]
                         miner_uid = self.metagraph.hotkeys.index(miner_hotkey)
                         miner_values = torch.load(slice_filename, map_location=torch.device(self.model.device), weights_only = True)
-                        miner_indices = await get_indices_for_window(model=self.model, window=eval_window, compression=self.hparams.compression)
+                        miner_indices = await get_indices_for_window(
+                            model = self.model, 
+                            window = eval_window, 
+                            seed = self.window_seeds[ eval_window ],
+                            compression = self.hparams.compression
+                        )
                         logger.info(f"\t\tUid: {miner_uid}")
                         logger.info(f"\t\tHotkey: {miner_hotkey}")
                         logger.info(f"\t\tWindow: {eval_window}")
@@ -286,6 +297,10 @@ class Miner:
     # Returns the slice window based on a block.
     def block_to_window(self, block: int) -> int:
         return int(block / self.hparams.mask_window_length)
+    
+    # Returns the slice window based on a block.
+    def window_to_seed(self, window: int) -> int:
+        return str( self.subtensor.get_block_hash( block = window * self.hparams.mask_window_length ) )
 
     # A listener thread which posts the block event
     # when the chain announces a new block.
@@ -294,7 +309,8 @@ class Miner:
             self.current_block = int(event['header']['number'])
             loop.call_soon_threadsafe(self.block_event.set)
             if self.block_to_window(self.current_block) != self.current_window:
-                self.current_window = self.block_to_window(self.current_block)
+                self.current_window = self.block_to_window( self.current_block )
+                self.window_seeds[self.current_window] = self.window_to_seed( self.current_window )
                 loop.call_soon_threadsafe(self.new_window_event.set)
                 logger.info(f"\t\tNew slice: {self.current_window}")
         # Subscribe to block headers with the custom handler

@@ -57,7 +57,7 @@ asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 # Define a semaphore to limit concurrent downloads (adjust as needed)
 semaphore = asyncio.Semaphore(1000)
 
-async def apply_window_slices_to_model(model: torch.nn.Module, window: int, compression: int) -> List[str]:
+async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, compression: int) -> List[str]:
     """
     Applies slices from a specific window to the given model.
 
@@ -70,7 +70,7 @@ async def apply_window_slices_to_model(model: torch.nn.Module, window: int, comp
         slice_files: (List[str]): A list of all the files applied.
     """
     # First get the indices associated with the window given the model.
-    indices = await get_indices_for_window(model, window, compression)
+    indices = await get_indices_for_window(model, window, seed, compression)
     
     # Load all the slices associated with this window.
     slice_files = await load_files_for_window(window=window)
@@ -101,7 +101,7 @@ async def apply_window_slices_to_model(model: torch.nn.Module, window: int, comp
     # Return a list of the files applied.
     return slice_files
 
-async def upload_slice_for_window(bucket: str, model: torch.nn.Module, window: int, wallet: 'bt.wallet', compression: int):
+async def upload_slice_for_window(bucket: str, model: torch.nn.Module, window: int, seed: str, wallet: 'bt.wallet', compression: int):
     """
     Uploads a compressed slice of a PyTorch model to an S3 bucket.
 
@@ -116,7 +116,7 @@ async def upload_slice_for_window(bucket: str, model: torch.nn.Module, window: i
     logger.debug(f"Uploading slice to S3: {filename}")
 
     model_state_dict = model.state_dict()
-    indices = await get_indices_for_window(model, window, compression)
+    indices = await get_indices_for_window(model, window, seed, compression)
 
     # Apply the slice to the model parameters
     for name, param in model.named_parameters():
@@ -196,7 +196,7 @@ async def upload_master(bucket: str, model: torch.nn.Module, wallet: 'bt.wallet'
             os.remove(temp_file_name)
             logger.debug(f"Temporary file {temp_file_name} removed")
 
-async def get_indices_for_window(model: torch.nn.Module, window: int, compression: int) -> Dict[str, torch.LongTensor]:
+async def get_indices_for_window(model: torch.nn.Module, window: int, seed: str, compression: int) -> Dict[str, torch.LongTensor]:
     """
     Computes the indices for the given window and compression factor.
 
@@ -211,9 +211,8 @@ async def get_indices_for_window(model: torch.nn.Module, window: int, compressio
     logger.debug(f"Computing indices for window {window} with compression {compression}")
     result = {}
     # Seed the random number generator with the window
-    seed = int(hashlib.md5(str(window).encode('utf-8')).hexdigest(), 16) % (2**32)
+    seed = int(hashlib.md5(str(seed).encode('utf-8')).hexdigest(), 16) % (2**32)
     rng = np.random.default_rng(seed)
-
     for name, param in model.named_parameters():
         # Randomly select indices based on the compression factor
         num_indices = max(1, int(param.numel() // compression))
@@ -337,7 +336,7 @@ async def process_bucket(s3_client, bucket: str, windows: List[int]):
     logger.trace(f"Completed processing bucket {bucket} for windows {windows}")
     return files
 
-async def download_files_for_buckets_and_windows(buckets: List[str], windows: List[int]) -> Dict[int, List[SimpleNamespace]]:
+async def download_slices_for_buckets_and_windows(buckets: List[str], windows: List[int]) -> Dict[int, List[SimpleNamespace]]:
     """
     Downloads files from multiple S3 buckets for the given windows.
 

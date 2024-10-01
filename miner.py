@@ -155,14 +155,22 @@ class Miner:
                 # Download files.    
                 logger.info(f"\tDownloading slices for windows: {[self.current_window-1, self.current_window]}")
                 start_time = time.time()
-                files = await download_files_for_buckets_and_windows(buckets=self.buckets, windows=[self.current_window-1, self.current_window])
+                files = await download_slices_for_buckets_and_windows(
+                    buckets = self.buckets,
+                    windows = [self.current_window-1, self.current_window]
+                )
                 downloaded_per_step = sum([len(files[k]) for k in files])
                 logger.info(f"\t\tDownloaded {downloaded_per_step} slices for windows: {[self.current_window-1, self.current_window]} in {time.time() - start_time} seconds")
                 
                 # Apply slices to the model from the previous window.
                 logger.info(f"\tApplying slices from window: {self.current_window - 1} to model.")
                 start_time = time.time()
-                slice_files = await apply_window_slices_to_model( model = self.model, window = self.current_window - 1, compression = self.hparams.compression)
+                slice_files = await apply_slices_to_model( 
+                    model = self.model, 
+                    window = self.current_window - 1, 
+                    seed = self.window_to_seed( self.current_window - 1 ),
+                    compression = self.hparams.compression
+                )
                 applied_per_step = len(slice_files)
                 logger.info(f"\t\tApplied {applied_per_step} slices to model in {time.time() - start_time} seconds")
                 
@@ -236,7 +244,14 @@ class Miner:
                 # Upload our model slice to S3.
                 logger.info(f"\tUploading for window: {self.current_window}")
                 start_time = time.time()
-                await upload_slice_for_window(self.config.bucket, self.model, self.current_window, self.wallet, self.hparams.compression)
+                await upload_slice_for_window(
+                    bucket = self.config.bucket, 
+                    model = self.model, 
+                    window = self.current_window, 
+                    seed = self.window_seeds[ eval_window ],
+                    wallet = self.wallet, 
+                    compression = self.hparams.compression
+                )
                 logger.info(f"\t\tFinished upload for window: {self.current_window} in {time.time() - start_time} seconds.")
                 
                 # Delete lingering files 
@@ -278,6 +293,10 @@ class Miner:
     # Returns the slice window based on a block.
     def block_to_window(self, block: int) -> int:
         return int(block / self.hparams.mask_window_length)
+    
+    # Returns the slice window based on a block.
+    def window_to_seed(self, window: int) -> int:
+        return str( self.subtensor.get_block_hash( block = window * self.hparams.mask_window_length ) )
 
     # A listener thread which posts the block event
     # when the chain announces a new block.
