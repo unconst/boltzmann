@@ -136,7 +136,6 @@ class Miner:
     # Returns the mask window based on a block.
     def block_to_mask( self, block: int ) -> int:
         return int(block / self.hparams.mask_window_length)
-
     # A listener thread which posts the block event 
     # when the chain annouces a new block.
     def block_listener( self, loop ):
@@ -183,6 +182,7 @@ class Miner:
             except Exception as e:
                 print(f'Error in update: {e}')
                 traceback.print_exc()
+
 
     # Pulls masks from other peers on a background loop.  
     async def download( self ):

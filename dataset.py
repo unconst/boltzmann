@@ -192,8 +192,10 @@ class SubsetFineWebEdu2Loader(SubsetLoader):
         # Initialize buffers and tokenizer
         self.padded_buffer = []
         self.tokenizer = tokenizer
+
         # Initialize the stop_event here so it's always available
         self.stop_event = threading.Event()
+
 
         # Handle initialization based on pages_info
         if pages_info is not None:
@@ -204,6 +206,7 @@ class SubsetFineWebEdu2Loader(SubsetLoader):
             self.buffer = []
             # Do not fetch data here
             # Data will be fetched in the initialize method
+
         else:
             # Initialize for asynchronous fetching
             self.pages = None
