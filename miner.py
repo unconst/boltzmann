@@ -128,6 +128,7 @@ class Miner:
         self.optimal_pages_per_step = 2.0
         self.current_block = self.subtensor.block
         self.current_window = self.block_to_window( self.current_block )
+        self.window_seeds = {self.current_window: self.window_to_seed( self.current_window) }
         self.new_block_event = asyncio.Event()
         self.new_window_event = asyncio.Event()
         self.stop_event = asyncio.Event()        
@@ -139,17 +140,12 @@ class Miner:
         self.listener = threading.Thread(target=self.block_listener, args=(self.loop,), daemon=True).start()
         while True:
 
-            try:
-                # Wait until we are on a new window.
-                global_step_start_time = time.time()
-                while self.current_window == self.last_window:
-                    await asyncio.sleep(0.1)
-                self.last_window = self.current_window
-                
+            try:                
                 # Start step.
                 logger.info('\n' + '-' * 40 + f' Step{self.global_step} ' + '-' * 40)
                 logger.info(f"Step: {self.global_step}, Window: {self.current_window}, "
                             f"Block: {self.current_block}, Time: {int(time.time())}")
+                global_step_start_time = time.time()
                 self.global_step += 1
 
                 # Download files.    
@@ -240,6 +236,11 @@ class Miner:
                 tokens_per_second =  tokens_per_step / total_time
                 logger.info(f"\t\tLoss: {average_loss}, learning_rate: {self.scheduler.get_last_lr()[0]}")
                 logger.info(f"\t\tTraining completed in {total_time} seconds, Tokens per step: {tokens_per_step}, Tokens per second: {tokens_per_second}")
+                
+                # Wait until we are on a new window.
+                while self.current_window == self.last_window:
+                    await asyncio.sleep(0.1)
+                self.last_window = self.current_window
 
                 # Upload our model slice to S3.
                 logger.info(f"\tUploading for window: {self.current_window}")
@@ -248,7 +249,7 @@ class Miner:
                     bucket = self.config.bucket, 
                     model = self.model, 
                     window = self.current_window, 
-                    seed = self.window_seeds[ eval_window ],
+                    seed = self.window_seeds[ self.current_window ],
                     wallet = self.wallet, 
                     compression = self.hparams.compression
                 )
@@ -292,11 +293,11 @@ class Miner:
 
     # Returns the slice window based on a block.
     def block_to_window(self, block: int) -> int:
-        return int(block / self.hparams.mask_window_length)
+        return int( block / self.hparams.mask_window_length ) # floor
     
     # Returns the slice window based on a block.
     def window_to_seed(self, window: int) -> int:
-        return str( self.subtensor.get_block_hash( block = window * self.hparams.mask_window_length ) )
+        return str( self.subtensor.get_block_hash( window * self.hparams.mask_window_length ) )
 
     # A listener thread which posts the block event
     # when the chain announces a new block.
@@ -305,6 +306,7 @@ class Miner:
             self.current_block = int(event['header']['number'])
             loop.call_soon_threadsafe(self.new_block_event.set)
             if self.block_to_window(self.current_block) != self.current_window:
+                self.window_seeds[ self.block_to_window(self.current_block) ] = self.window_to_seed( self.block_to_window(self.current_block) )
                 self.current_window = self.block_to_window(self.current_block)
                 loop.call_soon_threadsafe(self.new_window_event.set)
                 logger.info(f"\t\tNew window: {self.current_window}")

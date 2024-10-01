@@ -300,7 +300,7 @@ class Miner:
     
     # Returns the slice window based on a block.
     def window_to_seed(self, window: int) -> int:
-        return str( self.subtensor.get_block_hash( block = window * self.hparams.mask_window_length ) )
+        return str( self.subtensor.get_block_hash( window * self.hparams.mask_window_length ) )
 
     # A listener thread which posts the block event
     # when the chain announces a new block.
@@ -309,8 +309,8 @@ class Miner:
             self.current_block = int(event['header']['number'])
             loop.call_soon_threadsafe(self.block_event.set)
             if self.block_to_window(self.current_block) != self.current_window:
-                self.current_window = self.block_to_window( self.current_block )
-                self.window_seeds[self.current_window] = self.window_to_seed( self.current_window )
+                self.window_seeds[ self.block_to_window(self.current_block) ] = self.window_to_seed( self.block_to_window(self.current_block) )
+                self.current_window = self.block_to_window(self.current_block)
                 loop.call_soon_threadsafe(self.new_window_event.set)
                 logger.info(f"\t\tNew slice: {self.current_window}")
         # Subscribe to block headers with the custom handler
