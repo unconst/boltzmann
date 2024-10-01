@@ -50,7 +50,7 @@ class Miner:
     @staticmethod
     def config():
         parser = argparse.ArgumentParser(description='Miner script')
-        parser.add_argument('--project', type=str, default='220A', help='Optional wandb project name')
+        parser.add_argument('--project', type=str, default='QZWXEC', help='Optional wandb project name')
         parser.add_argument('--netuid', type=int, default=220, help='Bittensor network UID.')
         parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
         parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
@@ -92,9 +92,9 @@ class Miner:
             # Delete all runs with my name and create a new one.
             try:
                 [run.delete() for run in wandb.Api().runs(path=self.config.project)
-                 if run.name == f'M{self.uid}' and logger.info(f'Deleting old run: {run}')]
+                 if run.name == f'V{self.uid}' and logger.info(f'Deleting old run: {run}')]
             except: pass
-            wandb.init(project=self.config.project, resume='allow', name=f'M{self.uid}', config=self.config)
+            wandb.init(project=self.config.project, resume='allow', name=f'V{self.uid}', config=self.config)
 
         # Init model.
         logger.info('\n' + '-' * 40 + 'Hparams' + '-' * 40)
@@ -131,23 +131,20 @@ class Miner:
         while True:
             
             try:
-                # Wait until we are on a new window.
-                global_step_start_time = time.time()
-                while self.current_window == self.last_window:
-                    await asyncio.sleep(0.1)
-                self.last_window = self.current_window
-                
                 # Start step.
-                logger.info('\n' + '-' * 40 + f' Step{self.global_step} ' + '-' * 40)
+                logger.info('\n' + '-' * 40 + f' Step: {self.global_step} ' + '-' * 40)
                 logger.info(f"Step: {self.global_step}, slice: {self.current_window}, "
                             f"Block: {self.current_block}, Time: {int(time.time())}")
                 self.global_step += 1
-
+                
                 # Download files.    
                 logger.info(f"\tDownloading slices for windows: {[self.current_window-1, self.current_window]}")
                 start_time = time.time()
-                files = await download_slices_for_buckets_and_windows(buckets=self.buckets, windows=[self.current_window-1, self.current_window])
-                downloaded_per_step = sum([len(files[k]) for k in files])
+                slice_files = await download_slices_for_buckets_and_windows(
+                    buckets = self.buckets,
+                    windows = [self.current_window-1, self.current_window]
+                )
+                downloaded_per_step = sum([len(slice_files[k]) for k in slice_files])
                 logger.info(f"\t\tDownloaded {downloaded_per_step} slices for windows: {[self.current_window-1, self.current_window]} in {time.time() - start_time} seconds")
                 
                 # Apply slices to the model from the previous window.
@@ -156,7 +153,7 @@ class Miner:
                 slice_files = await apply_slices_to_model( 
                     model = self.model, 
                     window = self.current_window - 1, # Get files from previous window.
-                    seed = self.window_seeds[ self.current_window ], # Seed index with block hash of current window.
+                    seed = self.window_seeds[ self.current_window ], # Use seed as the hash of the last window.
                     compression = self.hparams.compression
                 )
                 applied_per_step = len(slice_files)
@@ -227,7 +224,6 @@ class Miner:
                             else:
                                 # If the parameter did not receive a gradient, we set it to zero
                                 gradients[name] = torch.zeros_like(param.data)
-                        logger.info(f"\t\tCollected gradients.")
 
                         # Step 4: Flatten the gradients and the miner's update (slice values)
                         step_start_time = time.time()
@@ -252,7 +248,6 @@ class Miner:
                         gradient_vector = torch.cat(gradient_vector)
                         update_vector = torch.cat(update_vector)
                         step_end_time = time.time()
-                        logger.info(f"\t\tFlatten gradients.")
 
                         # Compute reward.
                         dot_product = torch.dot(gradient_vector, update_vector)
@@ -312,7 +307,7 @@ class Miner:
                 self.window_seeds[ self.block_to_window(self.current_block) ] = self.window_to_seed( self.block_to_window(self.current_block) )
                 self.current_window = self.block_to_window(self.current_block)
                 loop.call_soon_threadsafe(self.new_window_event.set)
-                logger.info(f"\t\tNew slice: {self.current_window}")
+                logger.info(f"\t\tNew window: {self.current_window}")
         # Subscribe to block headers with the custom handler
         bt.subtensor(config=self.config).substrate.subscribe_block_headers(handler)
             
