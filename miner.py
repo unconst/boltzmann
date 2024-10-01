@@ -92,8 +92,7 @@ class Miner:
             try:
                 [run.delete() for run in wandb.Api().runs(path=self.config.project)
                  if run.name == f'M{self.uid}' and logger.info(f'Deleting old run: {run}')]
-            except:
-                pass
+            except: pass
             wandb.init(project=self.config.project, resume='allow', name=f'M{self.uid}', config=self.config)
 
         # Init model.
@@ -147,11 +146,11 @@ class Miner:
                 self.global_step += 1
 
                 # Download files.    
-                logger.info(f"\tDownloading for windows: {[self.current_window-1, self.current_window]}")
+                logger.info(f"\tDownloading slices for windows: {[self.current_window-1, self.current_window]}")
                 start_time = time.time()
                 files = await download_files_for_buckets_and_windows(buckets=self.buckets, windows=[self.current_window-1, self.current_window])
                 downloaded_per_step = sum([len(files[k]) for k in files])
-                logger.info(f"\t\tDownloaded {downloaded_per_step} for windows: {[self.current_window-1, self.current_window]} in {time.time() - start_time} seconds")
+                logger.info(f"\t\tDownloaded {downloaded_per_step} slices for windows: {[self.current_window-1, self.current_window]} in {time.time() - start_time} seconds")
                 
                 # Apply slices to the model from the previous window.
                 logger.info(f"\tApplying slices from window: {self.current_window - 1} to model.")
@@ -220,7 +219,7 @@ class Miner:
                 tokens_per_step = self.hparams.sequence_length * self.config.actual_batch_size * (idx + 1)
                 tokens_per_second =  tokens_per_step / total_time
                 logger.info(f"\t\tLoss: {average_loss}, learning_rate: {self.scheduler.get_last_lr()[0]}")
-                logger.info(f"\t\tTraining completed in {total_time} seconds, Tokens per step: {tokens_per_second}, Tokens per second: {tokens_per_second}")
+                logger.info(f"\t\tTraining completed in {total_time} seconds, Tokens per step: {tokens_per_step}, Tokens per second: {tokens_per_second}")
 
                 # Upload our model slice to S3.
                 logger.info(f"\tUploading for window: {self.current_window}")

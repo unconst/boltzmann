@@ -19,6 +19,7 @@ import os
 import io
 import sys 
 import uuid
+import fcntl
 import torch
 import uvloop
 import hashlib
@@ -34,6 +35,7 @@ from typing import List, Dict
 from dotenv import dotenv_values
 from types import SimpleNamespace
 from aiobotocore.session import get_session
+from filelock import FileLock, Timeout
 
 # Configure loguru logger
 logger.remove()
@@ -77,7 +79,7 @@ async def apply_window_slices_to_model(model: torch.nn.Module, window: int, comp
     slices_per_param = {name: 0 for name, _ in model.named_parameters()}
     for file_i in slice_files:
         try:
-            slice_i = torch.load(file_i, map_location = torch.device( model.device), weights_only=True)
+            slice_i = torch.load(file_i, map_location = torch.device( model.device ), weights_only = True)
             for name, param in model.named_parameters():
                 if name not in indices or name not in slice_i:
                     continue
@@ -232,85 +234,43 @@ async def download_file(s3_client, bucket: str, filename: str) -> str:
         str: The path to the downloaded file in the temporary directory.
     """
     async with semaphore:
+        temp_file = os.path.join(tempfile.gettempdir(), filename)
+        lock_file = f"{temp_file}.lock"
+        lock = FileLock(lock_file)
         try:
-            temp_file = os.path.join(tempfile.gettempdir(), filename)
+            # Try to acquire the lock with a timeout
+            with lock.acquire(timeout=1):
+                # Re-check if the file exists after acquiring the lock
+                if os.path.exists(temp_file):
+                    logger.debug(f"File {temp_file} already exists, skipping download.")
+                    return temp_file
 
-            # Check if the file already exists
-            if os.path.exists(temp_file):
-                logger.debug(f"File {temp_file} already exists, skipping download.")
+                # Proceed to download the file
+                logger.debug(f"Downloading file {filename} to {temp_file}")
+                head_response = await s3_client.head_object(Bucket=bucket, Key=filename)
+                object_size = head_response['ContentLength']
+                CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB
+
+                response = await s3_client.get_object(Bucket=bucket, Key=filename)
+                async with aiofiles.open(temp_file, 'wb') as outfile:
+                    while True:
+                        chunk = await response['Body'].read(CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        await outfile.write(chunk)
+
+                logger.debug(f"Successfully downloaded file {filename} to {temp_file}")
                 return temp_file
 
-            # Get the object size
-            head_response = await s3_client.head_object(Bucket=bucket, Key=filename)
-            object_size = head_response['ContentLength']
-
-            # Define the chunk size and calculate the number of parts
-            CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB
-            part_size = CHUNK_SIZE
-            parts = []
-            for i in range(0, object_size, part_size):
-                start = i
-                end = min(i + part_size - 1, object_size - 1)
-                parts.append((start, end))
-
-            # Function to download a part
-            async def download_part(part_number, start, end):
-                try:
-                    range_header = f"bytes={start}-{end}"
-                    response = await s3_client.get_object(
-                        Bucket=bucket,
-                        Key=filename,
-                        Range=range_header
-                    )
-
-                    # Check the HTTP status code
-                    status_code = response['ResponseMetadata']['HTTPStatusCode']
-                    if status_code != 206:
-                        logger.error(f"Unexpected status code {status_code} for part {part_number}")
-                        raise Exception(f"Unexpected status code {status_code}")
-
-                    part_file = f"{temp_file}.part{part_number}"
-                    async with aiofiles.open(part_file, 'wb') as f:
-                        while True:
-                            chunk = await response['Body'].read(CHUNK_SIZE)
-                            if not chunk:
-                                break
-                            await f.write(chunk)
-                    logger.trace(f"Downloaded part {part_number} to {part_file}")
-                    return part_file
-                except Exception as e:
-                    logger.error(f"Error downloading part {part_number}: {e}")
-                    raise
-
-            # Download parts concurrently
-            download_tasks = [
-                download_part(idx, start, end)
-                for idx, (start, end) in enumerate(parts)
-            ]
-
-            part_files = await asyncio.gather(*download_tasks)
-
-            # Combine parts into the final file
-            async with aiofiles.open(temp_file, 'wb') as outfile:
-                for part_file in sorted(part_files, key=lambda x: int(x.split('part')[-1])):
-                    async with aiofiles.open(part_file, 'rb') as infile:
-                        while True:
-                            chunk = await infile.read(CHUNK_SIZE)
-                            if not chunk:
-                                break
-                            await outfile.write(chunk)
-                    # Remove the part file
-                    try:
-                        os.remove(part_file)
-                        logger.debug(f"Removed part file {part_file}")
-                    except OSError as e:
-                        logger.error(f"Error removing part file {part_file}: {e}")
-
-            logger.debug(f"Successfully downloaded file {filename} to {temp_file}")
-            return temp_file
+        except Timeout:
+            logger.error(f"Timeout occurred while trying to acquire lock on {lock_file}")
+            return None
         except Exception as e:
             logger.exception(f"Failed to download file {filename} from bucket {bucket}: {e}")
             return None
+        finally:
+            # The lock is automatically released when exiting the 'with' block
+            pass
 
 async def handle_file(s3_client, bucket: str, filename: str, hotkey: str, window: int):
     """

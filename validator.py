@@ -93,8 +93,7 @@ class Miner:
             try:
                 [run.delete() for run in wandb.Api().runs(path=self.config.project)
                  if run.name == f'M{self.uid}' and logger.info(f'Deleting old run: {run}')]
-            except:
-                pass
+            except: pass
             wandb.init(project=self.config.project, resume='allow', name=f'M{self.uid}', config=self.config)
 
         # Init model.
