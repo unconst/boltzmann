@@ -195,15 +195,15 @@ class Miner:
                 start_time = time.time()
                 start_mask = self.current_window
                 pages = SubsetFineWebEdu2Loader.next_pages(
-                    offset=self.current_block * self.hparams.pages_window_speed,
+                    offset = self.current_block * self.hparams.pages_window_speed,
                     n_pages = self.optimal_pages_per_step,
-                    seed=self.uid
+                    seed = self.uid
                 )
                 dataset = SubsetFineWebEdu2Loader(
-                    batch_size=self.config.actual_batch_size,
-                    sequence_length=self.hparams.sequence_length,
-                    pages_info=pages,
-                    tokenizer=self.hparams.tokenizer
+                    batch_size = self.config.actual_batch_size,
+                    sequence_length = self.hparams.sequence_length,
+                    pages_info = pages,
+                    tokenizer = self.hparams.tokenizer
                 )
                 logger.info(f"\t\tLoaded dataset pages: {[p[1] for p in pages]} in {time.time() - start_time} seconds")
 
@@ -232,6 +232,7 @@ class Miner:
                         logger.info(f'\t\tBreak training, new mask {start_mask} != {self.current_window}')
                         self.optimal_pages_per_step = max(1, self.optimal_pages_per_step - 1)
                         break
+                
 
                 # Apply step and clean memory.
                 if self.hparams.grad_clip:
