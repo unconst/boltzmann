@@ -142,58 +142,58 @@ class Miner:
             try:
                 # Start step.
                 logger.info('\n' + '-' * 40 + ' Step ' + '-' * 40)
-                logger.info(f"Step: {self.global_step}, Mask: {self.current_window}, "
+                logger.info(f"Step: {self.global_step}, Window: {self.current_window}, "
                             f"Block: {self.current_block}, Time: {int(time.time())}")
                 global_step_start_time = time.time()
                 self.global_step += 1
 
                 # Download files.    
-                logger.info(f"\tDownloading masks for: {[self.current_window-1, self.current_window]}")
+                logger.info(f"\tDownloading windows for: {[self.current_window-1, self.current_window]}")
                 start_time = time.time()
-                files = await download_files_for_buckets_and_masks(buckets=self.buckets, masks=[self.current_window-1, self.current_window])
-                logger.info(f"\t\tDownloaded {sum([len(files[k]) for k in files])} masks for: {[self.current_window-1, self.current_window]} "
+                files = await download_files_for_buckets_and_windows(buckets=self.buckets, windows=[self.current_window-1, self.current_window])
+                logger.info(f"\t\tDownloaded {sum([len(files[k]) for k in files])} windows for: {[self.current_window-1, self.current_window]} "
                             f"in {time.time() - start_time} seconds")
                 
-                # Apply masks from previous window.
-                logger.info(f"\tLoading masks from: {self.current_window - 1}")
+                # Apply windows from previous window.
+                logger.info(f"\tLoading window from: {self.current_window - 1}")
                 start_time = time.time()
-                indices = await get_indices_for_mask(self.model, self.current_window - 1, self.hparams.compression)
-                mask_files = await get_files_for_mask_from_temp(mask = self.current_window - 1)
-                logger.info(f"\t\tLoaded {len(mask_files)} masks for: {self.current_window - 1} "
+                indices = await get_indices_for_window(self.model, self.current_window - 1, self.hparams.compression)
+                slice_files = await load_files_for_window( window = self.current_window - 1)
+                logger.info(f"\t\tLoaded {len(slice_files)} window for: {self.current_window - 1} "
                             f"in {time.time() - start_time} seconds")
 
-                # Apply masks to model and average them.
-                logger.info(f"\tApplying {len(mask_files)} masks to model.")
+                # Apply window to model and average them.
+                logger.info(f"\tApplying {len(slice_files)} windows to model.")
                 start_time = time.time()
-                masks_per_param = {name: 0 for name, _ in self.model.named_parameters()}
-                for file_i in mask_files:
+                slices_per_param = {name: 0 for name, _ in self.model.named_parameters()}
+                for file_i in slice_files:
                     try:
-                        mask = torch.load(file_i, map_location=torch.device(self.model.device), weights_only=True)
+                        slice_i = torch.load(file_i, map_location=torch.device(self.model.device), weights_only=True)
                         for name, param in self.model.named_parameters():
-                            if name not in indices or name not in mask:
+                            if name not in indices or name not in slice_i:
                                 continue
-                            values = mask[name].to(self.model.device)
+                            values = slice_i[name].to(self.model.device)
                             indices_name = indices[name].to(self.model.device)
                             param.data.view(-1)[indices_name] += values
-                            masks_per_param[name] += 1
+                            slices_per_param[name] += 1
                             del values
                     except Exception:
-                        logger.exception(f"Error applying mask from {file_i}")
-                logger.info(f"\t\tApplied {len(mask_files)} masks to model in {time.time() - start_time} seconds")
+                        logger.exception(f"Error applying slice from {file_i}")
+                logger.info(f"\t\tApplied {len(slice_files)} slices to model in {time.time() - start_time} seconds")
 
                 # Average them on the model.
-                logger.info(f"\tAveraging masks on model.")
+                logger.info(f"\tAveraging slices on model.")
                 for name, param in self.model.named_parameters():
-                    if name not in masks_per_param or name not in indices or masks_per_param[name] == 0:
+                    if name not in slices_per_param or name not in indices or slices_per_param[name] == 0:
                         continue
                     indices_name = indices[name].to(self.config.device)
-                    param.data.view(-1)[indices_name] /= (masks_per_param[name] + 1)
-                logger.info(f"\t\tAveraged masks on model in {time.time() - start_time} seconds")
+                    param.data.view(-1)[indices_name] /= (slices_per_param[name] + 1)
+                logger.info(f"\t\tAveraged slices on model in {time.time() - start_time} seconds")
                 
-                # Train for the current mask.
+                # Train for the current window.
                 logger.info(f"\tLoading {self.optimal_pages_per_step} page dataset")
                 start_time = time.time()
-                start_mask = self.current_window
+                start_window = self.current_window
                 pages = SubsetFineWebEdu2Loader.next_pages(
                     offset = self.current_block * self.hparams.pages_window_speed,
                     n_pages = self.optimal_pages_per_step,
@@ -223,13 +223,13 @@ class Miner:
                     total_loss += outputs.loss.item()
                     loss = outputs.loss / (total_steps + 1)  # Divide by number of accumulations.
                     loss.backward()
-                    # Break on total steps or if we have a new mask.
+                    # Break on total steps or if we have a new slice.
                     if idx >= total_steps - 1:
                         logger.info('\t\tBreak training, no more steps.')
                         self.optimal_pages_per_step += 1
                         break
-                    elif start_mask != self.current_window:
-                        logger.info(f'\t\tBreak training, new mask {start_mask} != {self.current_window}')
+                    elif start_window != self.current_window:
+                        logger.info(f'\t\tBreak training, new window {start_window} != {self.current_window}')
                         self.optimal_pages_per_step = max(1, self.optimal_pages_per_step - 1)
                         break
                 
@@ -260,17 +260,17 @@ class Miner:
                 logger.info(f"\t\tTraining completed in {total_time} seconds, Steps per second: {steps_per_second}, "
                             f"Batches per second: {batches_per_second}, Tokens per second: {tokens_per_second}")
 
-                # Upload our model mask to S3.
-                logger.info(f"\tUploading for mask: {self.current_window}")
+                # Upload our model slice to S3.
+                logger.info(f"\tUploading for window: {self.current_window}")
                 start_time = time.time()
-                await upload_mask(self.config.bucket, self.model, self.current_window, self.wallet, self.hparams.compression)
-                logger.info(f"\t\tFinished upload for mask: {self.current_window} in {time.time() - start_time} seconds.")
+                await upload_slice_for_window(self.config.bucket, self.model, self.current_window, self.wallet, self.hparams.compression)
+                logger.info(f"\t\tFinished upload for window: {self.current_window} in {time.time() - start_time} seconds.")
                 
                 # Delete lingering files 
                 logger.info(f"\tCleaning space.")
                 start_time = time.time()
-                await delete_files_before_mask( mask_max = self.current_window - self.hparams.max_history )
-                await delete_files_from_bucket_before_mask( bucket = self.config.bucket, mask_max = self.current_window - self.hparams.max_history )
+                await delete_files_before_window( window_max = self.current_window - self.hparams.max_history )
+                await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = self.current_window - self.hparams.max_history )
                 logger.info(f"\t\tFinished cleaning space in {time.time() - start_time} seconds.")
 
                 # Calculate and log global steps per second
@@ -294,9 +294,9 @@ class Miner:
                 logger.exception(f"Exception during training loop: {e}")
                 continue
 
-    # Returns the mask window based on a block.
+    # Returns the slice window based on a block.
     def block_to_window(self, block: int) -> int:
-        return int(block / self.hparams.mask_window_length)
+        return int(block / self.hparams.window_length)
 
     # A listener thread which posts the block event
     # when the chain announces a new block.
@@ -307,7 +307,7 @@ class Miner:
             if self.block_to_window(self.current_block) != self.current_window:
                 self.current_window = self.block_to_window(self.current_block)
                 loop.call_soon_threadsafe(self.new_window_event.set)
-                logger.info(f"\t\tNew mask: {self.current_window}")
+                logger.info(f"\t\tNew window: {self.current_window}")
         # Subscribe to block headers with the custom handler
         bt.subtensor(config=self.config).substrate.subscribe_block_headers(handler)
 
@@ -317,8 +317,8 @@ class Miner:
             await self.block_event.wait()
             self.block_event.clear()
 
-    # Helper for waiting on mask time.
-    async def wait_for_new_mask(self):
+    # Helper for waiting on slice time.
+    async def wait_for_new_window(self):
         while True:
             await self.new_window_event.wait()
             self.new_window_event.clear()

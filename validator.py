@@ -142,69 +142,69 @@ class Miner:
             try:
                 # Start step.
                 logger.info('\n' + '-' * 40 + ' Step ' + '-' * 40)
-                logger.info(f"Step: {self.global_step}, Mask: {self.current_window}, "
+                logger.info(f"Step: {self.global_step}, slice: {self.current_window}, "
                             f"Block: {self.current_block}, Time: {int(time.time())}")
                 self.global_step += 1
 
                 # Download files.    
-                logger.info(f"\tDownloading masks for: {[self.current_window-1, self.current_window]}")
+                logger.info(f"\tDownloading slices for: {[self.current_window-1, self.current_window]}")
                 start_time = time.time()
-                files = await download_files_for_buckets_and_masks(buckets=self.buckets, masks=[self.current_window-1, self.current_window])
-                logger.info(f"\t\tDownloaded {sum([len(files[k]) for k in files])} masks for: {[self.current_window-1, self.current_window]} "
+                files = await download_files_for_buckets_and_slices(buckets=self.buckets, slices=[self.current_window-1, self.current_window])
+                logger.info(f"\t\tDownloaded {sum([len(files[k]) for k in files])} slices for: {[self.current_window-1, self.current_window]} "
                             f"in {time.time() - start_time} seconds")
                 
-                # Apply masks from previous window.
-                logger.info(f"\tLoading masks from: {self.current_window - 1}")
+                # Apply slices from previous window.
+                logger.info(f"\tLoading slices from: {self.current_window - 1}")
                 start_time = time.time()
-                indices = await get_indices_for_mask(self.model, self.current_window - 1, self.hparams.compression)
-                mask_files = await get_files_for_mask_from_temp(mask = self.current_window - 1)
-                logger.info(f"\t\tLoaded {len(mask_files)} masks for: {self.current_window - 1} "
+                indices = await get_indices_for_window(self.model, self.current_window - 1, self.hparams.compression)
+                slice_files = await load_files_for_window(slice = self.current_window - 1)
+                logger.info(f"\t\tLoaded {len(slice_files)} slices for: {self.current_window - 1} "
                             f"in {time.time() - start_time} seconds")
 
-                # Apply masks to model and average them.
-                logger.info(f"\tApplying {len(mask_files)} masks to model.")
+                # Apply slices to model and average them.
+                logger.info(f"\tApplying {len(slice_files)} slices to model.")
                 start_time = time.time()
-                masks_per_param = {name: 0 for name, _ in self.model.named_parameters()}
-                for file_i in mask_files:
+                slices_per_param = {name: 0 for name, _ in self.model.named_parameters()}
+                for file_i in slice_files:
                     try:
-                        mask = torch.load(file_i, map_location=torch.device(self.model.device), weights_only=True)
+                        slice_i = torch.load(file_i, map_location=torch.device(self.model.device), weights_only=True)
                         for name, param in self.model.named_parameters():
-                            if name not in indices or name not in mask:
+                            if name not in indices or name not in slice_i:
                                 continue
-                            values = mask[name].to(self.model.device)
+                            values = slice_i[name].to(self.model.device)
                             indices_name = indices[name].to(self.model.device)
                             param.data.view(-1)[indices_name] += values
-                            masks_per_param[name] += 1
+                            slices_per_param[name] += 1
                             del values
                     except Exception:
-                        logger.exception(f"Error applying mask from {file_i}")
-                logger.info(f"\t\tApplied {len(mask_files)} masks to model in {time.time() - start_time} seconds")
+                        logger.exception(f"Error applying slice from {file_i}")
+                logger.info(f"\t\tApplied {len(slice_files)} slices to model in {time.time() - start_time} seconds")
 
                 # Average them on the model.
-                logger.info(f"\tAveraging masks on model.")
+                logger.info(f"\tAveraging slices on model.")
                 for name, param in self.model.named_parameters():
-                    if name not in masks_per_param or name not in indices or masks_per_param[name] == 0:
+                    if name not in slices_per_param or name not in indices or slices_per_param[name] == 0:
                         continue
                     indices_name = indices[name].to(self.config.device)
-                    param.data.view(-1)[indices_name] /= (masks_per_param[name] + 1)
-                logger.info(f"\t\tAveraged masks on model in {time.time() - start_time} seconds")
+                    param.data.view(-1)[indices_name] /= (slices_per_param[name] + 1)
+                logger.info(f"\t\tAveraged slices on model in {time.time() - start_time} seconds")
                 
-                # Eval until mask changes.
+                # Eval until slice changes.
                 eval_window = self.current_window - 1
-                while start_mask != self.current_window:
+                while start_slice != self.current_window:
                     logger.info(f"\tEval Step.")
 
                     # Get random UID to eval.
                     miner_uid = random.choice( list(metagraph.uids) )
                     logger.info(f"\tEvalling {miner_uid}")
 
-                    miner_filename = os.path.join(tempfile.gettempdir(), f"mask-{eval_window}-{metagraph.hotkeys[miner_uid]}")
-                    logger.info(f"\tMask filename: {miner_filename}")
+                    miner_filename = os.path.join(tempfile.gettempdir(), f"slice-{eval_window}-{metagraph.hotkeys[miner_uid]}")
+                    logger.info(f"\tslice filename: {miner_filename}")
                     
-                    mask_indicies = await get_files_for_mask_from_temp (mask = eval_window )
-                    logger.info(f"\tLoaded window mask.")
+                    slice_indicies = await load_files_for_window(slice = eval_window )
+                    logger.info(f"\tLoaded window slice.")
 
-                    # Train for the current mask.
+                    # Train for the current slice.
                     pages = SubsetFineWebEdu2Loader.next_pages(
                         offset = self.current_block * self.hparams.pages_window_speed,
                         n_pages = 1,
@@ -240,19 +240,19 @@ class Miner:
                             gradients[name] = torch.zeros_like(param.data)
                     print(f"\tCollected gradients.")
 
-                    # Step 4: Flatten the gradients and the miner's update (mask values)
+                    # Step 4: Flatten the gradients and the miner's update (slice values)
                     step_start_time = time.time()
                     gradient_vector = []
                     update_vector = []
                     for name in sorted(model.state_dict().keys()):
                         # Ensure we're working with parameters that have gradients and updates
-                        if name in gradients and name in mask_values:
+                        if name in gradients and name in slice_values:
                             grad = gradients[name].view(-1)
                             # Initialize a zero vector for the parameter
                             update = torch.zeros_like(grad)
-                            # Get the indices and values of the miner's update (mask)
-                            indices = mask_indices[name].to(model.device)
-                            values = mask_values[name].to(model.device)
+                            # Get the indices and values of the miner's update (slice)
+                            indices = slice_indices[name].to(model.device)
+                            values = slice_values[name].to(model.device)
                             # Place the values at the correct indices
                             update[indices] = values
                             # Append to the vectors
@@ -288,10 +288,10 @@ class Miner:
                     del gradients
                     del gradient_vector
                     del update_vector
-                    del mask_indices
-                    del mask_values
-                    os.remove(mask_temp_file)      
-                # We can't download the mask for the miner.    
+                    del slice_indices
+                    del slice_values
+                    os.remove(slice_temp_file)      
+                # We can't download the slice for the miner.    
                 except Exception as e:
                     print(f"Miner eval failed with error: {e}, setting score of zero.")
                     weights[ miner_uid ] = ( 0.0 * hparams.weights_alpha ) + ( (1 - hparams.weights_alpha) * weights[ miner_uid ] )
@@ -299,7 +299,7 @@ class Miner:
                 # Delete lingering files 
                 logger.info(f"\tCleaning space.")
                 start_time = time.time()
-                await delete_files_before_mask( mask_max = self.current_window - self.hparams.max_history )
+                await delete_files_before_window( window_max = self.current_window - self.hparams.max_history )
                 logger.info(f"\t\tFinished cleaning space in {time.time() - start_time} seconds.")
                 
             # Catch keyboard interrrupt.
@@ -312,9 +312,9 @@ class Miner:
                 logger.exception(f"Exception during training loop: {e}")
                 continue
 
-    # Returns the mask window based on a block.
+    # Returns the slice window based on a block.
     def block_to_window(self, block: int) -> int:
-        return int(block / self.hparams.mask_window_length)
+        return int(block / self.hparams.window_length)
 
     # A listener thread which posts the block event
     # when the chain announces a new block.
@@ -325,7 +325,7 @@ class Miner:
             if self.block_to_window(self.current_block) != self.current_window:
                 self.current_window = self.block_to_window(self.current_block)
                 loop.call_soon_threadsafe(self.new_window_event.set)
-                logger.info(f"\t\tNew mask: {self.current_window}")
+                logger.info(f"\t\tNew slice: {self.current_window}")
         # Subscribe to block headers with the custom handler
         bt.subtensor(config=self.config).substrate.subscribe_block_headers(handler)
 
@@ -335,8 +335,8 @@ class Miner:
             await self.block_event.wait()
             self.block_event.clear()
 
-    # Helper for waiting on mask time.
-    async def wait_for_new_mask(self):
+    # Helper for waiting on slice time.
+    async def wait_for_new_slice(self):
         while True:
             await self.new_window_event.wait()
             self.new_window_event.clear()

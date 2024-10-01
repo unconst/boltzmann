@@ -1,3 +1,20 @@
+# The MIT License (MIT)
+# © 2024 Chakana.tech
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
+# the Software.
+
+# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+
 import os
 import io
 import sys 
@@ -38,28 +55,28 @@ asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 # Define a semaphore to limit concurrent downloads (adjust as needed)
 semaphore = asyncio.Semaphore(1000)
 
-async def upload_mask(bucket: str, model: torch.nn.Module, mask: int, wallet: 'bt.wallet', compression: int):
+async def upload_slice_for_window(bucket: str, model: torch.nn.Module, window: int, wallet: 'bt.wallet', compression: int):
     """
-    Uploads a compressed mask of a PyTorch model to an S3 bucket.
+    Uploads a compressed slice of a PyTorch model to an S3 bucket.
 
     Args:
         bucket (str): Name of the S3 bucket.
-        model (torch.nn.Module): The PyTorch model to be masked and uploaded.
-        mask (int): The mask identifier.
+        model (torch.nn.Module): The PyTorch model to be sliceed and uploaded.
+        window (int): The window identifier.
         wallet (bt.wallet): The wallet object containing the hotkey.
         compression (int): The compression factor.
     """
-    filename = f'mask-{mask}-{wallet.hotkey.ss58_address}.pt'
-    logger.debug(f"Uploading mask to S3: {filename}")
+    filename = f'slice-{window}-{wallet.hotkey.ss58_address}.pt'
+    logger.debug(f"Uploading slice to S3: {filename}")
 
     model_state_dict = model.state_dict()
-    indices = await get_indices_for_mask(model, mask, compression)
+    indices = await get_indices_for_window(model, window, compression)
 
-    # Apply the mask to the model parameters
+    # Apply the slice to the model parameters
     for name, param in model.named_parameters():
         model_state_dict[name] = param.data.view(-1)[indices[name].to(model.device)].cpu()
 
-    # Create a temporary file and write the masked model state dictionary to it
+    # Create a temporary file and write the sliceed model state dictionary to it
     with tempfile.NamedTemporaryFile(delete=False) as temp_file:
         torch.save(model_state_dict, temp_file)
         temp_file_name = temp_file.name  # Store the temporary file name
@@ -82,9 +99,9 @@ async def upload_mask(bucket: str, model: torch.nn.Module, mask: int, wallet: 'b
                 Key=filename,
                 ACL='public-read'
             )
-            logger.debug(f"Successfully uploaded mask to S3: {filename}")
+            logger.debug(f"Successfully uploaded slice to S3: {filename}")
         except Exception:
-            logger.exception(f"Failed to upload mask {filename} to S3")
+            logger.exception(f"Failed to upload slice {filename} to S3")
         finally:
             # Clean up the temporary file
             os.remove(temp_file_name)
@@ -133,25 +150,25 @@ async def upload_master(bucket: str, model: torch.nn.Module, wallet: 'bt.wallet'
             os.remove(temp_file_name)
             logger.debug(f"Temporary file {temp_file_name} removed")
 
-async def get_indices_for_mask(model: torch.nn.Module, mask: int, compression: int) -> Dict[str, torch.LongTensor]:
+async def get_indices_for_window(model: torch.nn.Module, window: int, compression: int) -> Dict[str, torch.LongTensor]:
     """
-    Computes the indices for the given mask and compression factor.
+    Computes the indices for the given window and compression factor.
 
     Args:
         model (torch.nn.Module): The PyTorch model.
-        mask (int): The mask identifier.
+        window (int): The window identifier.
         compression (int): The compression factor.
 
     Returns:
         Dict[str, torch.LongTensor]: A dictionary mapping parameter names to index tensors.
     """
-    logger.debug(f"Computing indices for mask {mask} with compression {compression}")
+    logger.debug(f"Computing indices for window {window} with compression {compression}")
     result = {}
-    # Seed the random number generator with the mask
-    seed = int(hashlib.md5(str(mask).encode('utf-8')).hexdigest(), 16) % (2**32)
+    # Seed the random number generator with the window
+    seed = int(hashlib.md5(str(window).encode('utf-8')).hexdigest(), 16) % (2**32)
     rng = np.random.default_rng(seed)
 
-    for name, param in sorted(model.named_parameters()):
+    for name, param in model.named_parameters():
         # Randomly select indices based on the compression factor
         num_indices = max(1, int(param.numel() // compression))
         indices = rng.choice(param.numel(), size=num_indices, replace=False)
@@ -251,7 +268,7 @@ async def download_file(s3_client, bucket: str, filename: str) -> str:
             logger.exception(f"Failed to download file {filename} from bucket {bucket}: {e}")
             return None
 
-async def handle_file(s3_client, bucket: str, filename: str, hotkey: str, mask: int):
+async def handle_file(s3_client, bucket: str, filename: str, hotkey: str, window: int):
     """
     Handles downloading a single file from S3.
 
@@ -260,35 +277,35 @@ async def handle_file(s3_client, bucket: str, filename: str, hotkey: str, mask: 
         bucket (str): Name of the S3 bucket.
         filename (str): The S3 object key (filename).
         hotkey (str): The hotkey identifier.
-        mask (int): The mask identifier.
+        window (int): The window identifier.
 
     Returns:
         SimpleNamespace: An object containing file metadata and the path to the downloaded file.
     """
-    logger.debug(f"Handling file {filename} for mask {mask} and hotkey {hotkey}")
+    logger.debug(f"Handling file {filename} for window {window} and hotkey {hotkey}")
     temp_file = await download_file(s3_client, bucket, filename)
     if temp_file:
-        return SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, mask=mask, temp_file=temp_file)
+        return SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, window=window, temp_file=temp_file)
     return None
 
-async def process_bucket(s3_client, bucket: str, masks: List[int]):
+async def process_bucket(s3_client, bucket: str, windows: List[int]):
     """
-    Processes an S3 bucket to download files matching the given masks.
+    Processes an S3 bucket to download files matching the given windows.
 
     Args:
         s3_client: The S3 client.
         bucket (str): Name of the S3 bucket.
-        masks (List[int]): A list of mask identifiers.
+        windows (List[int]): A list of window identifiers.
 
     Returns:
         List[SimpleNamespace]: A list of file metadata and paths for downloaded files.
     """
-    logger.debug(f"Processing bucket {bucket} for masks {masks}")
+    logger.debug(f"Processing bucket {bucket} for window {windows}")
     files = []
     paginator = s3_client.get_paginator('list_objects_v2')
 
-    for mask in masks:
-        prefix = f'mask-{mask}'
+    for window in window:
+        prefix = f'slice-{window}'
         logger.debug(f"Listing objects with prefix {prefix}")
         async for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             logger.trace(f"Processing page for prefix {prefix}")
@@ -301,11 +318,11 @@ async def process_bucket(s3_client, bucket: str, masks: List[int]):
                 logger.trace(f"Processing object with key {filename}")
                 try:
                     parts = filename.split('-')
-                    file_mask = int(parts[1])
+                    file_window = int(parts[1])
                     hotkey = parts[2].split('.')[0]
-                    logger.trace(f"Parsed filename {filename} into mask {file_mask} and hotkey {hotkey}")
-                    if file_mask == mask:
-                        download_tasks.append(handle_file(s3_client, bucket, filename, hotkey, file_mask))
+                    logger.trace(f"Parsed filename {filename} into window {file_window} and hotkey {hotkey}")
+                    if file_window == window:
+                        download_tasks.append(handle_file(s3_client, bucket, filename, hotkey, file_window))
                 except Exception:
                     logger.exception(f"Error processing filename {filename}")
                     continue
@@ -313,21 +330,21 @@ async def process_bucket(s3_client, bucket: str, masks: List[int]):
             results = await asyncio.gather(*download_tasks)
             files.extend([res for res in results if res])
             logger.trace(f"Completed processing page for prefix {prefix}")
-    logger.trace(f"Completed processing bucket {bucket} for masks {masks}")
+    logger.trace(f"Completed processing bucket {bucket} for windows {windows}")
     return files
 
-async def download_files_for_buckets_and_masks(buckets: List[str], masks: List[int]) -> Dict[int, List[SimpleNamespace]]:
+async def download_files_for_buckets_and_windows(buckets: List[str], windows: List[int]) -> Dict[int, List[SimpleNamespace]]:
     """
-    Downloads files from multiple S3 buckets for the given masks.
+    Downloads files from multiple S3 buckets for the given windows.
 
     Args:
         buckets (List[str]): A list of S3 bucket names.
-        masks (List[int]): A list of mask identifiers.
+        windows (List[int]): A list of window identifiers.
 
     Returns:
-        Dict[int, List[SimpleNamespace]]: A dictionary mapping masks to lists of file metadata and paths.
+        Dict[int, List[SimpleNamespace]]: A dictionary mapping windows to lists of file metadata and paths.
     """
-    logger.debug(f"Downloading files for buckets {set(buckets)} and masks {masks}")
+    logger.debug(f"Downloading files for buckets {set(buckets)} and windows {windows}")
     session = get_session()
     async with session.create_client(
         's3',
@@ -340,71 +357,71 @@ async def download_files_for_buckets_and_masks(buckets: List[str], masks: List[i
         for bucket in set(buckets):
             if not bucket:
                 continue
-            tasks.append(process_bucket(s3_client, bucket, masks))
+            tasks.append(process_bucket(s3_client, bucket, windows))
         results = await asyncio.gather(*tasks)
         # Flatten the list of lists
         files = [item for sublist in results for item in sublist]
 
-        # Create a dictionary with masks as keys and list of files as values
-        mask_dict = {}
+        # Create a dictionary with windows as keys and list of files as values
+        windows_dict = {}
         for file in files:
-            mask = file.mask
-            if mask not in mask_dict:
-                mask_dict[mask] = []
-            mask_dict[mask].append(file)
+            window = file.window
+            if window not in windows_dict:
+                windows_dict[window] = []
+            windows_dict[window].append(file)
 
-        logger.debug(f"Downloaded files grouped by mask: {list(mask_dict.keys())}")
-        return mask_dict
+        logger.debug(f"Downloaded files grouped by window: {list(windows_dict.keys())}")
+        return windows_dict
 
-async def get_files_for_mask_from_temp(mask: int) -> List[str]:
+async def load_files_for_window(window: int) -> List[str]:
     """
-    Retrieves the paths to downloaded mask files from the temporary directory.
+    Retrieves the paths to downloaded window files from the temporary directory.
 
     Args:
-        mask (int): The mask identifier.
+        window (int): The window identifier.
 
     Returns:
-        List[str]: A list of file paths corresponding to the mask.
+        List[str]: A list of file paths corresponding to the window.
     """
-    logger.debug(f"Retrieving files for mask {mask} from temporary directory")
+    logger.debug(f"Retrieving files for window {window} from temporary directory")
     temp_dir = tempfile.gettempdir()
-    mask_files = []
+    window_files = []
     for filename in os.listdir(temp_dir):
-        if filename.startswith(f"mask-{mask}-") and filename.endswith(".pt"):
-            mask_files.append(os.path.join(temp_dir, filename))
-            logger.debug(f"Found file {filename} for mask {mask}")
-    return mask_files
+        if filename.startswith(f"slice-{window}-") and filename.endswith(".pt"):
+            window_files.append(os.path.join(temp_dir, filename))
+            logger.debug(f"Found file {filename} for window {window}")
+    return window_files
 
-async def delete_files_before_mask(mask_max: int):
+async def delete_files_before_window(window_max: int):
     """
-    Deletes all files on the local machine which have a mask id before a specific value mask_max.
+    Deletes all files on the local machine which have a window id before a specific value window_max.
 
     Args:
-        mask_max (int): The maximum mask id. Files with mask ids less than this value will be deleted.
+        window_max (int): The maximum window id. Files with window ids less than this value will be deleted.
     """
-    logger.debug(f"Deleting files with mask id before {mask_max}")
+    logger.debug(f"Deleting files with window id before {window_max}")
     temp_dir = tempfile.gettempdir()
     for filename in os.listdir(temp_dir):
-        if filename.startswith("mask-") and filename.endswith(".pt"):
+        if filename.startswith("slice-") and filename.endswith(".pt"):
             try:
                 parts = filename.split('-')
-                mask_id = int(parts[1])
-                if mask_id < mask_max:
+                window_id = int(parts[1])
+                if window_id < window_max:
                     file_path = os.path.join(temp_dir, filename)
                     os.remove(file_path)
                     logger.debug(f"Deleted file {file_path}")
             except Exception as e:
                 logger.error(f"Error deleting file {filename}: {e}")
 
-async def delete_files_from_bucket_before_mask(bucket: str, mask_max: int):
+async def delete_files_from_bucket_before_window(bucket: str, window_max: int):
     """
-    Deletes all files in the specified S3 bucket which have a mask id before a specific value mask_max.
+    Deletes all files in the specified S3 bucket which have a window id before a specific value window_max.
 
     Args:
         bucket (str): The name of the S3 bucket.
-        mask_max (int): The maximum mask id. Files with mask ids less than this value will be deleted.
+        window_max (int): The maximum window id. Files with window ids less than this value will be deleted.
     """
-    logger.debug(f"Deleting files in bucket {bucket} with mask id before {mask_max}")
+    logger.debug(f"Deleting files in bucket {bucket} with window id before {window_max}")
     session = get_session()
     async with session.create_client(
         's3',
@@ -418,11 +435,11 @@ async def delete_files_from_bucket_before_mask(bucket: str, mask_max: int):
             if 'Contents' in response:
                 for obj in response['Contents']:
                     filename = obj['Key']
-                    if filename.startswith("mask-") and filename.endswith(".pt"):
+                    if filename.startswith("slice-") and filename.endswith(".pt"):
                         try:
                             parts = filename.split('-')
-                            mask_id = int(parts[1])
-                            if mask_id < mask_max:
+                            window_id = int(parts[1])
+                            if window_id < window_max:
                                 await s3_client.delete_object(Bucket=bucket, Key=filename)
                                 logger.debug(f"Deleted file {filename} from bucket {bucket}")
                         except Exception as e:
