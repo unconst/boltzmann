@@ -174,11 +174,10 @@ def main(config):
             if 'buckets' not in locals() or len(buckets) != len(metagraph.uids):
                 buckets = []
                 for uid in tqdm(metagraph.uids):
-                    buckets.append('decis')
-                    # try:
-                    #     buckets.append(subtensor.get_commitment(config.netuid, uid))
-                    # except:
-                    #     buckets.append(None)
+                    try:
+                        buckets.append(subtensor.get_commitment(config.netuid, uid))
+                    except:
+                        buckets.append(None)
             print(f'\tGetting block completed in {time.time() - get_blocks_and_buckets_start_time} seconds')
 
             # For each bucket, get all files that need to be synced.
