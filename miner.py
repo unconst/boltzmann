@@ -22,6 +22,8 @@ import os
 import wandb
 import torch
 import argparse
+import threading
+import traceback
 from tqdm import tqdm
 import bittensor as bt
 from typing import List
@@ -40,217 +42,262 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
-# Main function.
-async def main(config):
-    # Print the configuration settings.
-    print('\n', '-' * 40, 'Config', '-' * 40)
-    print(config)
+class Miner:
     
-    # Init Bittensor objects.
-    wallet = bt.wallet(config=config)
-    subtensor = bt.subtensor(config=config)
-    metagraph = subtensor.metagraph(netuid=config.netuid) 
-    bt.logging.off()   
-    if wallet.hotkey.ss58_address not in metagraph.hotkeys:
-        raise ValueError(f'Wallet {wallet} is not registered on subnet: {metagraph.netuid}')    
-    my_uid = metagraph.hotkeys.index(wallet.hotkey.ss58_address)    
-    print('\n', '-' * 40, 'Objects', '-' * 40)
-    print(f'Wallet: {wallet}\nSubtensor: {subtensor}\nMetagraph: {metagraph}\nUID: {my_uid}')  
+    @staticmethod
+    def config():
+        parser = argparse.ArgumentParser(description='Miner script')    
+        parser.add_argument('--project', type=str, default='220A', help='Optional wandb project name')
+        parser.add_argument('--netuid', type=int, default=220, help='Bittensor network UID.')
+        parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
+        parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
+        parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
+        parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')    
+        bt.wallet.add_args(parser)
+        bt.subtensor.add_args(parser)    
+        config = bt.config(parser)    
+        config.subtensor.network = 'test'
+        config.subtensor.chain_endpoint = 'wss://test.finney.opentensor.ai:443/'
+        return config    
     
-    # Init my bucket information by submitting it to the chain.  
-    try:
-        if config.bucket != subtensor.get_commitment(config.netuid, my_uid):
-            raise ValueError(f'Chain commitment does not match: {config.bucket}')
-    except Exception:
-        # If not committed or mismatch, commit the bucket to the chain.
-        subtensor.commit(wallet, config.netuid, config.bucket)
-    print('Bucket:', config.bucket)
-
-    # Initialize Weights and Biases (wandb) for experiment tracking if enabled.
-    if config.use_wandb:
-        # Delete all runs with my name and create a new one.
-        try: [run.delete() for run in wandb.Api().runs(path=config.project) if run.name == f'M{my_uid}' and print(f'Deleting old run: {run}')]
-        except: pass
-        wandb.init(project=config.project, resume='allow', name=f'M{my_uid}', config=config)
+    def __init__(self):
+        # Init config.
+        print('\n', '-' * 40, 'Config', '-' * 40)
+        self.config = Miner.config()
+        print(self.config)
         
-    # Init training state.
-    print('\n', '-' * 40, 'Hparams', '-' * 40)
-    hparams = load_hparams()
-    model = LlamaForCausalLM( config = hparams.model_config )
-    model.to(config.device)
-    model.train()
-    optimizer = optim.AdamW(
-        model.parameters(),
-        lr = hparams.learning_rate,  # Peak learning rate
-        betas = ( hparams.optimizer_beta1, hparams.optimizer_beta2 ), # B1 and B2
-        weight_decay = hparams.optimizer_weight_decay,  # Weight decay
-        foreach = True,  # more memory usage, but faster
-    )
-    scheduler = CosineAnnealingLR( optimizer, T_max = hparams.cosine_epoch_length, eta_min=hparams.eta_min, last_epoch=-1 )
+        # Init bittensor objects.
+        self.wallet = bt.wallet(config=self.config)
+        self.subtensor = bt.subtensor(config=self.config)
+        self.metagraph = self.subtensor.metagraph(netuid=self.config.netuid) 
+        bt.logging.off()   
+        if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
+            raise ValueError(f'Wallet {self.wallet} is not registered on subnet: {self.metagraph.netuid}')    
+        self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address) 
+        print('\n', '-' * 40, 'Objects', '-' * 40)  
+        print(f'Wallet: {self.wallet}\nSubtensor: {self.subtensor}\nMetagraph: {self.metagraph}\nUID: {self.uid}') 
         
-    # Load bucket information.
-    buckets = []
-    for uid in tqdm(metagraph.uids):
-        try: buckets.append('decis')
-        except: buckets.append(None)
+        # Init bucket.
+        try: 
+            if self.config.bucket != self.subtensor.get_commitment(self.config.netuid, self.uid): raise ValueError('')
+        except: self.subtensor.commit(self.wallet, self.config.netuid, self.config.bucket)
+        print('Bucket:', self.config.bucket)  
         
+        # Init Wandb.
+        if self.config.use_wandb:
+            # Delete all runs with my name and create a new one.
+            try: [run.delete() for run in wandb.Api().runs(path=self.config.project) if run.name == f'M{self.uid}' and print(f'Deleting old run: {run}')]
+            except: pass
+            wandb.init(project=self.config.project, resume='allow', name=f'M{self.uid}', config=self.config)
+            
+        # Init model.
+        print('\n', '-' * 40, 'Hparams', '-' * 40)
+        self.hparams = load_hparams()
+        self.model = LlamaForCausalLM( config = self.hparams.model_config )
+        self.model.to(self.config.device)
+        self.model.train()
+        self.optimizer = optim.AdamW(
+            self.model.parameters(),
+            lr = self.hparams.learning_rate,  # Peak learning rate
+            betas = ( self.hparams.optimizer_beta1, self.hparams.optimizer_beta2 ), # B1 and B2
+            weight_decay = self.hparams.optimizer_weight_decay,  # Weight decay
+            foreach = True,  # more memory usage, but faster
+        )
+        self.scheduler = CosineAnnealingLR( self.optimizer, T_max = self.hparams.cosine_epoch_length, eta_min=self.hparams.eta_min, last_epoch=-1 )
+        
+        # Init buckets.
+        self.buckets = []
+        for uid in tqdm(self.metagraph.uids):
+            try: self.buckets.append('decis')
+            except: self.buckets.append(None)
+            
+        # Init run state.
+        self.current_mask = None
+        self.current_block = None
+        self.block_event = asyncio.Event()
+        self.mask_event = asyncio.Event()
+        self.stop_event = asyncio.Event()
+        
+    async def run(self):
+        self.loop = asyncio.get_running_loop()
+        self.listener = threading.Thread(target=self.block_listener, args=( self.loop, ), daemon=True).start()
+        self.tasks = [
+            self.update(),
+            self.download(),
+            self.apply(),
+            self.train()
+        ]
+        try:
+            await asyncio.gather(*self.tasks)
+        except KeyboardInterrupt:
+            self.stop_event.set()
+            await asyncio.gather(*self.tasks)
+            
     # Returns the mask window based on a block.
-    def block_to_mask( block: int ) -> int:
-        return int(block / hparams.mask_window_length)
+    def block_to_mask( self, block: int ) -> int:
+        return int(block / self.hparams.mask_window_length)
 
+    # A listener thread which posts the block event 
+    # when the chain annouces a new block.
+    def block_listener( self, loop ):
+        print(f"[events]: Start listening.")
+        def handler( event, _u, _s):
+            self.current_block = int(event['header']['number'])
+            loop.call_soon_threadsafe(self.block_event.set)
+            if self.block_to_mask(self.current_block) != self.current_mask:
+                self.current_mask = self.block_to_mask(self.current_block)
+                loop.call_soon_threadsafe(self.mask_event.set)
+                print(f"[events]: New mask: {self.current_mask}")
+            print(f"[events]: New block: {self.current_block}")
+        # Subscribe to block headers with the custom handler
+        bt.subtensor(config=self.config).substrate.subscribe_block_headers(handler)
+        
+    # Helper for waiting on block time
+    async def wait_for_new_block( self ):
+        while True: 
+            await self.block_event.wait(); 
+            self.block_event.clear()
+            
+    # Helper for waiting on mask time.
+    async def wait_for_new_mask( self ):
+        while True: 
+            await self.mask_event.wait(); 
+            self.mask_event.clear()
+        
     # Updates chain state on a background loop.
-    async def update(stop_event):
-        print (f'[update]: Start update loop.')
+    async def update( self ):
+        print (f'[update]: Started update loop.')
         # Forever until the stop event is set.
-        while not stop_event.is_set():
-            hparams = load_hparams()
-            subtensor = bt.subtensor(config=config)
-            metagraph = subtensor.metagraph(netuid=config.netuid)
-            if len(buckets) != len(metagraph.uids):
-                for uid in tqdm(metagraph.uids):
-                    # try: buckets.append(subtensor.get_commitment(config.netuid, uid))
-                    try: buckets.append('decis')
-                    except: buckets.append(None)
-            print (f'[update]: Updated state. Waiting {60} seconds.')
-            await asyncio.sleep(60)  # Add a sleep to prevent tight loop
+        while not self.stop_event.is_set():
+            try:
+                self.hparams = load_hparams()
+                self.subtensor = bt.subtensor(config=self.config)
+                self.metagraph = self.subtensor.metagraph(netuid=self.config.netuid)
+                if len(self.buckets) != len(self.metagraph.uids):
+                    for uid in tqdm(self.metagraph.uids):
+                        # try: buckets.append(subtensor.get_commitment(config.netuid, uid))
+                        try: self.buckets.append('decis')
+                        except: self.buckets.append(None)
+                print (f'[update]: Updated state. Waiting {60} seconds.')
+                await asyncio.sleep(60)  # Add a sleep to prevent tight loop
+            except Exception as e:
+                print(f'Error in update: {e}')
+                traceback.print_exc()
 
     # Pulls masks from other peers on a background loop.  
-    async def download(stop_event):
-        print (f'[download]: Start download loop.')
-        # Forever until the stop event is set.
-        while not stop_event.is_set(): 
-            current_mask = block_to_mask(subtensor.block)
-            # Download masks from current and previous windows.
-            masks = [current_mask - 2, current_mask - 1, current_mask ]
-            print (f'[download]: downloading masks for: {masks} ... ')
-            files_for_masks = await download_files_for_buckets_and_masks( buckets = buckets, masks = masks )
-            print (f'[download]: downloaded {sum([len(files_for_masks[k]) for k in files_for_masks.keys()])} files for masks: {masks}')
-            print (f'[download]: waiting {2}s ... ')
-            await asyncio.sleep(2)
+    async def download( self ):
+        print (f'[download]: Started download loop.')
+        while not self.stop_event.is_set(): 
+            try:
+                print (f'[download]: Downloading masks for: {self.current_mask} ')
+                files = await download_files_for_buckets_and_masks( buckets = self.buckets, masks = [self.current_mask] )
+                print ('files', files)
+                print (f'[download]: Downloaded {sum([len(files[k]) for k in files])} masks for: {self.current_mask} ')
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f'Error in download: {e}')
+                traceback.print_exc()
        
     # Apply masks to model.
-    async def apply(stop_event):
-        print (f'[apply]: Start apply loop.')
-        # Forever until the stop event is set.
-        while not stop_event.is_set():
-            # Wait until the mask has changed.
-            current_mask = block_to_mask( subtensor.block )
-            indices = await get_indicies_for_mask( model, current_mask, hparams.compression )
-            while block_to_mask(subtensor.block) == current_mask:
-                print (f'[apply]: waiting {1}s ... ')
-                await asyncio.sleep(1)
-            print (f'[apply]: Applying masks for: {current_mask - 1} ')
+    async def apply( self ):
+        print (f'[apply]: Started apply loop.')
+        while not self.stop_event.is_set():
+            try:
+                await self.wait_for_new_mask()
+                indices = await get_indicies_for_mask( self.model, self.current_mask - 1, self.hparams.compression )
+                mask_files = await get_files_for_mask_from_temp( mask = self.current_mask - 1 )
+                print (f'[apply]: Loaded {len(mask_files)} masks for: {self.current_mask - 1} ')
 
-            # Load masks from previous window.
-            mask_files = await get_files_for_mask_from_temp( mask = current_mask - 1 )
-            print (f'[apply]: Loaded {len(mask_files)} masks for: {current_mask - 1} ')
-
-            # Apply masks to model and average them.
-            masks_per_param = { name: 0 for name in model.named_parameters() }
-            for mask_info in mask_files:
-                try:
-                    mask = torch.load(mask_info.temp_file, map_location=torch.device(model.device), weights_only=True)
-                    for name, param in model.named_parameters():
-                        if name not in indices: continue
-                        if name not in mask: continue
-                        values = mask[name].to(model.device)
-                        indices = indices[name].to(model.device)
-                        param.data.view(-1)[indices] += values 
-                        masks_per_param[name] += 1
-                        del values
-                except Exception as e:
-                    pass
-            for name, param in model.named_parameters():
-                if name not in masks_per_param: continue
-                if name not in indices: continue
-                if masks_per_param[name] == 0: continue # Nothing to average.
-                indices = indices[name].to(config.device)
-                param.data.view(-1)[indices] /= (masks_per_param[name] + 1)
-            print (f'[apply]: Applied {len(mask_files)} masks for: {current_mask - 1}')
+                # Apply masks to model and average them.
+                masks_per_param = { name: 0 for name in self.model.named_parameters() }
+                for mask_info in mask_files:
+                    try:
+                        mask = torch.load(mask_info.temp_file, map_location=torch.device(self.model.device), weights_only=True)
+                        for name, param in self.model.named_parameters():
+                            if name not in indices: continue
+                            if name not in mask: continue
+                            values = mask[name].to(model.device)
+                            indices = indices[name].to(model.device)
+                            param.data.view(-1)[indices] += values 
+                            masks_per_param[name] += 1
+                            del values
+                    except Exception as e:
+                        pass
+                for name, param in self.model.named_parameters():
+                    if name not in masks_per_param: continue
+                    if name not in indices: continue
+                    if masks_per_param[name] == 0: continue # Nothing to average.
+                    indices = indices[name].to(self.config.device)
+                    param.data.view(-1)[indices] /= (masks_per_param[name] + 1)
+                print (f'[apply]: Applied {len(mask_files)} masks for: {current_mask - 1}')
+            except Exception as e:
+                print(f'Error in apply: {e}')
+                traceback.print_exc()
                 
     # Trains for model.  
-    async def train(stop_event):
-        print (f'[train]: Start train loop.')
+    async def train(self):
+        print (f'[apply]: Started train loop.')
         # Forever until the stop event is set.
-        while not stop_event.is_set():
-            # Get current mask
-            current_mask = block_to_mask(subtensor.block)
-            # Train for the current mask.
-            print (f'[train]: Loading dataset for mask: {current_mask}')
-            pages = SubsetFineWebEdu2Loader.next_pages(
-                offset = subtensor.block * hparams.pages_window_speed,
-                n_pages = 10,
-                seed = my_uid 
-            )
-            dataset = SubsetFineWebEdu2Loader(
-                batch_size = config.actual_batch_size,
-                sequence_length = hparams.sequence_length,
-                pages_info = pages,
-                tokenizer = hparams.tokenizer
-            )
-            print (f'[train]: Loaded dataset for mask: {current_mask}')
+        while not self.stop_event.is_set():
+            try:
+                # Train for the current mask.
+                print (f'[train]: Loading dataset')
+                start_mask = self.current_mask
+                pages = SubsetFineWebEdu2Loader.next_pages(
+                    offset = self.current_block * self.hparams.pages_window_speed,
+                    n_pages = 10,
+                    seed = self.uid 
+                )
+                dataset = SubsetFineWebEdu2Loader(
+                    batch_size = self.config.actual_batch_size,
+                    sequence_length = self.hparams.sequence_length,
+                    pages_info = pages,
+                    tokenizer = self.hparams.tokenizer
+                )
+                print (f'[train]: Loaded dataset pages: {[p[1] for p in pages]}')
 
-            # Train my model on the current page.
-            print (f'[train]: Training on dataset for mask: {current_mask}')
-            torch.cuda.empty_cache() # Empty cache going into the training step.
-            optimizer.zero_grad() # Clear any lingering grads.
-            total_loss = 0.0
-            total_steps = hparams.desired_batch_size // config.actual_batch_size
-            for idx, batch in enumerate( dataset ):
-                input_ids = torch.tensor(batch, dtype=torch.long).to(model.device)
-                labels = input_ids.clone()
-                labels = torch.where(labels == hparams.tokenizer.pad_token_id, -100, labels)
-                with torch.amp.autocast( device_type = model.device.type, dtype = torch.bfloat16 ):  # Enable autocasting for mixed precision
-                    outputs = model(input_ids = input_ids, labels=labels)
-                total_loss += outputs.loss.item()
-                loss = outputs.loss / (total_steps + 1) # Divide by number of accumulations.
-                loss.backward()
-                # Break on total steps of if we have 1 block left.
-                if idx >= total_steps - 1 or block_to_mask( subtensor.block ) != current_mask:
-                    break
-            print (f'[train]: Trained {total_steps} steps with an average loss of {total_loss}.')
-                
-            # Apply step and clean memory.
-            print (f'[train]: Stepping for mask: {current_mask}')
-            if hparams.grad_clip:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), hparams.grad_clip)
-            optimizer.step()
-            scheduler.step()  # Update the learning rate.
-            optimizer.zero_grad()                        
-            del input_ids, labels, outputs
-            torch.cuda.empty_cache()
-            print (f'[train]: Finished step for mask: {current_mask}')
+                # Train my model on the current page.
+                print (f'[train]: Training on pages: {[p[1] for p in pages]}')
+                torch.cuda.empty_cache() # Empty cache going into the training step.
+                self.optimizer.zero_grad() # Clear any lingering grads.
+                total_loss = 0.0
+                total_steps = self.hparams.desired_batch_size // self.config.actual_batch_size
+                for idx, batch in enumerate( dataset ):
+                    input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
+                    labels = input_ids.clone()
+                    labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
+                    with torch.amp.autocast( device_type = self.model.device.type, dtype = torch.bfloat16 ):  # Enable autocasting for mixed precision
+                        outputs = self.model(input_ids = input_ids, labels=labels)
+                    total_loss += outputs.loss.item()
+                    loss = outputs.loss / (total_steps + 1) # Divide by number of accumulations.
+                    loss.backward()
+                    # Break on total steps of if we have 1 block left.
+                    if idx >= total_steps - 1:
+                        print ('[train]: Break training, no more steps.')
+                        break
+                    elif start_mask != self.current_mask:
+                        print (f'[train]: Break training, new mask {start_mask} != {self.current_mask}')
+                        break
+                print (f'[train]: Trained {total_steps} steps with an average loss of {total_loss/(idx+1)}.')
+                    
+                # Apply step and clean memory.
+                if self.hparams.grad_clip:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.hparams.grad_clip)
+                self.optimizer.step()
+                self.scheduler.step()  # Update the learning rate.
+                self.optimizer.zero_grad()                        
+                del input_ids, labels, outputs
+                torch.cuda.empty_cache()
 
-            # Upload our model mask to S3.
-            print (f'[train]: Uploading for mask: {current_mask}')
-            await upload_mask( config.bucket, model, current_mask, wallet, hparams.compression )
-            print (f'[train]: Finished upload for mask: {current_mask}')
-
-    # Start background threads.
-    stop_event = asyncio.Event()
-    tasks = [
-        update(stop_event),
-        download(stop_event),
-        apply(stop_event),
-        train(stop_event)
-    ]
-    try:
-        await asyncio.gather(*tasks)
-    except KeyboardInterrupt:
-        stop_event.set()
-        await asyncio.gather(*tasks)
+                # Upload our model mask to S3.
+                print (f'[train]: Uploading for mask: {self.current_mask}')
+                await upload_mask( self.config.bucket, self.model, self.current_mask, self.wallet, self.hparams.compression )
+                print (f'[train]: Finished upload for mask: {self.current_mask}')
+                    
+            except Exception as e:
+                print(f'Error in train: {e}')
+                traceback.print_exc()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Miner script')    
-    parser.add_argument('--project', type=str, default='220A', help='Optional wandb project name')
-    parser.add_argument('--netuid', type=int, default=220, help='Bittensor network UID.')
-    parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
-    parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
-    parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
-    parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')    
-    bt.wallet.add_args(parser)
-    bt.subtensor.add_args(parser)    
-    config = bt.config(parser)    
-    config.subtensor.network = 'test'
-    config.subtensor.chain_endpoint = 'wss://test.finney.opentensor.ai:443/'    
-    asyncio.run(main(config))
+    miner = Miner()
+    asyncio.run(miner.run())

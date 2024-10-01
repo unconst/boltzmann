@@ -178,7 +178,7 @@ async def download_file(s3_client, bucket, filename):
 async def handle_file(s3_client, bucket, filename, hotkey, mask):
     temp_file = await download_file(s3_client, bucket, filename)
     if temp_file:
-        return SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, slice=mask, temp_file=temp_file)
+        return SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, mask=mask, temp_file=temp_file)
     return None
 
 async def process_bucket(s3_client, bucket, masks):
@@ -226,7 +226,7 @@ async def download_files_for_buckets_and_masks(buckets: List[str], masks: List[i
         # Create a dictionary with masks as keys and list of files as values
         mask_dict = {}
         for file in files:
-            mask = file.slice
+            mask = file.mask
             if mask not in mask_dict:
                 mask_dict[mask] = []
             mask_dict[mask].append(file)
