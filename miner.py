@@ -151,11 +151,11 @@ class Miner:
                 # Download files.    
                 logger.info(f"\tDownloading slices for windows: {[self.current_window-1, self.current_window]}")
                 start_time = time.time()
-                files = await download_slices_for_buckets_and_windows(
+                slice_files = await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
                     windows = [self.current_window-1, self.current_window]
                 )
-                downloaded_per_step = sum([len(files[k]) for k in files])
+                downloaded_per_step = sum([len(slice_files[k]) for k in slice_files])
                 logger.info(f"\t\tDownloaded {downloaded_per_step} slices for windows: {[self.current_window-1, self.current_window]} in {time.time() - start_time} seconds")
                 
                 # Apply slices to the model from the previous window.
@@ -163,8 +163,8 @@ class Miner:
                 start_time = time.time()
                 slice_files = await apply_slices_to_model( 
                     model = self.model, 
-                    window = self.current_window - 1, 
-                    seed = self.window_to_seed( self.current_window - 1 ),
+                    window = self.current_window - 1, # Get files from previous window.
+                    seed = self.window_seeds[ self.current_window ], # Use seed as the hash of the last window.
                     compression = self.hparams.compression
                 )
                 applied_per_step = len(slice_files)
@@ -248,8 +248,8 @@ class Miner:
                 await upload_slice_for_window(
                     bucket = self.config.bucket, 
                     model = self.model, 
-                    window = self.current_window, 
-                    seed = self.window_seeds[ self.current_window ],
+                    window = self.current_window - 1, # Upload for the previous window 
+                    seed = self.window_seeds[ self.current_window ], # Seed the index by the hash of the new window.
                     wallet = self.wallet, 
                     compression = self.hparams.compression
                 )

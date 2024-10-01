@@ -155,8 +155,8 @@ class Miner:
                 start_time = time.time()
                 slice_files = await apply_slices_to_model( 
                     model = self.model, 
-                    window = self.current_window - 1, 
-                    seed = self.window_seeds[ self.current_window - 1 ],
+                    window = self.current_window - 1, # Get files from previous window.
+                    seed = self.window_seeds[ self.current_window ], # Seed index with block hash of current window.
                     compression = self.hparams.compression
                 )
                 applied_per_step = len(slice_files)
@@ -183,8 +183,8 @@ class Miner:
                         miner_values = torch.load(slice_filename, map_location=torch.device(self.model.device), weights_only = True)
                         miner_indices = await get_indices_for_window(
                             model = self.model, 
-                            window = eval_window, 
-                            seed = self.window_seeds[ eval_window ],
+                            window = eval_window, # Get files from previous window.
+                            seed = self.window_seeds[ eval_window + 1], # Seed index from current window
                             compression = self.hparams.compression
                         )
                         logger.info(f"\t\tUid: {miner_uid}")
