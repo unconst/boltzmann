@@ -61,6 +61,7 @@ asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 # Define a semaphore to limit concurrent downloads (adjust as needed)
 semaphore = asyncio.Semaphore(1000)
 
+
 async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, compression: int) -> List[str]:
     """
     Applies slices from a specific window to the given model.
@@ -68,43 +69,62 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
     Args:
         model (torch.nn.Module): The PyTorch model to which the slices will be applied.
         window (int): The window identifier.
+        seed (str): The seed used for generating indices.
         compression (int): The compression factor.
 
     Returns:
-        slice_files: (List[str]): A list of all the files applied.
+        List[str]: A list of all the slice files that were applied.
     """
     # First get the indices associated with the window given the model.
     indices = await get_indices_for_window(model, seed, compression)
     
     # Load all the slices associated with this window.
     slice_files = await load_files_for_window(window=window)
-    
-    # Add the slices to the model
+
+    # Dictionary to keep track of the number of slices applied per parameter.
     slices_per_param = {name: 0 for name, _ in model.named_parameters()}
+
+    # Iterate over each slice file and apply it to the model.
     for file_i in slice_files:
+        # Create a file lock to ensure exclusive access to the slice file.
+        lock: FileLock = FileLock(f"{file_i}.lock")
         try:
-            lock_i = FileLock(f"{file_i}.lock")
-            with lock_i.acquire(timeout=1):
-                slice_i = torch.load(file_i, map_location = torch.device( model.device ), weights_only = True)
+            # Attempt to acquire the lock with a timeout of 1 second.
+            lock.acquire(timeout=1)
+            try:
+                # Load the slice state from the file into a dictionary.
+                slice_i: Dict[str, torch.Tensor] = torch.load(
+                    file_i,
+                    map_location=torch.device(model.device)
+                )
+            finally:
+                # Release the lock after loading.
+                lock.release()
+
             for name, param in model.named_parameters():
-                if name not in indices or name not in slice_i:
+                if name not in indices_dict or name not in slice_i:
                     continue
                 values = slice_i[name].to(model.device)
-                indices_name = indices[name].to(model.device)
-                param.data.view(-1)[indices_name] += values
+                param_indices = indices_dict[name].to(model.device)
+                param.data.view(-1)[param_indices] += values
                 slices_per_param[name] += 1
                 del values
-        except Exception:
-            logger.exception(f"Error applying slice from {file_i}")
+            del slice_i
+        except Timeout:
+            # The lock could not be acquired within the timeout.
+            logger.error(f"Timeout occurred while trying to acquire lock on {file_i}")
+            continue  
+        except Exception as e:
+            logger.exception(f"Error applying slice from {file_i}: {e}")
 
-    # Average them on the model.
+    # Average the parameters by the number of slices applied.
     for name, param in model.named_parameters():
-        if name not in slices_per_param or name not in indices or slices_per_param[name] == 0:
+        if name not in slices_per_param or name not in indices_dict or slices_per_param[name] == 0:
             continue
-        indices_name = indices[name].to(model.device)
-        param.data.view(-1)[indices_name] /= (slices_per_param[name] + 1)
-        
-    # Return a list of the files applied.
+        param_indices = indices_dict[name].to(model.device)
+        param.data.view(-1)[param_indices] /= (slices_per_param[name] + 1)
+
+    # Return the list of the files applied.
     return slice_files
 
 async def upload_slice_for_window(bucket: str, model: torch.nn.Module, window: int, seed: str, wallet: 'bt.wallet', compression: int):

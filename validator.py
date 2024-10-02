@@ -45,11 +45,11 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
-class Miner:
+class Validator:
 
     @staticmethod
     def config():
-        parser = argparse.ArgumentParser(description='Miner script')
+        parser = argparse.ArgumentParser(description='Validator script')
         parser.add_argument('--project', type=str, default='QZWXEC', help='Optional wandb project name')
         parser.add_argument('--netuid', type=int, default=220, help='Bittensor network UID.')
         parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
@@ -69,7 +69,7 @@ class Miner:
 
     def __init__(self):
         # Init config.
-        self.config = Miner.config()
+        self.config = Validator.config()
         logger.info('\n' + '-' * 40 + ' Config ' + '-' * 40)
         logger.info(self.config)
 
@@ -253,7 +253,7 @@ class Miner:
                     except Exception as e:
                         logger.error(f"Miner eval failed with error: {e}, setting score of zero.")
                         # Update rewards vector with moving average
-                        self.rewards[miner_uid] = (reward * self.hparams.rewards_alpha) + ((1 - self.hparams.rewards_alpha) * self.rewards[miner_uid])
+                        self.rewards[miner_uid] = (reward * self.hparams.validator_rewards_alpha) + ((1 - self.hparams.validator_rewards_alpha) * self.rewards[miner_uid])
                         # Recompute weights from rewards.
                         self.weights[ self.rewards != 0 ] = torch.softmax( self.rewards[ self.rewards != 0 ] * self.hparams.validator_weights_temperature, dim=0)
                     
@@ -327,5 +327,5 @@ class Miner:
         bt.subtensor(config=self.config).substrate.subscribe_block_headers(handler)
             
 if __name__ == "__main__":
-    miner = Miner()
-    asyncio.run(miner.run())
+    validator = Validator()
+    asyncio.run(validator.run())
