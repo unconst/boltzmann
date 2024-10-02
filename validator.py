@@ -195,9 +195,13 @@ class Validator:
                         uid = self.metagraph.hotkeys.index( slice_info.hotkey )
                         # Get the slice values.
                         values = torch.load( slice_info.temp_file, map_location=torch.device(self.model.device), weights_only = True )
+                        # Set the values directly into the model, remembering the previous values.
+                        previous_values = {}
+                        for name, param in self.model.named_parameters():
+                            previous_values[name] = param.data.view(-1)[indices[name].to(self.model.device)].clone()
+                            param.data.view(-1)[indices[name].to(self.model.device)] = values[name].to(self.model.device)
                         # Get the pages offset for the miner.
                         offset = self.eval_window * self.hparams.window_length * self.hparams.window_speed
-                        # Start of Selection
                         start_time = time.time()
                         logger.info(f"\tLoading {self.hparams.validator_pages_per_eval} pages for miner uid: {uid} at window: {self.eval_window} and offset: {offset}")
                         # Get the eval dataset for the miner.
@@ -217,48 +221,37 @@ class Validator:
                             tokenizer=self.hparams.tokenizer
                         )
                         logger.info(f"\t\tLoaded eval dataset pages: {[p[1] for p in eval_pages]} in {time.time() - start_time} seconds")
-                        # Start of Selection
                         # Compute the gradient from a subset of the examples from the pages.
                         start_time = time.time()
                         logger.info(f"\tComputing gradients for miner uid: {uid}")
                         self.model.eval()
                         self.model.zero_grad()
                         for idx, batch in enumerate(eval_dataset):
-                            if random.random() < self.hparams.valdiator_sample_rate:
-                                input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
-                                labels = input_ids.clone()
-                                labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
-                                with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):
-                                    outputs = self.model(input_ids=input_ids, labels=labels)
-                                    loss = outputs.loss
-                                    loss.backward() 
+                            input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
+                            labels = input_ids.clone()
+                            labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
+                            with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):
+                                outputs = self.model(input_ids=input_ids, labels=labels)
+                                loss = outputs.loss
+                                loss.backward() 
                         logger.info(f"\t\tComputed gradients in {time.time() - start_time} seconds")
-                        
-                        # Collect the ground truth gradients.
-                        logger.info(f"\tComputing gradient distance.")
-                        start_time = time.time()
-                        reward = 0
+                        # Inject the previous values into the model again, resetting the state
                         for name, param in self.model.named_parameters():
-                            if param.grad is not None: 
-                                # Start of Selection
-                                local_state = param.data.flatten()[indices[name].to(self.model.device)]
-                                remote_state = values[name].flatten().to(self.model.device)
-                                gradient = param.grad.detach().flatten()[indices[name].to(self.model.device)].clone()
-                                reward += torch.dot( -gradient, (remote_state - local_state) )
-                        logger.info(f"\t\tCollected gradient reward: {reward} in {time.time() - start_time} seconds")
-                        
+                            param.data.view(-1)[indices[name].to(self.model.device)] = previous_values[name]
+                        # Make reward the negative loss. 
+                        total_reward = -loss.item()
                         # Update weights for miner.
-                        self.rewards[uid] = (reward * self.hparams.validator_moving_alpha) + ((1 - self.hparams.validator_moving_alpha) * self.rewards[uid])
+                        self.rewards[uid] = (total_reward * self.hparams.validator_moving_alpha) + ((1 - self.hparams.validator_moving_alpha) * self.rewards[uid])
                         # Recompute weights from rewards.
                         self.weights[ self.rewards != 0 ] = torch.softmax( self.rewards[ self.rewards != 0 ] * self.hparams.validator_weights_temperature, dim=0)
                         if self.config.use_wandb:
                             wandb.log({
-                                f"R/{uid}": self.rewards[uid],
-                                f"R/mv_{uid}": reward,
+                                f"R/{uid}": total_reward,
+                                f"R/mv_{uid}": self.rewards[uid],
                                 f"W/{uid}": self.weights[uid],
                             })
                         # Log
-                        logger.info(f'\t\reward: {reward}, mv_reward: {self.rewards[uid]}, weights: {self.weights[ self.rewards != 0 ]}')
+                        logger.info(f'\t\reward: {total_reward}, mv_reward: {self.rewards[uid]}, weights: {self.weights[ self.rewards != 0 ]}')
                                             
                         # Clean up to free memory
                         del values
