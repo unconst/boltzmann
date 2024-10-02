@@ -23,6 +23,7 @@ import time
 import math
 import wandb
 import torch
+import random
 import asyncio
 import argparse
 import threading
@@ -165,6 +166,7 @@ class Miner:
                 logger.info(f"Step: {self.global_step}, Window: {self.current_window}, "
                             f"Block: {self.current_block}, Time: {int(time.time())}")
                 global_step_start_time = time.time()
+                self.step_window = self.current_window
                 self.global_step += 1
 
                 # Download files.    
@@ -194,12 +196,11 @@ class Miner:
                 #   eval_pages_start : ( window_idx * window_length * window_speed )
                 #   eval_pages_end   : ( window_idx * window_length * window_speed ) + window_eval_size
                 start_time = time.time()
-                start_window = self.current_window
-                offset = self.current_window * self.hparams.window_length * self.hparams.window_speed,
+                offset = self.current_window * self.hparams.window_length * self.hparams.window_speed
                 logger.info(f"\tLoading {int(math.ceil(self.optimal_pages_per_step))} pages for current window: {self.current_window} and offset: {offset}")
                 pages = random.sample(
                     await AsyncSubsetFineWebEdu2Loader.next_pages(
-                        offset = offset
+                        offset = offset,
                         n_pages = self.hparams.validator_window_eval_size,
                         seed = self.uid
                     ), 
@@ -231,7 +232,7 @@ class Miner:
                     total_loss += outputs.loss.item()
                     loss = outputs.loss / (total_steps + 1)  # Divide by number of accumulations.
                     loss.backward()
-                    if start_window != self.current_window:
+                    if self.step_window != self.current_window:
                         window_exhuasted = True
                         break
                     
@@ -264,7 +265,7 @@ class Miner:
                 logger.info(f"\t\tTraining completed in {total_time} seconds, Tokens per step: {tokens_per_step}, Tokens per second: {tokens_per_second}")
                 
                 # Wait until we are on a new window.
-                while self.current_window == self.last_window:
+                while self.current_window == self.step_window:
                     await asyncio.sleep(0.1)
                 self.last_window = self.current_window - 1
 
@@ -274,7 +275,7 @@ class Miner:
                 await upload_slice_for_window(
                     bucket = self.config.bucket, 
                     model = self.model, 
-                    window = self.last_window, # Upload for the previous window 
+                    window = self.current_window - 1, # Upload for the previous window 
                     seed = self.window_seeds[ self.current_window ], # Seed the index by the hash of the new window.
                     wallet = self.wallet, 
                     compression = self.hparams.compression

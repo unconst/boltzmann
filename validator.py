@@ -109,7 +109,7 @@ class Miner:
         
         # Init buckets.
         self.buckets = []
-        for uid in tqdm(self.metagraph.uids):
+        for uid in self.metagraph.uids:
             try: self.buckets.append('decis')
             except: self.buckets.append(None)
 
@@ -158,6 +158,7 @@ class Miner:
                 logger.info(f"Step: {self.global_step}, Window: {self.current_window}, "
                             f"Block: {self.current_block}, Time: {int(time.time())}")
                 self.global_step += 1
+                self.step_window = self.current_window
                 
                 # Download files.    
                 logger.info(f"\tDownloading slices from last window: {self.last_window}")
@@ -167,7 +168,7 @@ class Miner:
                     windows = [self.last_window]
                 )
                 downloaded_per_step = sum([len(slice_files[k]) for k in slice_files])
-                logger.info(f"\t\tDownloaded {downloaded_per_step} slices for last window: {self.last_window} in {time.time() - start_time} seconds")
+                logger.info(f"\t\tDownloaded {downloaded_per_step} slices from last window: {self.last_window} in {time.time() - start_time} seconds")
                 
                 # Apply slices to the model from the previous window.
                 logger.info(f"\tApplying slices from last window: {self.last_window} to model.")
@@ -210,8 +211,7 @@ class Miner:
                         logger.info(f"\t\tWindow: {self.last_window}")
                         logger.info(f"\t\tFilename: {slice_filename}")
                         logger.info(f"\t\tLoaded values and indices.")
-
-                        # Load pages from the current eval window for the miner The validators will sample pages from (eval_pages_start, eval_pages_end)
+                        # Load pages from the miner eval window - (eval_pages_start, eval_pages_end)
                         #   eval_pages_start : ( window_idx * window_length * window_speed )
                         #   eval_pages_end   : ( window_idx * window_length * window_speed ) + window_eval_size
                         pages = random.sample(
@@ -312,7 +312,7 @@ class Miner:
                         self.weights[ self.rewards != 0 ] = torch.softmax( self.rewards[ self.rewards != 0 ] * self.hparams.validator_weights_temperature, dim=0)
                     
                 # Wait until we are on a new window (if need be)
-                while self.current_window == self.last_window:
+                while self.current_window == self.step_window:
                     await asyncio.sleep(0.1)
                 self.last_window = self.current_window - 1
                                         
@@ -322,7 +322,7 @@ class Miner:
                         wallet = self.wallet,
                         netuid = self.config.netuid,
                         uids = self.metagraph.uids,
-                        weights = self.weights,
+                        weights = self.weights[ self.metagraph.uids ],
                         wait_for_inclusion = False,
                         wait_for_finalization = False,
                     )
