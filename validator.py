@@ -121,13 +121,28 @@ class Miner:
         self.block_event = asyncio.Event()
         self.new_window_event = asyncio.Event()
         self.stop_event = asyncio.Event()       
-        self.weights = torch.zeros( self.metagraph.n, dtype = torch.float32 ) 
+        self.rewards = torch.zeros( 256, dtype = torch.float32 ) 
+        self.weights = torch.zeros( 256, dtype = torch.float32 ) 
         print ( self.hparams )
+        
+    async def update(self):
+        while not self.stop_event.is_set():
+            self.subtensor = bt.subtensor(config=self.config)
+            self.metagraph = self.subtensor.metagraph(self.config.netuid)
+            self.hparams = load_hparams()
+            next_buckets = []
+            for uid in self.metagraph.uids:
+                try: next_buckets.append(self.subtensor.get_commitment(self.config.netuid, uid))
+                except: next_buckets.append(None)    
+            self.buckets = next_buckets        
+            await asyncio.sleep(60)
 
     async def run(self):
         # Main loop.
         self.loop = asyncio.get_running_loop()
+        self.update_task = asyncio.create_task(self.update())
         self.listener = threading.Thread(target=self.block_listener, args=(self.loop,), daemon=True).start()
+
         while True:
             
             try:
@@ -193,7 +208,7 @@ class Miner:
                         # Train for the current slice.
                         pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
                             offset = self.current_block * self.hparams.pages_window_speed,
-                            n_pages = 1,
+                            n_pages = self.hparams.validator_pages_per_eval,
                             seed = miner_uid
                         )
                         dataset = await AsyncSubsetFineWebEdu2Loader.create(
@@ -251,14 +266,17 @@ class Miner:
 
                         # Compute reward.
                         dot_product = torch.dot(gradient_vector, update_vector)
-                        lambda_reg = self.hparams.update_norm_regularization  # Regularization coefficient; adjust as needed
                         update_norm = torch.norm(update_vector)
-                        regularization = lambda_reg * update_norm.item()
+                        regularization = self.hparams.validator_norm_regularization * update_norm.item()
                         reward = -dot_product.item() - regularization
-                        self.weights[miner_uid] = (reward * self.hparams.weights_alpha) + ((1 - self.hparams.weights_alpha) * self.weights[miner_uid])
+                        # Update rewards vector with moving average
+                        self.rewards[miner_uid] = (reward * self.hparams.rewards_alpha) + ((1 - self.hparams.rewards_alpha) * self.rewards[miner_uid])
+                        # Recompute weights from rewards.
+                        self.weights[ self.rewards != 0 ] = torch.softmax( self.rewards[ self.rewards != 0 ] * self.hparams.validator_weights_temperature, dim=0)
                         if self.config.use_wandb:
                             wandb.log({
-                                f"R/{miner_uid}": reward,
+                                f"R/{miner_uid}": self.rewards[miner_uid],
+                                f"R/moving_{miner_uid}": reward,
                                 f"W/{miner_uid}": self.weights[miner_uid],
                                 f"update_norm/{miner_uid}": update_norm.item(),
                                 f"regularization/{miner_uid}": regularization,
@@ -277,11 +295,27 @@ class Miner:
                     # We can't download the slice for the miner.    
                     except Exception as e:
                         logger.error(f"Miner eval failed with error: {e}, setting score of zero.")
-                        self.weights[miner_uid] = (0.0 * self.hparams.weights_alpha) + ((1 - self.hparams.weights_alpha) * self.weights[miner_uid])
+                        # Update rewards vector with moving average
+                        self.rewards[miner_uid] = (reward * self.hparams.rewards_alpha) + ((1 - self.hparams.rewards_alpha) * self.rewards[miner_uid])
+                        # Recompute weights from rewards.
+                        self.weights[ self.rewards != 0 ] = torch.softmax( self.rewards[ self.rewards != 0 ] * self.hparams.validator_weights_temperature, dim=0)
+                                        
+                # Set temperatured weights on the chain.
+                if self.current_window % 10 == 0: 
+                    self.subtensor.set_weights(
+                        wallet = self.wallet,
+                        netuid = self.config.netuid,
+                        uids = self.metagraph.uids,
+                        weights = self.weights,
+                        wait_for_inclusion = False,
+                        wait_for_finalization = False,
+                    )
                         
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
                 logger.info("Training interrupted by user. Stopping the run.")
+                self.stop_event.set()
+                self.update_task.join()
                 sys.exit(0)
             
             # Catch unknown.

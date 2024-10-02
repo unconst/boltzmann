@@ -117,10 +117,9 @@ class Miner:
         # Init buckets.
         self.buckets = []
         for uid in tqdm(self.metagraph.uids):
-            try:
-                self.buckets.append('decis')
-            except:
-                self.buckets.append(None)
+            # Fix this.
+            try: self.buckets.append('decis')
+            except: self.buckets.append(None)
 
         # Init run state.
         self.global_step = 0
@@ -133,10 +132,23 @@ class Miner:
         self.new_window_event = asyncio.Event()
         self.stop_event = asyncio.Event()        
         print ( self.hparams )
+        
+    async def update(self):
+        while not self.stop_event.is_set():
+            self.subtensor = bt.subtensor(config=self.config)
+            self.metagraph = self.subtensor.metagraph(self.config.netuid)
+            self.hparams = load_hparams()
+            next_buckets = []
+            for uid in self.metagraph.uids:
+                try: next_buckets.append(self.subtensor.get_commitment(self.config.netuid, uid))
+                except: next_buckets.append(None)    
+            self.buckets = next_buckets        
+            await asyncio.sleep(60)
 
     async def run(self):
         # Main loop.
         self.loop = asyncio.get_running_loop()
+        self.update_task = asyncio.create_task(self.update())
         self.listener = threading.Thread(target=self.block_listener, args=(self.loop,), daemon=True).start()
         while True:
 
@@ -283,6 +295,8 @@ class Miner:
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
                 logger.info("Training interrupted by user. Stopping the run.")
+                self.stop_event.set()
+                self.update_task.join()
                 sys.exit(0)
             
             # Catch unknown.
