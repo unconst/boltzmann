@@ -128,16 +128,21 @@ class Miner:
         print ( self.hparams )
         
     async def update(self):
-        while not self.stop_event.is_set():
-            self.subtensor = bt.subtensor(config=self.config)
-            self.metagraph = self.subtensor.metagraph(self.config.netuid)
-            self.hparams = load_hparams()
-            next_buckets = []
-            for uid in self.metagraph.uids:
-                try: next_buckets.append('decis')
-                except: next_buckets.append(None)    
-            self.buckets = next_buckets        
-            await asyncio.sleep(60)
+        while not self.stop_event.is_set():                          # Loop until stop_event is set
+            self.subtensor = bt.subtensor(config=self.config)        # Reinitialize subtensor with current config
+            nxt_meta = self.subtensor.metagraph(self.config.netuid)  # Get the new metagraph for the given netuid
+            self.hparams = load_hparams()                            # Reload hyperparameters
+            next_buckets = []                                        # Initialize the next_buckets list
+            for uid in nxt_meta.uids:                                # Iterate over new metagraph uids
+                try: next_buckets.append('decis')                    # Append 'decis' to next_buckets
+                except: next_buckets.append(None)                    # Append None if an exception occurs
+            self.buckets = next_buckets                              # Update self.buckets with next_buckets
+            for idx, hotkey in enumerate(self.metagraph.hotkeys):    # Iterate over current metagraph hotkeys
+                if hotkey != nxt_meta.hotkeys[idx]:                  # Check if hotkey has changed in the new metagraph
+                    self.rewards[idx] = 0                            # Reset rewards for the changed hotkey
+                    self.weights[idx] = 0                            # Reset weights for the changed hotkey
+            self.metagraph = nxt_meta                                # Update self.metagraph with new_metagraph
+            await asyncio.sleep(60)                                  # Sleep for 60 seconds before the next iteration
 
     async def run(self):
         # Main loop.
