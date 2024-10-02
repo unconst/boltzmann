@@ -128,7 +128,6 @@ class Miner:
 
         # Init run state.
         self.global_step = 0
-        self.last_window = 0
         self.optimal_pages_per_step = 2.0
         self.current_block = self.subtensor.block
         self.current_window = self.block_to_window( self.current_block )
@@ -170,34 +169,34 @@ class Miner:
                 self.global_step += 1
 
                 # Download files.    
-                logger.info(f"\tDownloading slices from last window: {self.last_window}")
+                logger.info(f"\tDownloading slices from previous window: {self.step_window - 1}")
                 start_time = time.time()
                 slice_files = await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
-                    windows = [self.last_window]
+                    windows = [self.step_window - 1]
                 )
                 downloaded_per_step = sum([len(slice_files[k]) for k in slice_files])
-                logger.info(f"\t\tDownloaded {downloaded_per_step} slices for last window: {self.last_window} in {time.time() - start_time} seconds")
+                logger.info(f"\t\tDownloaded {downloaded_per_step} slices for previous window: {self.step_window - 1} in {time.time() - start_time} seconds")
                 
                 # Apply slices to the model from the previous window.
-                logger.info(f"\tApplying slices from last window: {self.last_window} to model.")
+                logger.info(f"\tApplying slices from previous window: {self.step_window - 1} to model.")
                 start_time = time.time()
                 slice_files = await apply_slices_to_model( 
                     model = self.model, 
-                    window = self.last_window, # Get files from previous window.
-                    seed = self.window_seeds[ self.current_window ], # Use seed as the hash of the current window.
+                    window = self.step_window - 1, # Get files from previous window.
+                    seed = self.window_seeds[ self.step_window ], # Use seed as the hash of the current window.
                     compression = self.hparams.compression
                 )
                 applied_per_step = len(slice_files)
-                logger.info(f"\t\tApplied {applied_per_step} last window slices to model in {time.time() - start_time} seconds")
+                logger.info(f"\t\tApplied {applied_per_step} from previous window: {self.step_window - 1} with seed: { self.window_seeds[ self.step_window ] } in {time.time() - start_time} seconds")
                 
                 # Train for performance on the current window.
                 # Load pages from the current eval window. The validators will sample pages from (eval_pages_start, eval_pages_end)
                 #   eval_pages_start : ( window_idx * window_length * window_speed )
                 #   eval_pages_end   : ( window_idx * window_length * window_speed ) + window_eval_size
                 start_time = time.time()
-                offset = self.current_window * self.hparams.window_length * self.hparams.window_speed
-                logger.info(f"\tLoading {int(math.ceil(self.optimal_pages_per_step))} pages for current window: {self.current_window} and offset: {offset}")
+                offset = self.step_window * self.hparams.window_length * self.hparams.window_speed
+                logger.info(f"\tLoading {int(math.ceil(self.optimal_pages_per_step))} pages for current window: { self.step_window } and offset: {offset}")
                 pages = random.sample(
                     await AsyncSubsetFineWebEdu2Loader.next_pages(
                         offset = offset,
@@ -267,20 +266,19 @@ class Miner:
                 # Wait until we are on a new window.
                 while self.current_window == self.step_window:
                     await asyncio.sleep(0.1)
-                self.last_window = self.current_window - 1
 
                 # Upload our model slice to S3.
-                logger.info(f"\tUploading for window: {self.current_window}")
+                logger.info(f"\tUploading for window: { self.step_window }")
                 start_time = time.time()
                 await upload_slice_for_window(
                     bucket = self.config.bucket, 
                     model = self.model, 
-                    window = self.current_window - 1, # Upload for the previous window 
-                    seed = self.window_seeds[ self.current_window ], # Seed the index by the hash of the new window.
+                    window = self.step_window, # Upload for the previous window 
+                    seed = self.window_seeds[ self.step_window + 1 ], # Seed the index by the hash of the new window.
                     wallet = self.wallet, 
                     compression = self.hparams.compression
                 )
-                logger.info(f"\t\tFinished upload for window: {self.current_window} in {time.time() - start_time} seconds.")
+                logger.info(f"\t\tFinished upload for window: {self.step_window} with seed: {self.window_seeds[ self.step_window + 1 ]} in {time.time() - start_time} seconds.")
                 
                 # Delete lingering files 
                 logger.info(f"\tCleaning space.")

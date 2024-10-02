@@ -74,7 +74,7 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
         slice_files: (List[str]): A list of all the files applied.
     """
     # First get the indices associated with the window given the model.
-    indices = await get_indices_for_window(model, window, seed, compression)
+    indices = await get_indices_for_window(model, seed, compression)
     
     # Load all the slices associated with this window.
     slice_files = await load_files_for_window(window=window)
@@ -122,7 +122,7 @@ async def upload_slice_for_window(bucket: str, model: torch.nn.Module, window: i
     logger.debug(f"Uploading slice to S3: {filename}")
 
     model_state_dict = model.state_dict()
-    indices = await get_indices_for_window(model, window, seed, compression)
+    indices = await get_indices_for_window(model, seed, compression)
 
     # Apply the slice to the model parameters
     for name, param in model.named_parameters():
@@ -202,21 +202,21 @@ async def upload_master(bucket: str, model: torch.nn.Module, wallet: 'bt.wallet'
             os.remove(temp_file_name)
             logger.debug(f"Temporary file {temp_file_name} removed")
 
-async def get_indices_for_window(model: torch.nn.Module, window: int, seed: str, compression: int) -> Dict[str, torch.LongTensor]:
+async def get_indices_for_window(model: torch.nn.Module, seed: str, compression: int) -> Dict[str, torch.LongTensor]:
     """
     Computes the indices for the given window and compression factor.
 
     Args:
         model (torch.nn.Module): The PyTorch model.
-        window (int): The window identifier.
+        seed (str): The window seed identifier.
         compression (int): The compression factor.
 
     Returns:
         Dict[str, torch.LongTensor]: A dictionary mapping parameter names to index tensors.
     """
-    logger.debug(f"Computing indices for window {window} with compression {compression}")
+    logger.debug(f"Computing indices for window seed {seed} with compression {compression}")
     result = {}
-    # Seed the random number generator with the window
+    # Seed the random number generator with the seed
     seed = int(hashlib.md5(str(seed).encode('utf-8')).hexdigest(), 16) % (2**32)
     rng = np.random.default_rng(seed)
     for name, param in model.named_parameters():
