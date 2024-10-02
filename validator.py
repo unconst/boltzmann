@@ -281,7 +281,7 @@ class Miner:
                         regularization = self.hparams.validator_norm_regularization * update_norm.item()
                         reward = -dot_product.item() - regularization
                         # Update rewards vector with moving average
-                        self.rewards[miner_uid] = (reward * self.hparams.rewards_alpha) + ((1 - self.hparams.rewards_alpha) * self.rewards[miner_uid])
+                        self.rewards[miner_uid] = (reward * self.hparams.validator_rewards_alpha) + ((1 - self.hparams.validator_rewards_alpha) * self.rewards[miner_uid])
                         # Recompute weights from rewards.
                         self.weights[ self.rewards != 0 ] = torch.softmax( self.rewards[ self.rewards != 0 ] * self.hparams.validator_weights_temperature, dim=0)
                         if self.config.use_wandb:
@@ -307,7 +307,7 @@ class Miner:
                     except Exception as e:
                         logger.error(f"Miner eval failed with error: {e}, setting score of zero.")
                         # Update rewards vector with moving average
-                        self.rewards[miner_uid] = (reward * self.hparams.rewards_alpha) + ((1 - self.hparams.rewards_alpha) * self.rewards[miner_uid])
+                        self.rewards[miner_uid] = (reward * self.hparams.validator_rewards_alpha) + ((1 - self.hparams.validator_rewards_alpha) * self.rewards[miner_uid])
                         # Recompute weights from rewards.
                         self.weights[ self.rewards != 0 ] = torch.softmax( self.rewards[ self.rewards != 0 ] * self.hparams.validator_weights_temperature, dim=0)
                     
