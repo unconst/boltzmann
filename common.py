@@ -76,7 +76,7 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
         List[str]: A list of all the slice files that were applied.
     """
     # First get the indices associated with the window given the model.
-    indices = await get_indices_for_window(model, seed, compression)
+    indices_dict = await get_indices_for_window(model, seed, compression)
     
     # Load all the slices associated with this window.
     slice_files = await load_files_for_window(window=window)
