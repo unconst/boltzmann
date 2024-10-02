@@ -79,7 +79,7 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
     slices_per_param = {name: 0 for name, _ in model.named_parameters()}
     for file_i in slice_files:
         try:
-            lock_i = FileLock(file_i)
+            lock_i = FileLock(f"{file_i}.lock")
             with lock_i.acquire(timeout=1):
                 slice_i = torch.load(file_i, map_location = torch.device( model.device ), weights_only = True)
             for name, param in model.named_parameters():
@@ -240,15 +240,11 @@ async def download_file(s3_client, bucket: str, filename: str) -> str:
         if os.path.exists(temp_file):
             logger.debug(f"File {temp_file} already exists, skipping download.")
             return temp_file
-        lock = FileLock(temp_file)
+        lock_file = f"{temp_file}.lock"
+        lock = FileLock(lock_file)
         try:
             # Try to acquire both locks with a timeout
             with lock.acquire(timeout=1):
-                # Re-check if the file exists after acquiring the lock
-                if os.path.exists(temp_file):
-                    logger.debug(f"File {temp_file} already exists, skipping download.")
-                    return temp_file
-
                 # Proceed to download the file
                 logger.debug(f"Downloading file {filename} to {temp_file}")
                 head_response = await s3_client.head_object(Bucket=bucket, Key=filename)
@@ -267,7 +263,7 @@ async def download_file(s3_client, bucket: str, filename: str) -> str:
                 return temp_file
 
         except Timeout:
-            logger.error(f"Timeout occurred while trying to acquire lock on {temp_file}")
+            logger.error(f"Timeout occurred while trying to acquire lock on {lock_file}")
             return None
         except Exception as e:
             logger.exception(f"Failed to download file {filename} from bucket {bucket}: {e}")
@@ -378,7 +374,7 @@ async def download_slices_for_buckets_and_windows(buckets: List[str], windows: L
                 windows_dict[window] = []
             windows_dict[window].append(file)
 
-        logger.debug(f"Downloaded files grouped by window: {list(windows_dict.keys())}")
+        logger.debug(f"Downloaded all files grouped by windows: {windows}")
         return windows_dict
 
 async def load_files_for_window(window: int) -> List[str]:

@@ -76,7 +76,7 @@ class Miner:
         if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
             raise ValueError(f'Wallet {self.wallet} is not registered on subnet: {self.metagraph.netuid}')
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
-        logger.info('\n' + '-' * 40 + 'Objects' + '-' * 40)
+        logger.info('\n' + '-' * 40 + ' Objects ' + '-' * 40)
         logger.info(f'\nWallet: {self.wallet}\nSubtensor: {self.subtensor}\nMetagraph: {self.metagraph}\nUID: {self.uid}')
 
         # Init bucket.
@@ -97,7 +97,7 @@ class Miner:
             wandb.init(project=self.config.project, resume='allow', name=f'V{self.uid}', config=self.config)
 
         # Init model.
-        logger.info('\n' + '-' * 40 + 'Hparams' + '-' * 40)
+        logger.info('\n' + '-' * 40 + ' Hparams ' + '-' * 40)
         self.hparams = load_hparams()
         self.model = LlamaForCausalLM(config=self.hparams.model_config)
         self.model.to(self.config.device)
@@ -132,7 +132,7 @@ class Miner:
             self.hparams = load_hparams()
             next_buckets = []
             for uid in self.metagraph.uids:
-                try: next_buckets.append(self.subtensor.get_commitment(self.config.netuid, uid))
+                try: next_buckets.append('decis')
                 except: next_buckets.append(None)    
             self.buckets = next_buckets        
             await asyncio.sleep(60)
