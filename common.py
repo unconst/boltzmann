@@ -62,7 +62,7 @@ asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 semaphore = asyncio.Semaphore(1000)
 
 
-async def apply_slices_to_model(model: torch.nn.Module, window: int,seed: str,compression: int) -> List[str]:
+async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, compression: int) -> List[str]:
     """
     Applies slices from a specific window to the given model.
 
@@ -76,21 +76,14 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int,seed: str,co
         List[str]: A list of all the slice files that were applied.
     """
     # Get the indices for the given window based on the model parameters.
-    indices: Dict[str, torch.LongTensor] = await get_indices_for_window(
-        model,
-        window,
-        seed,
-        compression
-    )
-    
+    indices_dict = await get_indices_for_window(model, window, seed, compression)
+
     # Load all the slice files for the specified window.
-    slice_files: List[str] = await load_files_for_window(window=window)
-    
+    slice_files = await load_files_for_window(window=window)
+
     # Dictionary to keep track of the number of slices applied per parameter.
-    slices_per_param: Dict[str, int] = {
-        param_name: 0 for param_name, _ in model.named_parameters()
-    }
-    
+    slices_per_param = {name: 0 for name, _ in model.named_parameters()}
+
     # Iterate over each slice file and apply it to the model.
     for file_i in slice_files:
         # Create a file lock to ensure exclusive access to the slice file.
@@ -107,49 +100,31 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int,seed: str,co
             finally:
                 # Release the lock after loading.
                 lock.release()
-            
-            # Apply the slice to the model parameters.
-            for param_name, param in model.named_parameters():
-                # Skip parameters not present in the indices or slice.
-                if param_name not in indices or param_name not in slice_i:
+
+            for name, param in model.named_parameters():
+                if name not in indices_dict or name not in slice_i:
                     continue
-
-                # Get the values and indices for this parameter.
-                values: torch.Tensor = slice_i[param_name].to(model.device)
-                indices: torch.LongTensor = indices[param_name].to(model.device)
-
-                # Add the values from the slice to the corresponding indices in the model parameter.
-                param.data.view(-1)[indices] += values
-
-                # Increment the count of slices applied to this parameter.
-                slices_per_param[param_name] += 1
-
-                # Free up memory by deleting variables.
+                values = slice_i[name].to(model.device)
+                param_indices = indices_dict[name].to(model.device)
+                param.data.view(-1)[param_indices] += values
+                slices_per_param[name] += 1
                 del values
-            # Clean up the slice state after usage.
             del slice_i
         except Timeout:
             # The lock could not be acquired within the timeout.
             logger.error(f"Timeout occurred while trying to acquire lock on {file_i}")
-            continue  # Skip to the next slice file.
+            continue  
         except Exception as e:
-            # Log any other exceptions that occur during processing.
             logger.exception(f"Error applying slice from {file_i}: {e}")
-            continue  # Skip to the next slice file.
 
-    # After applying all slices, average the parameters by the number of slices applied.
-    for param_name, param in model.named_parameters():
-        num_slices_applied: int =slices_per_param.get(param_name, 0)
-        if param_name not in indices or num_slices_applied == 0:
-            continue  # Skip parameters that were not updated.
+    # Average the parameters by the number of slices applied.
+    for name, param in model.named_parameters():
+        if name not in slices_per_param or name not in indices_dict or slices_per_param[name] == 0:
+            continue
+        param_indices = indices_dict[name].to(model.device)
+        param.data.view(-1)[param_indices] /= (slices_per_param[name] + 1)
 
-        indices: torch.LongTensor = indices[param_name].to(model.device)
-
-        # Average the parameter data by dividing by (num_slices_applied + 1).
-        # The '+1' accounts for the original parameter value before the slices were added.
-        param.data.view(-1)[indices] /= (num_slices_applied + 1)
-
-    # Return the list of slice files that were applied.
+    # Return the list of the files applied.
     return slice_files
 
 async def upload_slice_for_window(bucket: str, model: torch.nn.Module, window: int, seed: str, wallet: 'bt.wallet', compression: int):
