@@ -286,44 +286,84 @@ class AsyncSubsetFineWebEdu2Loader(SubsetLoader):
 
         return rows
 
+
     async def _fetch_data_for_page(self, page, session):
+        """
+        Fetches data asynchronously for a single page, processes it without blocking the event loop,
+        and appends the tokenized data to the buffer.
+
+        Args:
+            page: A tuple containing the config name, page number, and split.
+            session: The HTTP session used for making requests.
+
+        Raises:
+            Exception: If the maximum number of retry attempts is exceeded.
+        """
         retry_limit = self.retry_limit
         attempt = 0
         while attempt < retry_limit:
             config_name, page_number, split = page
 
             # Create the request parameters
-            params = dict(dataset=self.name,
-                          config=config_name,
-                          split=split,
-                          offset=page_number,
-                          limit=self.num_rows_per_page
-                          )
+            params = {
+                'dataset': self.name,
+                'config': config_name,
+                'split': split,
+                'offset': page_number,
+                'limit': self.num_rows_per_page
+            }
 
             try:
+                # Make an asynchronous HTTP GET request to fetch the data
                 async with session.get(self.rows_base_url, params=params) as response:
-                    response.raise_for_status()
+                    response.raise_for_status()  # Raise an exception for HTTP errors
                     data = await response.json()
 
                     # Prepare the data to append
                     buffer_to_append = []
-                    for row in data["rows"]:
-                        content = row["row"]["text"]
-                        input_ids = self.tokenizer(content, truncation=True)["input_ids"]
-                        buffer_to_append.extend(input_ids)
-                        buffer_to_append.append(self.tokenizer.eos_token_id)
 
+                    # Asynchronously process each row without blocking the event loop
+                    tasks = [
+                        self._tokenize_content(row["row"]["text"]) for row in data["rows"]
+                    ]
+
+                    # Gather the tokenized results concurrently
+                    row_input_ids = await asyncio.gather(*tasks)
+
+                    # Flatten the list of input IDs and append them to the buffer
+                    for input_ids in row_input_ids:
+                        buffer_to_append.extend(input_ids)
+
+                    # Safely append the processed data to the shared buffer
                     async with self.lock:
                         self.buffer.extend(buffer_to_append)
                         self.pages.append((config_name, page_number, split))
                     break  # Success, exit retry loop
 
             except aiohttp.ClientResponseError as e:
+                # Handle HTTP client errors with a retry mechanism
                 attempt += 1
                 if attempt < retry_limit:
-                    await asyncio.sleep(self.retry_delay)
+                    await asyncio.sleep(self.retry_delay)  # Wait before retrying
                 else:
-                    raise
+                    raise Exception(f"Maximum retry attempts exceeded for page {page}") from e
+
+    async def _tokenize_content(self, content):
+        """
+        Asynchronously tokenizes a string of content using the tokenizer in a separate thread.
+
+        Args:
+            content: The text content to be tokenized.
+
+        Returns:
+            The list of token IDs for the content, including the EOS token.
+        """
+        # Offload the CPU-bound tokenization to a thread executor to prevent blocking the event loop
+        input_ids = await asyncio.to_thread(
+            self.tokenizer.encode, content, truncation=True
+        )
+        input_ids.append(self.tokenizer.eos_token_id)
+        return input_ids
 
     async def _fetch_rows_for_page(self, page, session):
         retry_limit = self.retry_limit
