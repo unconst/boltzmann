@@ -236,8 +236,16 @@ class Validator:
                         values_vector = []
                         for name, param in self.model.named_parameters():
                             if param.grad is not None: 
-                                gradient_vector.append( param.grad.detach().flatten()[ indices[ name ].to( self.model.device ) ].clone() )
-                                values_vector.append( param.data.flatten()[ indices[ name ].to( self.model.device ) ] - values[ name ] )
+                                # Start of Selection
+                                pdata = param.data.flatten()[indices[name].to(self.model.device)]
+                                vdata = values[name].flatten().to(self.model.device)
+                                gdata = param.grad.detach().flatten()[indices[name].to(self.model.device)].clone()
+                                gradient_vector.append(gdata.clone())
+                                values_vector.append((vdata - pdata) / self.hparams.learning_rate)
+                                print ('dif', (vdata - pdata))
+                                print ('grad', gdata)
+                            else:
+                                print ('grad is none')
                         # Concat lists
                         gradient_vector = torch.cat( gradient_vector )
                         values_vector = torch.cat( values_vector )
@@ -262,13 +270,13 @@ class Validator:
                         del values
                         del values_vector
                         del gradient_vector
-                        model.zero_grad()
+                        self.model.zero_grad()
                     
                     # We can't download the slice for the miner.    
                     except Exception as e:
                         logger.error(f"Miner eval failed with error: {e}, setting score of zero.")
                         # Update rewards vector with moving average
-                        self.rewards[ uid ] = (0.0 * self.hparams.validator_validator_moving_alpha) + ((1 - self.hparams.validator_validator_moving_alpha) * self.rewards[uid])
+                        self.rewards[ uid ] = (0.0 * self.hparams.validator_moving_alpha) + ((1 - self.hparams.validator_moving_alpha) * self.rewards[uid])
                         # Recompute weights from rewards.
                         self.weights[ self.rewards != 0 ] = torch.softmax( self.rewards[ self.rewards != 0 ] * self.hparams.validator_weights_temperature, dim=0)
                     
