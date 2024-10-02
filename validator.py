@@ -232,28 +232,17 @@ class Validator:
                         # Collect the ground truth gradients.
                         logger.info(f"\tComputing gradient distance.")
                         start_time = time.time()
-                        gradient_vector = []
-                        values_vector = []
+                        reward = 0
                         for name, param in self.model.named_parameters():
                             if param.grad is not None: 
                                 # Start of Selection
-                                pdata = param.data.flatten()[indices[name].to(self.model.device)]
-                                vdata = values[name].flatten().to(self.model.device)
-                                gdata = param.grad.detach().flatten()[indices[name].to(self.model.device)].clone()
-                                gradient_vector.append(gdata.clone())
-                                values_vector.append((vdata - pdata) / self.hparams.learning_rate)
-                                print ('dif', (vdata - pdata))
-                                print ('grad', gdata)
-                            else:
-                                print ('grad is none')
-                        # Concat lists
-                        gradient_vector = torch.cat( gradient_vector )
-                        values_vector = torch.cat( values_vector )
-                        distance = torch.norm( gradient_vector - values_vector, p = 2 )
-                        logger.info(f"\t\tCollected gradient distance: {distance} in {time.time() - start_time} seconds")
+                                local_state = param.data.flatten()[indices[name].to(self.model.device)]
+                                remote_state = values[name].flatten().to(self.model.device)
+                                gradient = param.grad.detach().flatten()[indices[name].to(self.model.device)].clone()
+                                reward += torch.dot( -gradient, (remote_state - local_state) )
+                        logger.info(f"\t\tCollected gradient reward: {reward} in {time.time() - start_time} seconds")
                         
                         # Update weights for miner.
-                        reward = -distance                        
                         self.rewards[uid] = (reward * self.hparams.validator_moving_alpha) + ((1 - self.hparams.validator_moving_alpha) * self.rewards[uid])
                         # Recompute weights from rewards.
                         self.weights[ self.rewards != 0 ] = torch.softmax( self.rewards[ self.rewards != 0 ] * self.hparams.validator_weights_temperature, dim=0)
