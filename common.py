@@ -95,7 +95,8 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
                 # Load the slice state from the file into a dictionary.
                 slice_i: Dict[str, torch.Tensor] = torch.load(
                     file_i,
-                    map_location=torch.device(model.device)
+                    map_location=torch.device(model.device),
+                    weights_only = True,
                 )
             finally:
                 # Release the lock after loading.

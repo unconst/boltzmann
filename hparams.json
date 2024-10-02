@@ -22,9 +22,10 @@
     "max_history": 6,
     "window_speed": 100,
     "steps_per_master_upload": 256,
-    "validator_rewards_alpha": 0.9,
+    "validator_moving_alpha": 0.98,
     "validator_pages_per_eval": 3,
     "validator_norm_regularization": 0.01,
     "validator_weights_temperature": 10,
-    "validator_window_eval_size": 15
+    "validator_window_eval_size": 15,
+    "valdiator_sample_rate": 0.01
 }

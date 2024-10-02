@@ -57,6 +57,7 @@ class Miner:
         parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
         parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
         parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
+        parser.add_argument('--remote', action='store_true', help='Connect to other buckets')
         parser.add_argument('--debug', action='store_true', help='Enable debug logging')
         parser.add_argument('--trace', action='store_true', help='Enable trace logging')
         bt.wallet.add_args(parser)
@@ -122,8 +123,8 @@ class Miner:
         # Init buckets.
         self.buckets = []
         for uid in self.metagraph.uids:
-            # Fix this.
-            try: self.buckets.append('decis')
+            # Use --remote to connect to other miners, other wise, only see's config.bucket.
+            try: self.buckets.append(self.config.bucket if not self.config.remote else self.subtensor.get_commitment( self.config.netuid, uid ) )
             except: self.buckets.append(None)
 
         # Init run state.
@@ -146,7 +147,7 @@ class Miner:
             self.hparams = load_hparams()
             next_buckets = []
             for uid in self.metagraph.uids:
-                try: next_buckets.append('decis')
+                try: next_buckets.append(self.config.bucket if not self.config.remote else self.subtensor.get_commitment( self.config.netuid, uid ))
                 except: next_buckets.append(None)    
             self.buckets = next_buckets    
             logger.info(f"\t\tUpdated global state in {time.time() - start_time} seconds.")
@@ -336,8 +337,14 @@ class Miner:
                 self.current_window = self.block_to_window(self.current_block)
                 loop.call_soon_threadsafe(self.new_window_event.set)
                 logger.info(f"\t\tNew window: {self.current_window}")
-        # Subscribe to block headers with the custom handler
-        bt.subtensor(config=self.config).substrate.subscribe_block_headers(handler)
+        # Run listener with retry.
+        while not self.stop_event.is_set():
+            try:
+                bt.subtensor(config=self.config).substrate.subscribe_block_headers(handler); break
+            except Exception as e:
+                 # Wait for 5 seconds before retrying
+                logger.error(f"Failed to subscribe to block headers: {e}.\nRetrying in 1 seconds...")
+                time.sleep(1) 
             
 if __name__ == "__main__":
     asyncio.run(Miner().run())

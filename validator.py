@@ -110,7 +110,8 @@ class Validator:
         # Init buckets.
         self.buckets = []
         for uid in self.metagraph.uids:
-            try: self.buckets.append('decis')
+            # Use --remote to connect to other miners, other wise, only see's config.bucket.
+            try: self.buckets.append(self.config.bucket if not self.config.remote else self.subtensor.get_commitment( self.config.netuid, uid ) )
             except: self.buckets.append(None)
 
         # Init run state.
@@ -134,8 +135,8 @@ class Validator:
             self.hparams = load_hparams()                            # Reload hyperparameters
             next_buckets = []                                        # Initialize the next_buckets list
             for uid in nxt_meta.uids:                                # Iterate over new metagraph uids
-                try: next_buckets.append('decis')                    # Append 'decis' to next_buckets
-                except: next_buckets.append(None)                    # Append None if an exception occurs
+                try: next_buckets.append(self.config.bucket if not self.config.remote else self.subtensor.get_commitment( self.config.netuid, uid ))
+                except: next_buckets.append(None)    
             self.buckets = next_buckets                              # Update self.buckets with next_buckets
             for idx, hotkey in enumerate(self.metagraph.hotkeys):    # Iterate over current metagraph hotkeys
                 if hotkey != nxt_meta.hotkeys[idx]:                  # Check if hotkey has changed in the new metagraph
@@ -159,7 +160,7 @@ class Validator:
                             f"Block: {self.current_block}, Time: {int(time.time())}")
                 self.global_step += 1
                 self.step_window = self.current_window
-                self.eval_window = self.step_window - 1
+                self.eval_window = self.current_window - 2
                 
                 # Download the slices for the window.
                 logger.info(f"\tDownloading slices from previous window: { self.eval_window }")
@@ -174,14 +175,14 @@ class Validator:
                 # Get the indices for the current window that the miners will be evaluated on.
                 indices = await get_indices_for_window(
                     model = self.model, 
-                    seed = self.window_seeds[ self.current_window ], # Seed index from current window
+                    seed = self.window_to_seed( self.eval_window + 1 ), # Seed index from current window
                     compression = self.hparams.compression
                 )
                 
                 # Eval the downloaded slices.
                 random.shuffle(slice_files)
                 # Eval until time is up.
-                for idx, slice_info in enumerate(slice_files):
+                for idx, slice_info in enumerate(slice_files[self.eval_window]):
                     try:
                         # Break if we run out of time.
                         if self.step_window != self.current_window: break
@@ -191,57 +192,71 @@ class Validator:
                         values = torch.load( slice_info.temp_file, map_location=torch.device(self.model.device), weights_only = True )
                         # Get the pages offset for the miner.
                         offset = self.eval_window * self.hparams.window_length * self.hparams.window_speed
+                        # Start of Selection
+                        start_time = time.time()
+                        logger.info(f"\tLoading {self.hparams.validator_pages_per_eval} pages for miner uid: {uid} at window: {self.eval_window} and offset: {offset}")
                         # Get the eval dataset for the miner.
                         eval_pages = random.sample(
                             await AsyncSubsetFineWebEdu2Loader.next_pages(
-                                offset = offset,
-                                n_pages = self.hparams.validator_window_eval_size,
-                                seed = uid
+                                offset=offset,
+                                n_pages=self.hparams.validator_window_eval_size,
+                                seed=uid
                             ), 
                             self.hparams.validator_pages_per_eval
                         )
                         # Create the dataset for this miner's eval.
                         eval_dataset = await AsyncSubsetFineWebEdu2Loader.create(
-                            batch_size = self.config.actual_batch_size,
-                            sequence_length = self.hparams.sequence_length,
-                            pages_info = eval_pages,
-                            tokenizer = self.hparams.tokenizer
+                            batch_size=self.config.actual_batch_size,
+                            sequence_length=self.hparams.sequence_length,
+                            pages_info=eval_pages,
+                            tokenizer=self.hparams.tokenizer
                         )
+                        logger.info(f"\t\tLoaded eval dataset pages: {[p[1] for p in eval_pages]} in {time.time() - start_time} seconds")
+                        # Start of Selection
                         # Compute the gradient from a subset of the examples from the pages.
+                        start_time = time.time()
+                        logger.info(f"\tComputing gradients for miner uid: {uid}")
                         self.model.eval()
                         self.model.zero_grad()
                         for idx, batch in enumerate(eval_dataset):
-                            input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
-                            labels = input_ids.clone()
-                            labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
-                            with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):
-                                outputs = self.model(input_ids=input_ids, labels=labels)
-                                loss = outputs.loss
-                                loss.backward() 
+                            if random.random() < self.hparams.valdiator_sample_rate:
+                                input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
+                                labels = input_ids.clone()
+                                labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
+                                with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):
+                                    outputs = self.model(input_ids=input_ids, labels=labels)
+                                    loss = outputs.loss
+                                    loss.backward() 
+                        logger.info(f"\t\tComputed gradients in {time.time() - start_time} seconds")
+                        
                         # Collect the ground truth gradients.
+                        logger.info(f"\tComputing gradient distance.")
+                        start_time = time.time()
                         gradient_vector = []
                         values_vector = []
-                        for name, param in model.named_parameters():
+                        for name, param in self.model.named_parameters():
                             if param.grad is not None: 
-                                gradients.append( param.grad.detach().flatten()[ indices[ name ].to( model.device ) ].clone() )
-                                values_vector.append( values[ name ] )
+                                gradient_vector.append( param.grad.detach().flatten()[ indices[ name ].to( self.model.device ) ].clone() )
+                                values_vector.append( param.data.flatten()[ indices[ name ].to( self.model.device ) ] - values[ name ] )
                         # Concat lists
                         gradient_vector = torch.cat( gradient_vector )
                         values_vector = torch.cat( values_vector )
-                        # Compute the negative L2 norm as the reward
-                        reward = -torch.norm( gradient_vector - values_vector, p = 2 )
-                        # Update rewards vector with moving average
-                        self.rewards[miner_uid] = (reward * self.hparams.rewards_alpha) + ((1 - self.hparams.rewards_alpha) * self.rewards[uid])
+                        distance = torch.norm( gradient_vector - values_vector, p = 2 )
+                        logger.info(f"\t\tCollected gradient distance: {distance} in {time.time() - start_time} seconds")
+                        
+                        # Update weights for miner.
+                        reward = -distance                        
+                        self.rewards[uid] = (reward * self.hparams.validator_moving_alpha) + ((1 - self.hparams.validator_moving_alpha) * self.rewards[uid])
                         # Recompute weights from rewards.
                         self.weights[ self.rewards != 0 ] = torch.softmax( self.rewards[ self.rewards != 0 ] * self.hparams.validator_weights_temperature, dim=0)
                         if self.config.use_wandb:
                             wandb.log({
-                                f"R/{uid}": self.rewards[miner_uid],
-                                f"R/moving_{uid}": reward,
-                                f"W/{uid}": self.weights[miner_uid],
+                                f"R/{uid}": self.rewards[uid],
+                                f"R/mv_{uid}": reward,
+                                f"W/{uid}": self.weights[uid],
                             })
                         # Log
-                        logger.info(f'\t\reward: {reward}, mv_reward: {self.rewards[miner_uid]}, weights: {self.weights[ self.rewards != 0 ]}')
+                        logger.info(f'\t\reward: {reward}, mv_reward: {self.rewards[uid]}, weights: {self.weights[ self.rewards != 0 ]}')
                                             
                         # Clean up to free memory
                         del values
@@ -253,7 +268,7 @@ class Validator:
                     except Exception as e:
                         logger.error(f"Miner eval failed with error: {e}, setting score of zero.")
                         # Update rewards vector with moving average
-                        self.rewards[miner_uid] = (reward * self.hparams.validator_rewards_alpha) + ((1 - self.hparams.validator_rewards_alpha) * self.rewards[miner_uid])
+                        self.rewards[ uid ] = (0.0 * self.hparams.validator_validator_moving_alpha) + ((1 - self.hparams.validator_validator_moving_alpha) * self.rewards[uid])
                         # Recompute weights from rewards.
                         self.weights[ self.rewards != 0 ] = torch.softmax( self.rewards[ self.rewards != 0 ] * self.hparams.validator_weights_temperature, dim=0)
                     
