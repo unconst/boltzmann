@@ -17,27 +17,28 @@
 
 import time
 import typing
+import random
 import requests
 import asyncio
 import aiohttp
 import numpy as np
 from tqdm import tqdm
-from typing import List, Dict, Tuple
 from transformers import AutoTokenizer
 from torch.utils.data import IterableDataset
 
 class SubsetLoader(IterableDataset):
     """
     Base class for data-specific subset loader classes.
-    """
 
+    # TODO: Make this class abstract
+    """
     def __init__(
-        self,
-        batch_size=None,
-        sequence_length=None,
-        num_pages=None,
-        tokenizer: AutoTokenizer = None,
-        pack_samples: bool = False,
+            self,
+            batch_size=None,
+            sequence_length=None,
+            num_pages=None,
+            tokenizer: AutoTokenizer=None,
+            pack_samples: bool=False,
     ):
         self.batch_size = batch_size
         self.sequence_length = sequence_length
@@ -47,13 +48,13 @@ class SubsetLoader(IterableDataset):
 
         self.num_rows_per_page = 100
 
-        # Buffer to hold pages loaded from the API
+        # Buffer to hold pages loaded from the api
         self.buffer = []
 
         # Buffer to hold pages already loaded into a batch
         self.used_buffer = []
 
-        # Buffer to hold padded sequences
+        # Buffer to hold padded pages
         self.padded_buffer = []
 
         self.lock = asyncio.Lock()  # For thread-safe operations
@@ -124,8 +125,8 @@ class SubsetLoader(IterableDataset):
 
         sample_size = len(input_ids)
 
-        remainder = sample_size % self.sequence_length
-        pad_size = self.sequence_length - remainder
+        remainder = (sample_size % self.sequence_length)
+        pad_size = (self.sequence_length - remainder)
 
         # Apply modulo again to guarantee a pad size of 0 if remainder is 0
         pad_size = pad_size % self.sequence_length
@@ -134,42 +135,35 @@ class SubsetLoader(IterableDataset):
 
     def _refill_padded_buffer(self):
         """
-        This method pulls sequences from `self.buffer`, pads them, and pushes
-        them to the `self.padded_buffer`.
+        This methods pulls one page from `self.buffer`, pads it and pushs
+        it to the `self.padded_buffer`.
         """
 
-        while self.buffer and len(self.padded_buffer) < self.sequence_length:
+        while (
+                self.buffer
+                and len(self.padded_buffer) < self.sequence_length
+        ):
+
             input_ids = []
 
-            # Search for EOS token index and cut the buffer at it.
-            try:
-                EOS_index = self.buffer.index(self.tokenizer.eos_token_id)
-            except ValueError:
-                # If EOS token is not found, take the entire buffer
-                EOS_index = len(self.buffer) - 1
-
-            input_ids = self.buffer[: EOS_index + 1]
-            self.buffer = self.buffer[EOS_index + 1 :]
+            # search for EOS token index and cut the buffer at it.
+            EOS_index = self.buffer.index(self.tokenizer.eos_token_id)
+            input_ids = self.buffer[:EOS_index+1]
+            self.buffer =self.buffer[EOS_index+1:]
 
             self.used_buffer += input_ids
 
             # Add to padded buffer without the EOS token.
-            input_ids_without_eos = (
-                input_ids[:-1]
-                if input_ids[-1] == self.tokenizer.eos_token_id
-                else input_ids
-            )
-            self.padded_buffer += input_ids_without_eos
+            self.padded_buffer += input_ids[:-1]
 
             # Pad
-            pad_size = self._get_pad_size(input_ids=input_ids_without_eos)
-            self.padded_buffer += [self.tokenizer.eos_token_id] * pad_size
+            self.padded_buffer += [self.tokenizer.eos_token_id] * self._get_pad_size(input_ids=input_ids[:-1])
 
     def __iter__(self):
         self.buffer = self.used_buffer + self.buffer
         self.padded_buffer = []
 
-        # Pad and prepare data for batching
+        # Pad and prepare one page for batching
         self._refill_padded_buffer()
 
         return self
@@ -177,49 +171,23 @@ class SubsetLoader(IterableDataset):
     def __next__(self):
         batch = []
 
-        while True:
-            # If we have enough data in padded_buffer, create batches
-            while (
-                len(self.padded_buffer) >= self.sequence_length
-                and len(batch) < self.batch_size
-            ):
-                batch.append(self.padded_buffer[: self.sequence_length])
-                self.padded_buffer = self.padded_buffer[self.sequence_length :]
+        while len(self.padded_buffer) >= self.sequence_length:
+            batch.append(self.padded_buffer[: self.sequence_length])
+            self.padded_buffer = self.padded_buffer[self.sequence_length :]
+            self._refill_padded_buffer()
 
             if len(batch) == self.batch_size:
                 return np.stack(batch)
 
-            # If padded_buffer is insufficient, try to refill it
-            if len(self.padded_buffer) < self.sequence_length:
-                if self.buffer:
-                    self._refill_padded_buffer()
-                elif not self.data_queue.empty():
-                    # Get data from the queue
-                    self.buffer.extend(self.data_queue.get())
-                    self._refill_padded_buffer()
-                elif self.stop_event.is_set():
-                    if batch:
-                        return np.stack(batch)
-                    else:
-                        raise StopIteration
-                else:
-                    # Wait for data to become available
-                    time.sleep(0.1)
-            else:
-                if batch:
-                    return np.stack(batch)
-                else:
-                    raise StopIteration
+        raise StopIteration
 
 
 class AsyncSubsetFineWebEdu2Loader(SubsetLoader):
 
-    # Class-level constants
     name: str = "HuggingFaceFW/fineweb-edu-score-2"
     rows_base_url: str = "https://datasets-server.huggingface.co/rows"
     size_base_url: str = "https://datasets-server.huggingface.co/size"
 
-    # Configuration parameters
     retry_limit: int = 10  # Number of retries
     retry_delay: int = 5  # Seconds to wait between retries
     num_rows_per_page: int = 100
@@ -245,10 +213,11 @@ class AsyncSubsetFineWebEdu2Loader(SubsetLoader):
             tokenizer: AutoTokenizer = None,
             pack_samples: bool = False,
     ):
-        # Call the parent class constructor
-        super().__init__(
-            batch_size, sequence_length, num_pages, tokenizer, pack_samples
-        )
+        super().__init__(batch_size,
+                         sequence_length,
+                         num_pages,
+                         tokenizer,
+                         pack_samples)
 
         # Initialize properties
         self.configs_data = None
@@ -422,14 +391,16 @@ class AsyncSubsetFineWebEdu2Loader(SubsetLoader):
     @staticmethod
     async def fetch_dataset_configs() -> typing.Dict[str, typing.Dict]:
         """
-        Fetches the dataset configurations, including the number of rows and splits.
+        Fetch the different dump names, aka configs, aka samples, of the
+        dataset.
+        The returned value is a dictionary with dump names as keys and
+        a dict of the number of rows and the split as values.
         """
         # Request parameters
         params = dict(
             dataset=AsyncSubsetFineWebEdu2Loader.name
         )
 
-        # Initialize retry attempt counter
         attempt = 0
         while attempt < AsyncSubsetFineWebEdu2Loader.retry_limit:
             try:
@@ -457,7 +428,6 @@ class AsyncSubsetFineWebEdu2Loader(SubsetLoader):
                 if attempt < AsyncSubsetFineWebEdu2Loader.retry_limit:
                     await asyncio.sleep(AsyncSubsetFineWebEdu2Loader.retry_delay)
                 else:
-                    # Raise the exception if all retries are exhausted
                     raise
 
     @staticmethod
