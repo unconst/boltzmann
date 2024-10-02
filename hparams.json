@@ -10,7 +10,7 @@
     "num_key_value_heads": 8,
     "activation_function": "swiGLU",
     "max_position_embeddings": 2048,
-    "mask_window_length": 2,
+    "window_length": 2,
     "desired_batch_size": 512,
     "learning_rate": 0.0001,
     "optimizer_beta1": 0.9,
@@ -20,10 +20,11 @@
     "cosine_epoch_length": 5000,
     "eta_min": 1e-05,
     "max_history": 6,
-    "pages_window_speed": 10,
+    "window_speed": 100,
     "steps_per_master_upload": 256,
     "validator_rewards_alpha": 0.9,
     "validator_pages_per_eval": 3,
     "validator_norm_regularization": 0.01,
-    "validator_weights_temperature": 10
+    "validator_weights_temperature": 10,
+    "validator_window_eval_size": 15
 }

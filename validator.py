@@ -160,26 +160,26 @@ class Miner:
                 self.global_step += 1
                 
                 # Download files.    
-                logger.info(f"\tDownloading slices for windows: {[self.current_window-1, self.current_window]}")
+                logger.info(f"\tDownloading slices from last window: {self.last_window}")
                 start_time = time.time()
                 slice_files = await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
-                    windows = [self.current_window-1, self.current_window]
+                    windows = [self.last_window]
                 )
                 downloaded_per_step = sum([len(slice_files[k]) for k in slice_files])
-                logger.info(f"\t\tDownloaded {downloaded_per_step} slices for windows: {[self.current_window-1, self.current_window]} in {time.time() - start_time} seconds")
+                logger.info(f"\t\tDownloaded {downloaded_per_step} slices for last window: {self.last_window} in {time.time() - start_time} seconds")
                 
                 # Apply slices to the model from the previous window.
-                logger.info(f"\tApplying slices from window: {self.current_window - 1} to model.")
+                logger.info(f"\tApplying slices from last window: {self.last_window} to model.")
                 start_time = time.time()
                 slice_files = await apply_slices_to_model( 
                     model = self.model, 
-                    window = self.current_window - 1, # Get files from previous window.
-                    seed = self.window_seeds[ self.current_window ], # Use seed as the hash of the last window.
+                    window = self.last_window, # Get files from previous window.
+                    seed = self.window_seeds[ self.current_window ], # Use seed as the hash of the current window.
                     compression = self.hparams.compression
                 )
                 applied_per_step = len(slice_files)
-                logger.info(f"\t\tApplied {applied_per_step} slices to model in {time.time() - start_time} seconds")
+                logger.info(f"\t\tApplied {applied_per_step} last window slices to model in {time.time() - start_time} seconds")
                 
                 # Delete lingering files 
                 logger.info(f"\tCleaning space.")
@@ -188,12 +188,11 @@ class Miner:
                 logger.info(f"\t\tFinished cleaning space in {time.time() - start_time} seconds.")
                 
                 # Eval until slice changes.
-                eval_window = self.current_window - 1
                 random.shuffle(slice_files)
                 for idx, slice_filename in enumerate(slice_files):
                     try:
                         # Break if we run out of time.
-                        if eval_window != self.current_window - 1: break
+                        if self.last_window != self.current_window - 1: break
                         logger.info(f"\tEval Step: {idx}")
 
                         # Get random UID to eval.
@@ -202,21 +201,26 @@ class Miner:
                         miner_values = torch.load(slice_filename, map_location=torch.device(self.model.device), weights_only = True)
                         miner_indices = await get_indices_for_window(
                             model = self.model, 
-                            window = eval_window, # Get files from previous window.
-                            seed = self.window_seeds[ eval_window + 1], # Seed index from current window
+                            window = self.last_window, # Get files from previous window.
+                            seed = self.window_seeds[ self.current_window ], # Seed index from current window
                             compression = self.hparams.compression
                         )
                         logger.info(f"\t\tUid: {miner_uid}")
                         logger.info(f"\t\tHotkey: {miner_hotkey}")
-                        logger.info(f"\t\tWindow: {eval_window}")
+                        logger.info(f"\t\tWindow: {self.last_window}")
                         logger.info(f"\t\tFilename: {slice_filename}")
                         logger.info(f"\t\tLoaded values and indices.")
 
-                        # Train for the current slice.
-                        pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
-                            offset = self.current_block * self.hparams.pages_window_speed,
-                            n_pages = self.hparams.validator_pages_per_eval,
-                            seed = miner_uid
+                        # Load pages from the current eval window for the miner The validators will sample pages from (eval_pages_start, eval_pages_end)
+                        #   eval_pages_start : ( window_idx * window_length * window_speed )
+                        #   eval_pages_end   : ( window_idx * window_length * window_speed ) + window_eval_size
+                        pages = random.sample(
+                            await AsyncSubsetFineWebEdu2Loader.next_pages(
+                                offset = self.last_window * self.hparams.window_length * self.hparams.window_speed,
+                                n_pages = self.hparams.validator_window_eval_size,
+                                seed = miner_uid
+                            ), 
+                            self.hparams.validator_pages_per_eval
                         )
                         dataset = await AsyncSubsetFineWebEdu2Loader.create(
                             batch_size = self.config.actual_batch_size,
@@ -224,7 +228,7 @@ class Miner:
                             pages_info = pages,
                             tokenizer = self.hparams.tokenizer
                         )
-                        logger.info(f"\t\tEval pages: {[p[1] for p in pages]} dataset for offset: {self.current_block * self.hparams.pages_window_speed} ")
+                        logger.info(f"\t\tEval pages: {[p[1] for p in pages]} dataset for offset: {self.current_block * self.hparams.window_speed} ")
                         
                         # Zero grad on the model and compute loss.
                         self.model.zero_grad()
@@ -306,6 +310,11 @@ class Miner:
                         self.rewards[miner_uid] = (reward * self.hparams.rewards_alpha) + ((1 - self.hparams.rewards_alpha) * self.rewards[miner_uid])
                         # Recompute weights from rewards.
                         self.weights[ self.rewards != 0 ] = torch.softmax( self.rewards[ self.rewards != 0 ] * self.hparams.validator_weights_temperature, dim=0)
+                    
+                # Wait until we are on a new window (if need be)
+                while self.current_window == self.last_window:
+                    await asyncio.sleep(0.1)
+                self.last_window = self.current_window - 1
                                         
                 # Set temperatured weights on the chain.
                 if self.current_window % 10 == 0: 
@@ -332,11 +341,11 @@ class Miner:
 
     # Returns the slice window based on a block.
     def block_to_window(self, block: int) -> int:
-        return int(block / self.hparams.mask_window_length)
+        return int(block / self.hparams.window_length)
     
     # Returns the slice window based on a block.
     def window_to_seed(self, window: int) -> int:
-        return str( self.subtensor.get_block_hash( window * self.hparams.mask_window_length ) )
+        return str( self.subtensor.get_block_hash( window * self.hparams.window_length ) )
 
     # A listener thread which posts the block event
     # when the chain announces a new block.
