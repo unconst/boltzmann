@@ -16,12 +16,13 @@
 # DEALINGS IN THE SOFTWARE.
 
 import time
-from typing import List, Dict, Tuple
+import typing
 import requests
 import asyncio
 import aiohttp
 import numpy as np
 from tqdm import tqdm
+from typing import List, Dict, Tuple
 from transformers import AutoTokenizer
 from torch.utils.data import IterableDataset
 

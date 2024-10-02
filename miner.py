@@ -135,6 +135,8 @@ class Miner:
         
     async def update(self):
         while not self.stop_event.is_set():
+            logger.info(f"\tUpdating global state.")
+            start_time = time.time()
             self.subtensor = bt.subtensor(config=self.config)
             self.metagraph = self.subtensor.metagraph(self.config.netuid)
             self.hparams = load_hparams()
@@ -142,7 +144,8 @@ class Miner:
             for uid in self.metagraph.uids:
                 try: next_buckets.append(self.subtensor.get_commitment(self.config.netuid, uid))
                 except: next_buckets.append(None)    
-            self.buckets = next_buckets        
+            self.buckets = next_buckets    
+            logger.info(f"\t\tUpdated global state in {time.time() - start_time} seconds.")
             await asyncio.sleep(60)
 
     async def run(self):
@@ -296,7 +299,7 @@ class Miner:
             except KeyboardInterrupt:
                 logger.info("Training interrupted by user. Stopping the run.")
                 self.stop_event.set()
-                self.update_task.join()
+                await self.update_task
                 sys.exit(0)
             
             # Catch unknown.

@@ -315,7 +315,7 @@ class Miner:
             except KeyboardInterrupt:
                 logger.info("Training interrupted by user. Stopping the run.")
                 self.stop_event.set()
-                self.update_task.join()
+                await self.update_task
                 sys.exit(0)
             
             # Catch unknown.
