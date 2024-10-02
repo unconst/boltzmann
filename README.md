@@ -28,15 +28,14 @@ In BISTRO, we introduce a decentralized framework where **miners** contribute to
 
 ## Mathematical Incentive Design
 
-Let’s denote:
+Let's denote:
 
-- \( g_m \): Gradient computed by the miner on their data subset.
-- \( g_v \): Gradient computed by the validator on the same data subset.
-- \( R_m \): Reward for the miner.
+- $g_m$: Gradient computed by the miner on their data subset.
+- $g_v$: Gradient computed by the validator on the same data subset.
+- $R_m$: Reward for the miner.
 
 The reward is calculated as:
-
-\[ R_m = - \| g_m - g_v \| \]
+$$R_m = - |g_m - g_v|$$
 
 Miners aim to maximize their rewards by minimizing the difference between their computed gradients and the ones expected by validators. This directly incentivizes miners to genuinely train on their assigned data subsets every window, as deviating from the expected gradient reduces their reward.
 
@@ -57,7 +56,7 @@ Miners aim to maximize their rewards by minimizing the difference between their 
 1. **Clone the Repository**
 
    ```bash
-   git clone https://github.com/yourusername/bistro.git
+   git clone https://github.com/unconst/bistro.git
    cd bistro
    ```
 
@@ -70,7 +69,7 @@ Miners aim to maximize their rewards by minimizing the difference between their 
    export AWS_SECRET_ACCESS_KEY=your_secret_access_key
    ```
 
-   Ensure that your S3 bucket has the necessary permissions for read and write operations.
+   Ensure that your S3 bucket has the necessary permissions for read and write operations. It is important 
 
 3. **Install Dependencies**
 
