@@ -56,11 +56,15 @@ class Miner:
         parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
         parser.add_argument('--device', type=str, default='cuda', help='Device to use for training (e.g., cpu or cuda)')
         parser.add_argument('--use_wandb', action='store_true', help='Use Weights and Biases for logging')
+        parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+        parser.add_argument('--trace', action='store_true', help='Enable trace logging')
         bt.wallet.add_args(parser)
         bt.subtensor.add_args(parser)
         config = bt.config(parser)
         config.subtensor.network = 'test'
         config.subtensor.chain_endpoint = 'wss://test.finney.opentensor.ai:443/'
+        if config.debug: debug()
+        if config.trace: trace()
         return config
 
     def __init__(self):

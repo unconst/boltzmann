@@ -40,6 +40,10 @@ from filelock import FileLock, Timeout
 # Configure loguru logger
 logger.remove()
 logger.add(sys.stderr, format="<level>{message}</level>", level="INFO")
+def debug():
+    logger.add(sys.stderr, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>", level="DEBUG")
+def trace():
+    logger.add(sys.stderr, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>", level="TRACE")
 
 # Load environment variables
 env_config = {**dotenv_values(".env"), **os.environ}
