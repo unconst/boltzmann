@@ -45,11 +45,11 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
-class Miner:
+class Validator:
 
     @staticmethod
     def config():
-        parser = argparse.ArgumentParser(description='Miner script')
+        parser = argparse.ArgumentParser(description='Validator script')
         parser.add_argument('--project', type=str, default='QZWXEC', help='Optional wandb project name')
         parser.add_argument('--netuid', type=int, default=220, help='Bittensor network UID.')
         parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
@@ -69,7 +69,7 @@ class Miner:
 
     def __init__(self):
         # Init config.
-        self.config = Miner.config()
+        self.config = Validator.config()
         logger.info('\n' + '-' * 40 + ' Config ' + '-' * 40)
         logger.info(self.config)
 
@@ -362,5 +362,5 @@ class Miner:
         bt.subtensor(config=self.config).substrate.subscribe_block_headers(handler)
             
 if __name__ == "__main__":
-    miner = Miner()
-    asyncio.run(miner.run())
+    validator = Validator()
+    asyncio.run(validator.run())
