@@ -22,6 +22,8 @@ import requests
 from types import SimpleNamespace
 from transformers import AutoTokenizer, LlamaConfig
 
+from common import *
+
 # Cache file path
 HPARAMS_FILE = "hparams.json"
 
@@ -73,10 +75,10 @@ def load_hparams() -> SimpleNamespace:
         response = requests.get(github_url, timeout=10, headers={'Cache-Control': 'no-cache'})
         response.raise_for_status()
         hparams = json.loads(response.text)
-        print("Successfully loaded parameters from GitHub.")
+        logger.debug("Successfully loaded parameters from GitHub.")
     except (requests.RequestException, json.JSONDecodeError) as e:
-        print(f"Error loading parameters from GitHub: {e}")
-        print("Attempting to load from cache...")
+        logger.debug(f"Error loading parameters from GitHub: {e}")
+        logger.debug("Attempting to load from cache...")
         with open(HPARAMS_FILE, "r") as f:
             hparams = json.load(f)
     # Cache the new parameters

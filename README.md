@@ -5,9 +5,9 @@ BISTRO – Bittensor Incentivized and Scalable Training with Reward Optimization
 ---
 
 Miners are rewarded for training the network model on the page sequences determined by the loader in dataset.py.
-Miners upload masks of their models using a distro-style distributed training regime with 300x compression as default.
-We use S3 buckets as an intermediary for the distribution of the model masks which makes transfer incredibly fast and scalable. 
-The valdiators measure the loss difference between the model with the masks applied and with the masks removed to ensure performance from miners.
+Miners upload slices of their models using a distro-style distributed training regime with 300x compression as default.
+We use S3 buckets as an intermediary for the distribution of the model slices which makes transfer incredibly fast and scalable. 
+The valdiators measure the loss difference between the model with the slices applied and with the slices removed to ensure performance from miners.
 This difference becomes the raw scores which validators submit to the chain after a softmax.
 There are various corner cases remaining to make this work but generally the structure is here. Good luck!
 
