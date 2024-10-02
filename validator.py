@@ -171,6 +171,11 @@ class Validator:
                 )
                 downloaded_per_step = sum([len(slice_files[k]) for k in slice_files])
                 logger.info(f"\t\tDownloaded {downloaded_per_step} slices for previous window: { self.eval_window } in {time.time() - start_time} seconds")
+                if downloaded_per_step == 0:
+                    # Start on next window.
+                    while self.current_window == self.step_window:
+                        await asyncio.sleep(0.1)
+                    continue
                 
                 # Get the indices for the current window that the miners will be evaluated on.
                 indices = await get_indices_for_window(
@@ -257,8 +262,6 @@ class Validator:
                                             
                         # Clean up to free memory
                         del values
-                        del values_vector
-                        del gradient_vector
                         self.model.zero_grad()
                     
                     # We can't download the slice for the miner.    
