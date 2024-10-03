@@ -292,7 +292,7 @@ class Validator:
                     await asyncio.sleep(0.1)
                                         
                 # Set temperatured weights on the chain.
-                if self.current_window % 10 == 0: 
+                if self.current_window % 100 == 0: 
                     self.subtensor.set_weights(
                         wallet = self.wallet,
                         netuid = self.config.netuid,
