@@ -325,7 +325,7 @@ class Validator:
     def block_listener(self, loop):
         def handler(event, _u, _s):
             self.current_block = int(event['header']['number'])
-            loop.call_soon_threadsafe(self.new_block_event.set)
+            loop.call_soon_threadsafe(self.block_event.set)
             if self.block_to_window(self.current_block) != self.current_window:
                 self.window_seeds[ self.block_to_window(self.current_block) ] = self.window_to_seed( self.block_to_window(self.current_block) )
                 self.current_window = self.block_to_window(self.current_block)
