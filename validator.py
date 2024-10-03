@@ -240,11 +240,13 @@ class Validator:
                 )
                 for name, param in self.model.named_parameters():
                     if param.grad is None: continue
+                    flat_param = param.grad.view(-1)[ indices[name].to(self.model.device) ].clone()
                     negative_grad_values = -param.grad.view(-1)[ indices[name].to(self.model.device) ].clone()
                     for idx, slice_i in enumerate(slices_to_eval):
                         uid = uids_to_eval[ idx ]
-                        flat_slice_i = slice_i[ name ].view(-1)
-                        score_i = max( torch.dot( flat_slice_i, negative_grad_values ).item(), 0)
+                        flat_slice_i = slice_i[ name ].view(-1) # Model update from miner.
+                        model_delta_i = flat_slice_i - flat_param # Implied gradient.
+                        score_i = max( torch.dot( model_delta_i, negative_grad_values ).item(), 0)
                         step_scores[ uid ] += score_i
                 logger.info(f"\tFinished computing scores for slices in {time.time() - start_time} seconds")
          
