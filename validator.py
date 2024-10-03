@@ -325,14 +325,20 @@ class Validator:
     def block_listener(self, loop):
         def handler(event, _u, _s):
             self.current_block = int(event['header']['number'])
-            loop.call_soon_threadsafe(self.block_event.set)
+            loop.call_soon_threadsafe(self.new_block_event.set)
             if self.block_to_window(self.current_block) != self.current_window:
                 self.window_seeds[ self.block_to_window(self.current_block) ] = self.window_to_seed( self.block_to_window(self.current_block) )
                 self.current_window = self.block_to_window(self.current_block)
                 loop.call_soon_threadsafe(self.new_window_event.set)
                 logger.info(f"\t\tNew window: {self.current_window}")
-        # Subscribe to block headers with the custom handler
-        bt.subtensor(config=self.config).substrate.subscribe_block_headers(handler)
+        # Run listener with retry.
+        while not self.stop_event.is_set():
+            try:
+                bt.subtensor(config=self.config).substrate.subscribe_block_headers(handler); break
+            except Exception as e:
+                 # Wait for 5 seconds before retrying
+                logger.error(f"Failed to subscribe to block headers: {e}.\nRetrying in 1 seconds...")
+                time.sleep(1) 
             
 if __name__ == "__main__":
     validator = Validator()
