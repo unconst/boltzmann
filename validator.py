@@ -124,7 +124,7 @@ class Validator:
         self.block_event = asyncio.Event()
         self.new_window_event = asyncio.Event()
         self.stop_event = asyncio.Event()       
-        self.rewards = torch.zeros( 256, dtype = torch.float32 ) 
+        self.scores = torch.zeros( 256, dtype = torch.float32 ) 
         self.weights = torch.zeros( 256, dtype = torch.float32 ) 
         print ( self.hparams )
         
@@ -140,7 +140,7 @@ class Validator:
             self.buckets = next_buckets                              # Update self.buckets with next_buckets
             for idx, hotkey in enumerate(self.metagraph.hotkeys):    # Iterate over current metagraph hotkeys
                 if hotkey != nxt_meta.hotkeys[idx]:                  # Check if hotkey has changed in the new metagraph
-                    self.rewards[idx] = 0                            # Reset rewards for the changed hotkey
+                    self.scores[idx] = 0                            # Reset rewards for the changed hotkey
                     self.weights[idx] = 0                            # Reset weights for the changed hotkey
             self.metagraph = nxt_meta                                # Update self.metagraph with new_metagraph
             await asyncio.sleep(60)                                  # Sleep for 60 seconds before the next iteration
@@ -165,217 +165,107 @@ class Validator:
                 # Download the slices for the window.
                 logger.info(f"\tDownloading slices from previous window: { self.eval_window }")
                 start_time = time.time()
-                slice_files = await download_slices_for_buckets_and_windows(
+                slice_infos = (await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
                     windows = [ self.eval_window ]
-                )
-                downloaded_per_step = sum([len(slice_files[k]) for k in slice_files])
-                logger.info(f"\t\tDownloaded {downloaded_per_step} slices for previous window: { self.eval_window } in {time.time() - start_time} seconds")
-                if downloaded_per_step == 0:
-                    # Start on next window.
-                    while self.current_window == self.step_window:
-                        await asyncio.sleep(0.1)
+                ))[ self.eval_window ]
+                logger.info(f"\t\tDownloaded {len(slice_infos)} slices for previous window: { self.eval_window } in {time.time() - start_time} seconds")
+                
+                # If there are no slices to eval, wait until the next window then start again.
+                if len(slice_infos) == 0:
+                    while self.current_window == self.step_window: await asyncio.sleep(0.1)
                     continue
                 
-                # Get the indices for the current window that the miners will be evaluated on.
+                # Load the slices and pages for each.
+                logger.info(f"\tLoading slices from previous window: { self.eval_window }")
+                uids_to_eval = []
+                slices_to_eval = []
+                pages_to_eval = []
+                start_time = time.time()
+                for info_i in slice_infos:
+                    uid = self.metagraph.hotkeys.index( info_i.hotkey )
+                    uids_to_eval.append( uid )
+                    slices_to_eval.append( torch.load(
+                        info_i.temp_file,
+                        map_location=torch.device(self.model.device),
+                        weights_only=True
+                    ))
+                    offset_i = self.eval_window * self.hparams.window_length * self.hparams.window_speed
+                    pages_to_eval.extend( random.sample(
+                        await AsyncSubsetFineWebEdu2Loader.next_pages(
+                            offset = offset_i,
+                            n_pages = self.hparams.validator_window_eval_size,
+                            seed = uid
+                        ),
+                        self.hparams.validator_pages_per_eval
+                    ))
+                logger.info(f"\t\tLoaded {len(slices_to_eval)} slices for uids: {uids_to_eval} from previous window: { self.eval_window } in {time.time() - start_time} seconds")
+                    
+                # Load the full eval dataset from all the pages.
+                logger.info(f"\tDownloading { len(pages_to_eval) } pages for uids: {uids_to_eval}")
+                random.shuffle(pages_to_eval) # Simulate shuffling the data we are evalling on giving each miner the same sample rate ( kinda)
+                start_time = time.time()
+                eval_dataset = await AsyncSubsetFineWebEdu2Loader.create(
+                    batch_size = self.config.actual_batch_size,
+                    sequence_length = self.hparams.sequence_length,
+                    pages_info = pages_to_eval,
+                    tokenizer = self.hparams.tokenizer
+                )
+                logger.info(f"\t\tFinished downloading { len(pages_to_eval) } pages in {time.time() - start_time} seconds")
+
+        
+                # Accumulate gradients for eval on all eval pages.
+                logger.info(f"\tComputing sub gradients for { len(pages_to_eval) } pages ")
+                start_time = time.time()
+                self.model.zero_grad()
+                self.model.eval() 
+                for batch in eval_dataset:
+                    input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
+                    labels = input_ids.clone()
+                    labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
+                    self.model(input_ids=input_ids, labels=labels).loss.backward()
+                    if self.current_window != self.step_window:
+                        logger.info(f'Break eval on new window: {self.current_window} > {self.step_window}')
+                        break
+                logger.info(f"\t\tFinished computing sub gradients for pages {time.time() - start_time} seconds")
+                
+                # Compute dot product between the negative gradient and the model slices.
+                logger.info(f"\tComputing scores for slices")
+                start_time = time.time()
+                step_scores = torch.zeros( 256, dtype = torch.float32 ) # Init zero step scores.
                 indices = await get_indices_for_window(
                     model = self.model, 
-                    seed = self.window_to_seed( self.eval_window + 1 ), # Seed index from current window
+                    seed = self.window_to_seed( self.eval_window + 1 ), # Seed index for the eval window.
                     compression = self.hparams.compression
                 )
+                for name, param in self.model.named_parameters():
+                    if param.grad is None: continue
+                    negative_grad_values = -param.grad.view(-1)[ indices[name].to(self.model.device) ].clone()
+                    for idx, slice_i in enumerate(slices_to_eval):
+                        uid = uids_to_eval[ idx ]
+                        flat_slice_i = slice_i[ name ].view(-1)
+                        score_i = max( torch.dot( flat_slice_i, negative_grad_values ).item(), 0)
+                        step_scores[ uid ] += score_i
+                logger.info(f"\tFinished computing scores for slices in {time.time() - start_time} seconds")
+         
+                self.scores = self.hparams.validator_moving_alpha * step_scores + (1 - self.hparams.validator_moving_alpha) * self.scores
+                self.weights[self.scores != 0] = torch.softmax( self.scores[self.scores != 0] * self.hparams.validator_weights_temperature, dim=0 )
                 
-                # Retrieve the list of slices for the evaluation window
-                slices_for_eval_window = slice_files.get(self.eval_window, [])
-                # Eval the downloaded slices.
-                random.shuffle(slices_for_eval_window)
-                # Evaluate miners until the time window expires.
-                for idx, slice_info in enumerate(slices_for_eval_window):
-                    try:
-                        # Break the loop if the current time window has ended.
-                        if self.step_window != self.current_window:
-                            break
+                # Log the results if using Weights and Biases.
+                if self.config.use_wandb:
+                    for uid in torch.nonzero(self.weights).squeeze():
+                        wandb.log({
+                            f"step_scores/{uid.item()}": step_scores[uid].item(),
+                            f"moving_scores/{uid.item()}": self.scores[uid].item(),
+                            f"weights/{uid.item()}": self.weights[uid].item(),
+                        })
+                        
+                # Log the rewards, weights, and scores.
+                logger.info('\tWeights:')
+                nonzero_weights = torch.nonzero(self.weights).squeeze()
+                for uid, moving_scores, weight, step_score in zip(nonzero_weights, self.scores[nonzero_weights], self.weights[nonzero_weights], step_scores[nonzero_weights]):
+                    logger.info(f"\t\tuid: {uid.item()}, step_score: {step_score.item()}, moving_score: {moving_scores.item()}, weight: {weight.item()}")
 
-                        # ------------------------
-                        # Step 1: Retrieve miner information and model update (slice).
-                        # ------------------------
-                        # Get the miner's UID (unique identifier) based on their hotkey.
-                        uid = self.metagraph.hotkeys.index(slice_info.hotkey)
-                        # Load the miner's model update (slice) from the temporary file.
-                        # 'values' is a dictionary containing parameter updates for specific indices.
-                        values = torch.load(
-                            slice_info.temp_file,
-                            map_location=torch.device(self.model.device),
-                            weights_only=True
-                        )
-                        # Calculate the offset for the evaluation dataset based on the window parameters.
-                        offset = self.eval_window * self.hparams.window_length * self.hparams.window_speed
-
-                        # ------------------------
-                        # Step 2: Load the evaluation dataset for this miner.
-                        # ------------------------
-                        # Record the start time for loading the evaluation dataset.
-                        start_time = time.time()
-                        logger.info(
-                            f"\tLoading {self.hparams.validator_pages_per_eval} pages for miner uid: {uid} "
-                            f"at window: {self.eval_window} and offset: {offset}"
-                        )
-                        # Generate a list of pages for the evaluation dataset.
-                        # The pages are selected based on the miner's UID and the window, ensuring miner-specific evaluation data.
-                        eval_pages = random.sample(
-                            await AsyncSubsetFineWebEdu2Loader.next_pages(
-                                offset=offset,
-                                n_pages=self.hparams.validator_window_eval_size,
-                                seed=uid
-                            ),
-                            self.hparams.validator_pages_per_eval
-                        )
-                        # Create the evaluation dataset using the selected pages.
-                        eval_dataset = await AsyncSubsetFineWebEdu2Loader.create(
-                            batch_size=self.config.actual_batch_size,
-                            sequence_length=self.hparams.sequence_length,
-                            pages_info=eval_pages,
-                            tokenizer=self.hparams.tokenizer
-                        )
-                        logger.info(
-                            f"\t\tLoaded eval dataset pages: {[p[1] for p in eval_pages]} "
-                            f"in {time.time() - start_time} seconds"
-                        )
-
-                        # ------------------------
-                        # Step 3: Compute the baseline loss on the evaluation dataset.
-                        # ------------------------
-                        logger.info(f"\tComputing baseline loss for miner uid: {uid}")
-                        self.model.eval()  # Set the model to evaluation mode.
-                        L_base = 0  # Initialize the baseline loss.
-                        # Iterate over the evaluation dataset and compute the loss.
-                        for batch in eval_dataset:
-                            # Convert batch to tensor and move to the appropriate device.
-                            input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
-                            # Clone input_ids to create labels; replace padding tokens with -100 to ignore them in loss computation.
-                            labels = input_ids.clone()
-                            labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
-                            # Compute the loss without gradient computation.
-                            with torch.no_grad():
-                                outputs = self.model(input_ids=input_ids, labels=labels)
-                                L_base += outputs.loss.item()
-                        # Compute the average baseline loss.
-                        L_base /= len(eval_dataset)
-                        logger.info(
-                            f"\t\tFinished computing baseline loss in {time.time() - start_time} seconds"
-                        )
-
-                        # ------------------------
-                        # Step 4: Apply the miner's update to the model.
-                        # ------------------------
-                        # Save the original parameter values at the specified indices to restore later.
-                        previous_values = {}
-                        # The 'indices' dictionary contains the indices of the parameters that the miner's update affects.
-                        # It should be defined elsewhere in the code, mapping parameter names to index tensors.
-                        # For example: indices = {'weight': tensor([0, 5, 10]), 'bias': tensor([1, 2])}
-                        # Apply the miner's update by replacing parameter values at the specified indices.
-                        for name, param in self.model.named_parameters():
-                            if name in indices:
-                                # Save the original values.
-                                idx = indices[name].to(self.model.device)
-                                previous_values[name] = param.data.view(-1)[idx].clone()
-                                # Apply the miner's update.
-                                param.data.view(-1)[idx] = values[name].to(self.model.device)
-                        # Record the start time for computing the updated loss.
-                        start_time = time.time()
-                        logger.info(f"\tComputing updated loss after applying miner's update for uid: {uid}")
-                        self.model.eval()  # Ensure the model is in evaluation mode.
-
-                        # ------------------------
-                        # Step 5: Compute the updated loss on the evaluation dataset.
-                        # ------------------------
-                        L_updated = 0  # Initialize the updated loss.
-                        # Iterate over the evaluation dataset and compute the loss.
-                        for batch in eval_dataset:
-                            input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
-                            labels = input_ids.clone()
-                            labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
-                            with torch.no_grad():
-                                outputs = self.model(input_ids=input_ids, labels=labels)
-                                L_updated += outputs.loss.item()
-                        # Compute the average updated loss.
-                        L_updated /= len(eval_dataset)
-                        logger.info(
-                            f"\t\tFinished computing updated loss in {time.time() - start_time} seconds"
-                        )
-
-                        # ------------------------
-                        # Step 6: Revert the model to its original state.
-                        # ------------------------
-                        # Restore the original parameter values.
-                        for name, param in self.model.named_parameters():
-                            if name in previous_values:
-                                idx = indices[name].to(self.model.device)
-                                param.data.view(-1)[idx] = previous_values[name]
-
-                        # ------------------------
-                        # Step 7: Compute the normalized loss reduction as the reward.
-                        # ------------------------
-                        # Calculate the loss reduction.
-                        delta_L = L_base - L_updated
-                        # Compute the normalized loss reduction (reward).
-                        r_i = delta_L / L_base  # Normalized reward.
-                        # Ensure the reward is non-negative.
-                        r_i = max(r_i, 0)
-
-                        # ------------------------
-                        # Step 8: Update the moving average rewards and weights.
-                        # ------------------------
-                        # Update the moving average reward for the miner.
-                        self.rewards[uid] = (
-                            self.hparams.validator_moving_alpha * r_i +
-                            (1 - self.hparams.validator_moving_alpha) * self.rewards[uid]
-                        )
-                        # Recompute the weights using a softmax function with temperature.
-                        # This determines the influence of each miner's update on the master model.
-                        self.weights[self.rewards != 0] = torch.softmax(
-                            self.rewards[self.rewards != 0] * self.hparams.validator_weights_temperature, dim=0
-                        )
-                        # Log the results if using Weights and Biases.
-                        if self.config.use_wandb:
-                            wandb.log({
-                                f"R/{uid}": r_i,
-                                f"R/mv_{uid}": self.rewards[uid].item(),
-                                f"W/{uid}": self.weights[uid].item(),
-                            })
-                        # Log the rewards and weights.
-                        logger.info(
-                            f"\tReward for miner uid {uid}: {r_i}, "
-                            f"moving average reward: {self.rewards[uid]}, "
-                            f"weights: {self.weights[self.rewards != 0]}"
-                        )
-
-                        # ------------------------
-                        # Step 9: Clean up and free memory.
-                        # ------------------------
-                        # Delete the values to free up memory.
-                        del values
-                        # Zero out the gradients to prevent accumulation.
-                        self.model.zero_grad()
-
-                    except Exception as e:
-                        logger.error(f"Miner evaluation failed with error: {e}, setting reward to zero.")
-                        # If an error occurs, set the miner's reward to zero using the moving average formula.
-                        self.rewards[uid] = (
-                            self.hparams.validator_moving_alpha * 0 +
-                            (1 - self.hparams.validator_moving_alpha) * self.rewards[uid]
-                        )
-                        # Recompute the weights using the updated rewards.
-                        self.weights[self.rewards != 0] = torch.softmax(
-                            self.rewards[self.rewards != 0] * self.hparams.validator_weights_temperature, dim=0
-                        )
-                        # Optionally, log the zero reward.
-                        if self.config.use_wandb:
-                            wandb.log({
-                                f"R/{uid}": 0,
-                                f"R/mv_{uid}": self.rewards[uid].item(),
-                                f"W/{uid}": self.weights[uid].item(),
-                            })
-                
                 # Apply slices to the model from the previous window.
                 logger.info(f"\tApplying slices from previous window: { self.eval_window } to model.")
                 start_time = time.time()
@@ -387,14 +277,15 @@ class Validator:
                 )
                 applied_per_step = len(eval_slices)
                 logger.info(f"\t\tApplied {applied_per_step} from previous window: { self.eval_window } with seed: { self.window_seeds[ self.step_window ] } in {time.time() - start_time} seconds")
-                
+                    
                 # Delete lingering files 
                 logger.info(f"\tCleaning space.")
                 start_time = time.time()
+                del slices_to_eval
+                torch.cuda.empty_cache()
                 await delete_files_before_window( window_max = self.current_window - self.hparams.max_history )
                 logger.info(f"\t\tFinished cleaning space in {time.time() - start_time} seconds.")
                 
-            
                 # Ensure window is over.
                 while self.current_window == self.step_window:
                     await asyncio.sleep(0.1)
@@ -409,6 +300,7 @@ class Validator:
                         wait_for_inclusion = False,
                         wait_for_finalization = False,
                     )
+                
                         
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
