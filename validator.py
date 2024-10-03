@@ -184,10 +184,12 @@ class Validator:
                     compression = self.hparams.compression
                 )
                 
+                # Retrieve the list of slices for the evaluation window
+                slices_for_eval_window = slice_files.get(self.eval_window, [])
                 # Eval the downloaded slices.
-                random.shuffle(slice_files)
+                random.shuffle(slices_for_eval_window)
                 # Eval until time is up.
-                for idx, slice_info in enumerate(slice_files[self.eval_window]):
+                for idx, slice_info in enumerate(slices_for_eval_window):
                     try:
                         # Break if we run out of time.
                         if self.step_window != self.current_window: break
