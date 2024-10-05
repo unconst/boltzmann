@@ -60,6 +60,7 @@ class Miner:
         parser.add_argument('--remote', action='store_true', help='Connect to other buckets')
         parser.add_argument('--debug', action='store_true', help='Enable debug logging')
         parser.add_argument('--trace', action='store_true', help='Enable trace logging')
+        parser.add_argument('--random', action='store_true', help='Train on random')
         bt.wallet.add_args(parser)
         bt.subtensor.add_args(parser)
         config = bt.config(parser)
@@ -202,7 +203,7 @@ class Miner:
                     await AsyncSubsetFineWebEdu2Loader.next_pages(
                         offset = offset,
                         n_pages = self.hparams.validator_window_eval_size,
-                        seed = self.uid
+                        seed = self.uid if not self.config.random else random.randint(0, 1000)
                     ), 
                     int(math.ceil(self.optimal_pages_per_step))
                 )
