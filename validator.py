@@ -166,94 +166,154 @@ class Validator:
                 logger.info(f"\tDownloading slices from previous window: { self.eval_window }")
                 start_time = time.time()
                 slice_infos = (await download_slices_for_buckets_and_windows(
-                    buckets = self.buckets,
-                    windows = [ self.eval_window ]
-                ))[ self.eval_window ]
-                logger.info(f"\t\tDownloaded {len(slice_infos)} slices for previous window: { self.eval_window } in {time.time() - start_time} seconds")
-                
+                    buckets=self.buckets,
+                    windows=[self.eval_window]
+                ))[self.eval_window]
+                logger.info(f"\t\tDownloaded {len(slice_infos)} slices for previous window: {self.eval_window} in {time.time() - start_time} seconds")
+
                 # If there are no slices to eval, wait until the next window then start again.
                 if len(slice_infos) == 0:
-                    while self.current_window == self.step_window: await asyncio.sleep(0.1)
+                    while self.current_window == self.step_window:
+                        await asyncio.sleep(0.1)
                     continue
-                
-                # Load the slices and pages for each.
-                logger.info(f"\tLoading slices from previous window: { self.eval_window }")
+
+                # Step 2: Apply slices to the model from the previous window.
+                logger.info(f"\tApplying slices from previous window: {self.eval_window} to model.")
+                start_time = time.time()
+                eval_slices = await apply_slices_to_model(
+                    model=self.model,
+                    window=self.eval_window,  # Get files from previous window.
+                    seed=self.window_seeds[self.step_window],  # Use seed as the hash of the current window.
+                    compression=self.hparams.compression
+                )
+                applied_per_step = len(eval_slices)
+                logger.info(f"\t\tApplied {applied_per_step} slices from previous window: {self.eval_window} with seed: {self.window_seeds[self.step_window]} in {time.time() - start_time} seconds")
+
+                # Step 3: Load the slices and pages for each.
+                logger.info(f"\tLoading slices from previous window: {self.eval_window}")
                 uids_to_eval = []
                 slices_to_eval = []
                 pages_to_eval = []
                 start_time = time.time()
                 for info_i in slice_infos:
-                    uid = self.metagraph.hotkeys.index( info_i.hotkey )
-                    uids_to_eval.append( uid )
-                    slices_to_eval.append( torch.load(
+                    try:
+                        uid = self.metagraph.hotkeys.index(info_i.hotkey)
+                    except ValueError:
+                        logger.warning(f"Hotkey {info_i.hotkey} not found in metagraph hotkeys.")
+                        continue
+                    uids_to_eval.append(uid)
+                    # Load the slice for the current miner.
+                    slice_data = torch.load(
                         info_i.temp_file,
                         map_location=torch.device(self.model.device),
                         weights_only=True
-                    ))
+                    )
+                    slices_to_eval.append(slice_data)
+                    # Determine the offset for page loading.
                     offset_i = self.eval_window * self.hparams.window_length * self.hparams.window_speed
-                    pages_to_eval.extend( random.sample(
+                    # Sample pages for evaluation.
+                    sampled_pages = random.sample(
                         await AsyncSubsetFineWebEdu2Loader.next_pages(
-                            offset = offset_i,
-                            n_pages = self.hparams.validator_window_eval_size,
-                            seed = uid
+                            offset=offset_i,
+                            n_pages=self.hparams.validator_window_eval_size,
+                            seed=uid
                         ),
                         self.hparams.validator_pages_per_eval
-                    ))
-                logger.info(f"\t\tLoaded {len(slices_to_eval)} slices for uids: {uids_to_eval} from previous window: { self.eval_window } in {time.time() - start_time} seconds")
-                    
-                # Load the full eval dataset from all the pages.
-                logger.info(f"\tDownloading { len(pages_to_eval) } pages for uids: {uids_to_eval}")
-                random.shuffle(pages_to_eval) # Simulate shuffling the data we are evalling on giving each miner the same sample rate ( kinda)
+                    )
+                    pages_to_eval.extend(sampled_pages)
+                logger.info(f"\t\tLoaded {len(slices_to_eval)} slices for uids: {uids_to_eval} from previous window: {self.eval_window} in {time.time() - start_time} seconds")
+
+                # Step 4: Load the full eval dataset from all the pages.
+                logger.info(f"\tDownloading {len(pages_to_eval)} pages for uids: {uids_to_eval}")
+                random.shuffle(pages_to_eval)  # Shuffle to ensure randomness in evaluation.
                 start_time = time.time()
                 eval_dataset = await AsyncSubsetFineWebEdu2Loader.create(
-                    batch_size = self.config.actual_batch_size,
-                    sequence_length = self.hparams.sequence_length,
-                    pages_info = pages_to_eval,
-                    tokenizer = self.hparams.tokenizer
+                    batch_size=self.config.actual_batch_size,
+                    sequence_length=self.hparams.sequence_length,
+                    pages_info=pages_to_eval,
+                    tokenizer=self.hparams.tokenizer
                 )
-                logger.info(f"\t\tFinished downloading { len(pages_to_eval) } pages in {time.time() - start_time} seconds")
+                logger.info(f"\t\tFinished downloading {len(pages_to_eval)} pages in {time.time() - start_time} seconds")
 
-        
-                # Accumulate gradients for eval on all eval pages.
-                logger.info(f"\tComputing sub gradients for { len(pages_to_eval) } pages ")
+                # Step 5: Compute gradients on this dataset.
+                logger.info(f"\tComputing gradients for {len(pages_to_eval)} pages")
                 start_time = time.time()
                 self.model.zero_grad()
-                self.model.eval() 
-                for batch in eval_dataset:
-                    input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
-                    labels = input_ids.clone()
-                    labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
-                    self.model(input_ids=input_ids, labels=labels).loss.backward()
-                    if self.current_window != self.step_window:
-                        logger.info(f'Break eval on new window: {self.current_window} > {self.step_window}')
-                        break
-                logger.info(f"\t\tFinished computing sub gradients for pages {time.time() - start_time} seconds")
-                
-                # Compute dot product between the negative gradient and the model slices.
-                logger.info(f"\tComputing scores for slices")
+                self.model.eval()
+                # Enable gradient computation
+                with torch.enable_grad():
+                    for batch in eval_dataset:
+                        input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
+                        labels = input_ids.clone()
+                        labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
+                        outputs = self.model(input_ids=input_ids, labels=labels)
+                        loss = outputs.loss
+                        loss.backward()
+                        # Check if a new window has started to possibly abort early.
+                        if self.current_window != self.step_window:
+                            logger.info(f'\t\tBreak eval on new window: {self.current_window} > {self.step_window}')
+                            break
+                logger.info(f"\t\tFinished computing gradients in {time.time() - start_time} seconds")
+
+                # Step 6: Compute slice importance using second-order approximation with Fisher Information Matrix.
+                logger.info(f"\tComputing slice importance scores using second-order approximation")
                 start_time = time.time()
-                step_scores = torch.zeros( 256, dtype = torch.float32 ) # Init zero step scores.
+                step_scores = torch.zeros(256, dtype=torch.float32).to(self.model.device)  # Initialize step scores.
                 indices = await get_indices_for_window(
-                    model = self.model, 
-                    seed = self.window_to_seed( self.eval_window + 1 ), # Seed index for the eval window.
-                    compression = self.hparams.compression
+                    model=self.model,
+                    seed=self.window_to_seed(self.eval_window + 1),  # Seed index for the eval window.
+                    compression=self.hparams.compression
                 )
+
+                # Collect gradients for all parameters.
+                gradients = {}
                 for name, param in self.model.named_parameters():
-                    if param.grad is None: continue
-                    flat_param = param.grad.view(-1)[ indices[name].to(self.model.device) ].clone()
-                    negative_grad_values = -param.grad.view(-1)[ indices[name].to(self.model.device) ].clone()
-                    for idx, slice_i in enumerate(slices_to_eval):
-                        uid = uids_to_eval[ idx ]
-                        flat_slice_i = slice_i[ name ].view(-1) # Model update from miner.
-                        model_delta_i = flat_slice_i - flat_param # Implied gradient.
-                        score_i = max( torch.dot( model_delta_i, negative_grad_values ).item(), 0)
-                        step_scores[ uid ] += score_i
-                logger.info(f"\tFinished computing scores for slices in {time.time() - start_time} seconds")
-         
-                self.scores = self.hparams.validator_moving_alpha * step_scores + (1 - self.hparams.validator_moving_alpha) * self.scores
-                self.weights[self.scores != 0] = torch.softmax( self.scores[self.scores != 0] * self.hparams.validator_weights_temperature, dim=0 )
-                
-                # Log the results if using Weights and Biases.
+                    if param.grad is None:
+                        continue
+                    gradients[name] = param.grad.view(-1).clone().detach()
+
+                # Compute Fisher Information Matrix diagonal approximation (g_i^2).
+                fisher_diagonal = {}
+                for name, grad in gradients.items():
+                    fisher_diagonal[name] = grad.pow(2)
+
+                # Iterate over each slice to compute importance scores.
+                for idx, slice_i in enumerate(slices_to_eval):
+                    uid = uids_to_eval[idx]
+                    delta_L = 0.0  # Initialize importance score for the current slice.
+                    for name, param in self.model.named_parameters():
+                        if param.grad is None:
+                            continue
+                        # Retrieve the indices for the current parameter.
+                        param_indices = indices[name].to(self.model.device)
+                        # Flatten the parameter gradients and slices.
+                        g = gradients[name][param_indices]  # Gradient vector.
+                        s = slice_i[name].view(-1).to(self.model.device)  # Slice vector.
+                        # Compute the first-order term: -g^T s
+                        first_order = -torch.dot(g, s).item()
+                        # Compute the second-order term: 0.5 * s^T H s, where H ≈ diag(g^2)
+                        second_order = 0.5 * torch.dot(s.pow(2), fisher_diagonal[name][param_indices]).item()
+                        # Accumulate the importance score.
+                        delta_L += first_order + second_order
+                    # Assign the computed importance score to the corresponding UID.
+                    step_scores[uid] += delta_L
+                logger.info(f"\t\tFinished computing slice importance scores in {time.time() - start_time} seconds")
+
+                # Step 7: Normalize the scores as rewards and use them as weights.
+                logger.info(f"\tNormalizing scores to compute weights")
+                start_time = time.time()
+                # Update moving average of scores.
+                self.scores = self.hparams.validator_moving_alpha * step_scores.cpu() + (1 - self.hparams.validator_moving_alpha) * self.scores
+                # Apply softmax to normalize scores into weights.
+                # To ensure numerical stability, subtract the max before exponentiating.
+                if torch.any(self.scores != 0):
+                    scores_nonzero = self.scores[self.scores != 0]
+                    max_score = torch.max(scores_nonzero)
+                    normalized_scores = torch.softmax((scores_nonzero - max_score) * self.hparams.validator_weights_temperature, dim=0)
+                    self.weights[self.scores != 0] = normalized_scores
+                logger.info(f"\t\tNormalized scores into weights in {time.time() - start_time} seconds")
+
+                # Step 8: Log the results if using Weights and Biases.
                 if self.config.use_wandb:
                     for uid in torch.nonzero(self.weights).squeeze():
                         wandb.log({
@@ -261,29 +321,24 @@ class Validator:
                             f"moving_scores/{uid.item()}": self.scores[uid].item(),
                             f"weights/{uid.item()}": self.weights[uid].item(),
                         })
-                        
-                # Log the rewards, weights, and scores.
+
+                # Step 9: Log the rewards, weights, and scores.
                 logger.info('\tWeights:')
                 nonzero_weights = torch.nonzero(self.weights).squeeze()
-                for uid, moving_scores, weight, step_score in zip(nonzero_weights, self.scores[nonzero_weights], self.weights[nonzero_weights], step_scores[nonzero_weights]):
-                    logger.info(f"\t\tuid: {uid.item()}, step_score: {step_score.item()}, moving_score: {moving_scores.item()}, weight: {weight.item()}")
-
-                # Apply slices to the model from the previous window.
-                logger.info(f"\tApplying slices from previous window: { self.eval_window } to model.")
-                start_time = time.time()
-                eval_slices = await apply_slices_to_model( 
-                    model = self.model, 
-                    window = self.eval_window , # Get files from previous window.
-                    seed = self.window_seeds[ self.step_window ], # Use seed as the hash of the current window.
-                    compression = self.hparams.compression
-                )
-                applied_per_step = len(eval_slices)
-                logger.info(f"\t\tApplied {applied_per_step} from previous window: { self.eval_window } with seed: { self.window_seeds[ self.step_window ] } in {time.time() - start_time} seconds")
-                    
+                for uid, moving_score, weight, step_score in zip(
+                    nonzero_weights,
+                    self.scores[nonzero_weights],
+                    self.weights[nonzero_weights],
+                    step_scores[nonzero_weights]
+                ):
+                    logger.info(f"\t\tuid: {uid.item()}, step_score: {step_score.item():.6f}, moving_score: {moving_score.item():.6f}, weight: {weight.item():.6f}")
+     
                 # Delete lingering files 
                 logger.info(f"\tCleaning space.")
                 start_time = time.time()
                 del slices_to_eval
+                del gradients
+                del fisher_diagonal
                 torch.cuda.empty_cache()
                 await delete_files_before_window( window_max = self.current_window - self.hparams.max_history )
                 logger.info(f"\t\tFinished cleaning space in {time.time() - start_time} seconds.")
@@ -302,7 +357,6 @@ class Validator:
                         wait_for_inclusion = False,
                         wait_for_finalization = False,
                     )
-                
                         
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
