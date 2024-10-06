@@ -51,11 +51,11 @@ Let's denote:
 - $M$: Total number of miner slices being aggregated.
 - $\delta\theta_i$: The perturbation vector representing the change to parameters if miner $i$'s slice is removed from the aggregated model.
 - $g$: Gradient of the loss with respect to the model parameters on the evaluation data.
-- $H$: Approximation of the Hessian matrix (we use the diagonal of the Fisher Information Matrix, $H \approx \text{diag}(g^2)$).
+- $H$: Approximation of the Hessian matrix (we use the diagonal of the Fisher Information Matrix, $H \approx \text{diag}(g^2)$ ).
 - $\Delta L_i$: Estimated change in loss if miner $i$'s slice is removed.
 - $R_i$: Reward assigned to miner $i$.
 
-##### Perturbation Vector Calculation
+#### Perturbation Vector Calculation
 
 The perturbation vector $\delta\theta_i$ is calculated as:
 
@@ -68,7 +68,7 @@ Where:
 - $\frac{s_i}{M - 1}$ adjusts the miner's slice to account for the aggregation without miner $i$.
 - $\theta$ is the average model parameters including all slices.
 
-##### Loss Change Estimation
+#### Loss Change Estimation
 
 The estimated change in loss $\Delta L_i$ when miner $i$'s slice is removed is computed using a second-order Taylor series approximation:
 
