@@ -79,7 +79,7 @@ $$
 - **First-Order Term ($g^\top \delta\theta_i$)**: Represents the linear impact of the perturbation on the loss.
 - **Second-Order Term ($\frac{1}{2} \delta\theta_i^\top H \delta\theta_i$)**: Accounts for the curvature of the loss surface.
 
-##### Reward Calculation
+#### Reward Calculation
 
 The reward for miner $i$ is then determined based on the negative of the estimated loss change:
 
