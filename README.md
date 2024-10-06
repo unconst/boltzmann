@@ -72,16 +72,17 @@ $$
 
 - Miners aim to **maximize** their rewards by **minimizing** $\Delta L_i$, which corresponds to contributing slices that **improve** the model (i.e., reduce the loss).
 
-### Incentive Mechanism
+### Understanding the Incentive Mechanism
 
-This incentive design encourages miners to:
+The incentive mechanism in BISTRO is designed to ensure that miners are rewarded for genuine contributions to the model's training. By making the reward proportional to the negative difference between the miner’s gradient and the validator’s gradient, we ensure the following:
 
+- **Alignment of Objectives**: Miners are motivated to perform authentic training on their assigned data subsets, as any deviation reduces their rewards.
+- **Data Subset Specialization**: Since miners are evaluated based on their performance on specific data subsets, they are encouraged to specialize and optimize their training for those subsets.
+- **Fairness**: By not revealing which weights need to be uploaded until the end of the window, all miners are on a level playing field, preventing any potential exploitation of the system.
 - **Provide Beneficial Updates**: By contributing slices that positively impact the model's performance on the evaluation data.
 - **Avoid Harmful Updates**: Since negative contributions (increasing the loss) result in lower rewards.
 
-### Summary
-
-Miners are incentivized to contribute model updates that lead to a reduction in the validation loss. The reward mechanism aligns individual miner objectives with the overall goal of improving the shared model by rewarding miners proportionally to the positive impact of their contributions.
+This mathematical design drives miners to consistently train on their designated data, ensuring the overall model benefits from diverse and comprehensive training across different data subsets.
 
 
 ## Installation Guide
@@ -174,16 +175,6 @@ python3 validator.py \
 
 Given the computational intensity of training and validating neural networks, it is highly recommended to use machines equipped with high-performance GPUs like NVIDIA H100. Adequate CPU resources and memory are also necessary to handle data loading and preprocessing tasks.
 
-## Understanding the Incentive Mechanism
-
-The incentive mechanism in BISTRO is designed to ensure that miners are rewarded for genuine contributions to the model's training. By making the reward proportional to the negative difference between the miner’s gradient and the validator’s gradient, we ensure the following:
-
-- **Alignment of Objectives**: Miners are motivated to perform authentic training on their assigned data subsets, as any deviation reduces their rewards.
-- **Data Subset Specialization**: Since miners are evaluated based on their performance on specific data subsets, they are encouraged to specialize and optimize their training for those subsets.
-- **Fairness**: By not revealing which weights need to be uploaded until the end of the window, all miners are on a level playing field, preventing any potential exploitation of the system.
-
-This mathematical design drives miners to consistently train on their designated data, ensuring the overall model benefits from diverse and comprehensive training across different data subsets.
-
 ## Contributing
 
 Contributions to the BISTRO project are welcome. Please open issues and submit pull requests for improvements and fixes.
@@ -191,5 +182,3 @@ Contributions to the BISTRO project are welcome. Please open issues and submit p
 ## License
 
 This project is licensed under the MIT License © 2024 Chakana.tech. See the `LICENSE` file for details.
-
-
