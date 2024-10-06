@@ -26,7 +26,23 @@ In BISTRO, we introduce a decentralized framework where **miners** contribute to
 - **Evaluation**: Validators evaluate the performance of the miners' slices by comparing the miner's uploaded gradient to the gradient that the validator computes using the same data subset.
 - **Scoring**: The reward for each miner is calculated based on the **negative difference** between the miner's gradient and the validator's recomputed gradient. This means that miners are incentivized to minimize this difference by accurately training on their assigned data.
 
-## Mathematical Incentive Design
+## Understanding the Incentive Mechanism
+
+The incentive mechanism in BISTRO is designed to ensure that miners are rewarded for genuine contributions to the model's training. By making the reward proportional to the **negative estimated change in loss** when a miner's contribution is removed, we ensure the following:
+
+- **Alignment of Objectives**: Miners are motivated to perform authentic training on their assigned data subsets, as contributing beneficial updates that improve the model's performance maximizes their rewards.
+
+- **Provide Beneficial Updates**: By submitting slices that positively impact the model's performance on the evaluation data, miners increase their rewards.
+
+- **Avoid Harmful Updates**: Since contributions that negatively impact the model (i.e., increasing the loss) result in lower rewards, miners are discouraged from submitting detrimental updates.
+
+- **Data Subset Specialization**: Miners are evaluated based on their performance on specific data subsets, encouraging them to specialize and optimize their training for those subsets.
+
+- **Fairness**: By not revealing which weights need to be uploaded until the end of the window, all miners are on a level playing field, preventing any potential exploitation of the system.
+
+This mathematical design drives miners to consistently train on their designated data subsets, ensuring the overall model benefits from diverse and comprehensive training across different portions of the dataset.
+
+### Mathematical Incentive Design
 
 Let's denote:
 
@@ -39,7 +55,7 @@ Let's denote:
 - $\Delta L_i$: Estimated change in loss if miner $i$'s slice is removed.
 - $R_i$: Reward assigned to miner $i$.
 
-### Perturbation Vector Calculation
+##### Perturbation Vector Calculation
 
 The perturbation vector $\delta\theta_i$ is calculated as:
 
@@ -50,8 +66,9 @@ $$
 Where:
 
 - $\frac{s_i}{M - 1}$ adjusts the miner's slice to account for the aggregation without miner $i$.
+- $\theta$ is the average model parameters including all slices.
 
-### Loss Change Estimation
+##### Loss Change Estimation
 
 The estimated change in loss $\Delta L_i$ when miner $i$'s slice is removed is computed using a second-order Taylor series approximation:
 
@@ -62,7 +79,7 @@ $$
 - **First-Order Term ($g^\top \delta\theta_i$)**: Represents the linear impact of the perturbation on the loss.
 - **Second-Order Term ($\frac{1}{2} \delta\theta_i^\top H \delta\theta_i$)**: Accounts for the curvature of the loss surface.
 
-### Reward Calculation
+##### Reward Calculation
 
 The reward for miner $i$ is then determined based on the negative of the estimated loss change:
 
@@ -70,19 +87,7 @@ $$
 R_i = -\Delta L_i
 $$
 
-- Miners aim to **maximize** their rewards by **minimizing** $\Delta L_i$, which corresponds to contributing slices that **improve** the model (i.e., reduce the loss).
-
-### Understanding the Incentive Mechanism
-
-The incentive mechanism in BISTRO is designed to ensure that miners are rewarded for genuine contributions to the model's training. By making the reward proportional to the negative difference between the miner’s gradient and the validator’s gradient, we ensure the following:
-
-- **Alignment of Objectives**: Miners are motivated to perform authentic training on their assigned data subsets, as any deviation reduces their rewards.
-- **Data Subset Specialization**: Since miners are evaluated based on their performance on specific data subsets, they are encouraged to specialize and optimize their training for those subsets.
-- **Fairness**: By not revealing which weights need to be uploaded until the end of the window, all miners are on a level playing field, preventing any potential exploitation of the system.
-- **Provide Beneficial Updates**: By contributing slices that positively impact the model's performance on the evaluation data.
-- **Avoid Harmful Updates**: Since negative contributions (increasing the loss) result in lower rewards.
-
-This mathematical design drives miners to consistently train on their designated data, ensuring the overall model benefits from diverse and comprehensive training across different data subsets.
+- Miners aim to **maximize** their rewards by **minimizing** $\Delta L_i$, which corresponds to contributing slices that **improve** the model (i.e., reduce the loss on the evaluation data).
 
 
 ## Installation Guide
