@@ -30,14 +30,59 @@ In BISTRO, we introduce a decentralized framework where **miners** contribute to
 
 Let's denote:
 
-- $g_m$: Gradient computed by the miner on their data subset.
-- $g_v$: Gradient computed by the validator on the same data subset.
-- $R_m$: Reward for the miner.
+- $\theta$: The current model parameters.
+- $s_i$: The parameter slice (model update) contributed by miner $i$.
+- $M$: Total number of miner slices being aggregated.
+- $\delta\theta_i$: The perturbation vector representing the change to parameters if miner $i$'s slice is removed from the aggregated model.
+- $g$: Gradient of the loss with respect to the model parameters on the evaluation data.
+- $H$: Approximation of the Hessian matrix (we use the diagonal of the Fisher Information Matrix, $H \approx \text{diag}(g^2)$).
+- $\Delta L_i$: Estimated change in loss if miner $i$'s slice is removed.
+- $R_i$: Reward assigned to miner $i$.
 
-The reward is calculated as:
-$$R_m = - |g_m - g_v|$$
+### Perturbation Vector Calculation
 
-Miners aim to maximize their rewards by minimizing the difference between their computed gradients and the ones expected by validators. This directly incentivizes miners to genuinely train on their assigned data subsets every window, as deviating from the expected gradient reduces their reward.
+The perturbation vector $\delta\theta_i$ is calculated as:
+
+$$
+\delta\theta_i = \frac{s_i}{M - 1} - \theta
+$$
+
+Where:
+
+- $\frac{s_i}{M - 1}$ adjusts the miner's slice to account for the aggregation without miner $i$.
+
+### Loss Change Estimation
+
+The estimated change in loss $\Delta L_i$ when miner $i$'s slice is removed is computed using a second-order Taylor series approximation:
+
+$$
+\Delta L_i \approx g^\top \delta\theta_i + \frac{1}{2} \delta\theta_i^\top H \delta\theta_i
+$$
+
+- **First-Order Term ($g^\top \delta\theta_i$)**: Represents the linear impact of the perturbation on the loss.
+- **Second-Order Term ($\frac{1}{2} \delta\theta_i^\top H \delta\theta_i$)**: Accounts for the curvature of the loss surface.
+
+### Reward Calculation
+
+The reward for miner $i$ is then determined based on the negative of the estimated loss change:
+
+$$
+R_i = -\Delta L_i
+$$
+
+- Miners aim to **maximize** their rewards by **minimizing** $\Delta L_i$, which corresponds to contributing slices that **improve** the model (i.e., reduce the loss).
+
+### Incentive Mechanism
+
+This incentive design encourages miners to:
+
+- **Provide Beneficial Updates**: By contributing slices that positively impact the model's performance on the evaluation data.
+- **Avoid Harmful Updates**: Since negative contributions (increasing the loss) result in lower rewards.
+
+### Summary
+
+Miners are incentivized to contribute model updates that lead to a reduction in the validation loss. The reward mechanism aligns individual miner objectives with the overall goal of improving the shared model by rewarding miners proportionally to the positive impact of their contributions.
+
 
 ## Installation Guide
 
