@@ -258,7 +258,6 @@ class Validator:
                 # Step 6: Compute slice importance using second-order approximation with Fisher Information Matrix.
                 logger.info(f"\tComputing slice importance scores using second-order approximation")
                 start_time = time.time()
-                step_scores = torch.zeros(256, dtype=torch.float32).to(self.model.device)  # Initialize step scores.
                 indices = await get_indices_for_window(
                     model=self.model,
                     seed=self.window_to_seed(self.eval_window + 1),  # Seed index for the eval window.
@@ -278,32 +277,69 @@ class Validator:
                     fisher_diagonal[name] = grad.pow(2)
 
                 # Iterate over each slice to compute importance scores.
+                M = len(slices_to_eval)  # Total number of slices being averaged
+                loss_change = torch.zeros(256, dtype=torch.float32).to(self.model.device)  # Initialize step scores.
                 for idx, slice_i in enumerate(slices_to_eval):
                     uid = uids_to_eval[idx]
                     delta_L = 0.0  # Initialize importance score for the current slice.
+
                     for name, param in self.model.named_parameters():
                         if param.grad is None:
-                            continue
-                        # Retrieve the indices for the current parameter.
+                            continue  # Skip parameters without gradients
+
+                        # Retrieve the indices for the current parameter subset.
                         param_indices = indices[name].to(self.model.device)
-                        # Flatten the parameter gradients and slices.
-                        g = gradients[name][param_indices]  # Gradient vector.
-                        s = slice_i[name].view(-1).to(self.model.device)  # Slice vector.
-                        # Compute the first-order term: -g^T s
-                        first_order = -torch.dot(g, s).item()
-                        # Compute the second-order term: 0.5 * s^T H s, where H ≈ diag(g^2)
-                        second_order = 0.5 * torch.dot(s.pow(2), fisher_diagonal[name][param_indices]).item()
-                        # Accumulate the importance score.
-                        delta_L += first_order + second_order
+
+                        # Extract the gradient vector for the current parameter subset.
+                        g = gradients[name][param_indices].to(self.model.device)  # Shape: [num_params_in_subset]
+
+                        # Extract and flatten the slice vector for the current parameter subset.
+                        s = slice_i[name].view(-1).to(self.model.device)  # Shape: [num_params_in_subset]
+
+                        # Compute the scaled slice vector:
+                        # Since theta is the average of all slices, removing one slice adjusts the average.
+                        # s_scaled = s_j / (M - 1), where s_j is the slice being removed.
+                        s_scaled = s / (M - 1)  # Shape: [num_params_in_subset]
+
+                        # Retrieve the current parameter values for the subset.
+                        theta = param.data.view(-1)[param_indices]  # Shape: [num_params_in_subset]
+
+                        # Compute the perturbation vector:
+                        # Δθ = s_scaled - theta
+                        # This represents the change to parameters when slice_i is removed from the average.
+                        delta_theta = s_scaled - theta  # Shape: [num_params_in_subset]
+
+                        # Compute the first-order term: g^T * Δθ
+                        # Represents the linear approximation of loss change due to Δθ.
+                        first_order = torch.nn.functional.cosine_similarity(g, delta_theta, dim=0).item()  # Scalar
+                        delta_L += first_order
+
+                        # # Compute the second-order term: 0.5 * Δθ^T * H * Δθ
+                        # # Using the diagonal Hessian approximation: H ≈ diag(fisher_diagonal)
+                        # # Represents the quadratic approximation of loss change due to Δθ.
+                        # second_order = 0.5 * torch.dot(delta_theta.pow(2), fisher_diagonal[name][param_indices]).item()  # Scalar
+
+                        # Accumulate the importance score for the current slice.
+                        # ΔL ≈ g^T * Δθ + 0.5 * Δθ^T * H * Δθ
+                        # delta_L += first_order + second_order
+
                     # Assign the computed importance score to the corresponding UID.
-                    step_scores[uid] += delta_L
+                    loss_change[uid] += delta_L
                 logger.info(f"\t\tFinished computing slice importance scores in {time.time() - start_time} seconds")
 
                 # Step 7: Normalize the scores as rewards and use them as weights.
                 logger.info(f"\tNormalizing scores to compute weights")
                 start_time = time.time()
                 # Update moving average of scores.
-                self.scores = self.hparams.validator_moving_alpha * step_scores.cpu() + (1 - self.hparams.validator_moving_alpha) * self.scores
+                if loss_change.max() != loss_change.min():
+                    nonzero_loss_change = loss_change[loss_change != 0]
+                    normalized_loss_change = torch.zeros_like(loss_change)
+                    if nonzero_loss_change.numel() > 0:
+                        normalized_nonzero_loss_change = (nonzero_loss_change - nonzero_loss_change.min()) / (nonzero_loss_change.max() - nonzero_loss_change.min())
+                        normalized_loss_change[loss_change != 0] = normalized_nonzero_loss_change
+                else:
+                    normalized_loss_change = loss_change.clone()  # or torch.zeros_like(loss_change) if you prefer
+                self.scores = self.hparams.validator_moving_alpha * normalized_loss_change.cpu() + (1 - self.hparams.validator_moving_alpha) * self.scores
                 # Apply softmax to normalize scores into weights.
                 # To ensure numerical stability, subtract the max before exponentiating.
                 if torch.any(self.scores != 0):
@@ -317,7 +353,7 @@ class Validator:
                 if self.config.use_wandb:
                     for uid in torch.nonzero(self.weights).squeeze():
                         wandb.log({
-                            f"step_scores/{uid.item()}": step_scores[uid].item(),
+                            f"loss_change/{uid.item()}": loss_change[uid].item(),
                             f"moving_scores/{uid.item()}": self.scores[uid].item(),
                             f"weights/{uid.item()}": self.weights[uid].item(),
                         })
@@ -329,9 +365,9 @@ class Validator:
                     nonzero_weights,
                     self.scores[nonzero_weights],
                     self.weights[nonzero_weights],
-                    step_scores[nonzero_weights]
+                    loss_change[nonzero_weights]
                 ):
-                    logger.info(f"\t\tuid: {uid.item()}, step_score: {step_score.item():.6f}, moving_score: {moving_score.item():.6f}, weight: {weight.item():.6f}")
+                    logger.info(f"\t\tuid: {uid.item()}, loss_change: {step_score.item():.6f}, moving_score: {moving_score.item():.6f}, weight: {weight.item():.6f}")
      
                 # Delete lingering files 
                 logger.info(f"\tCleaning space.")
