@@ -165,30 +165,18 @@ class Validator:
                 # Download the slices for the window.
                 logger.info(f"\tDownloading slices from previous window: { self.eval_window }")
                 start_time = time.time()
-                slice_infos = (await download_slices_for_buckets_and_windows(
+                slice_infos = await download_slices_for_buckets_and_windows(
                     buckets=self.buckets,
                     windows=[self.eval_window]
-                ))[self.eval_window]
-                logger.info(f"\t\tDownloaded {len(slice_infos)} slices for previous window: {self.eval_window} in {time.time() - start_time} seconds")
-
-                # If there are no slices to eval, wait until the next window then start again.
-                if len(slice_infos) == 0:
-                    while self.current_window == self.step_window:
-                        await asyncio.sleep(0.1)
-                    continue
-
-                # Step 2: Apply slices to the model from the previous window.
-                logger.info(f"\tApplying slices from previous window: {self.eval_window} to model.")
-                start_time = time.time()
-                eval_slices = await apply_slices_to_model(
-                    model=self.model,
-                    window=self.eval_window,  # Get files from previous window.
-                    seed=self.window_seeds[self.step_window],  # Use seed as the hash of the current window.
-                    compression=self.hparams.compression
                 )
-                applied_per_step = len(eval_slices)
-                logger.info(f"\t\tApplied {applied_per_step} slices from previous window: {self.eval_window} with seed: {self.window_seeds[self.step_window]} in {time.time() - start_time} seconds")
-
+                # If there are no slices to eval, wait until the next window then start again.
+                if self.eval_window not in slice_infos or len(slice_infos[self.eval_window]) == 0:
+                    print ('\t\tNo slices to download, waiting for next window...')
+                    while self.current_window == self.step_window: await asyncio.sleep(0.1)
+                    continue
+                slice_infos = slice_infos[self.eval_window]
+                logger.info(f"\t\tDownloaded {len(slice_infos)} slices for previous window: {self.eval_window} in {time.time() - start_time} seconds")
+                
                 # Step 3: Load the slices and pages for each.
                 logger.info(f"\tLoading slices from previous window: {self.eval_window}")
                 uids_to_eval = []
@@ -309,19 +297,20 @@ class Validator:
                         # This represents the change to parameters when slice_i is removed from the average.
                         delta_theta = s_scaled - theta  # Shape: [num_params_in_subset]
 
-                        # Compute the first-order term: g^T * Δθ
-                        # Represents the linear approximation of loss change due to Δθ.
-                        first_order = torch.nn.functional.cosine_similarity(g, delta_theta, dim=0).item()  # Scalar
-                        delta_L += first_order
+                        # # Compute the first-order term: g^T * Δθ
+                        # # Represents the linear approximation of loss change due to Δθ.
+                        # first_order = torch.nn.functional.cosine_similarity(g, delta_theta, dim=0).item()  # Scalar
+                        first_order = torch.dot(g, delta_theta).item()
+                        # delta_L += first_order
 
-                        # # Compute the second-order term: 0.5 * Δθ^T * H * Δθ
-                        # # Using the diagonal Hessian approximation: H ≈ diag(fisher_diagonal)
-                        # # Represents the quadratic approximation of loss change due to Δθ.
-                        # second_order = 0.5 * torch.dot(delta_theta.pow(2), fisher_diagonal[name][param_indices]).item()  # Scalar
+                        # Compute the second-order term: 0.5 * Δθ^T * H * Δθ
+                        # Using the diagonal Hessian approximation: H ≈ diag(fisher_diagonal)
+                        # Represents the quadratic approximation of loss change due to Δθ.
+                        second_order = 0.5 * torch.dot(delta_theta.pow(2), fisher_diagonal[name][param_indices]).item()  # Scalar
 
                         # Accumulate the importance score for the current slice.
                         # ΔL ≈ g^T * Δθ + 0.5 * Δθ^T * H * Δθ
-                        # delta_L += first_order + second_order
+                        delta_L += first_order + second_order
 
                     # Assign the computed importance score to the corresponding UID.
                     loss_change[uid] += delta_L
@@ -379,9 +368,20 @@ class Validator:
                 await delete_files_before_window( window_max = self.current_window - self.hparams.max_history )
                 logger.info(f"\t\tFinished cleaning space in {time.time() - start_time} seconds.")
                 
+                # Step 2: Apply slices to the model from the previous window.
+                logger.info(f"\tApplying slices from previous window: {self.eval_window} to model.")
+                start_time = time.time()
+                eval_slices = await apply_slices_to_model(
+                    model=self.model,
+                    window=self.eval_window,  # Get files from previous window.
+                    seed=self.window_seeds[self.step_window],  # Use seed as the hash of the current window.
+                    compression=self.hparams.compression
+                )
+                applied_per_step = len(eval_slices)
+                logger.info(f"\t\tApplied {applied_per_step} slices from previous window: {self.eval_window} with seed: {self.window_seeds[self.step_window]} in {time.time() - start_time} seconds")
+
                 # Ensure window is over.
-                while self.current_window == self.step_window:
-                    await asyncio.sleep(0.1)
+                while self.current_window == self.step_window: await asyncio.sleep(0.1)
                                         
                 # Set temperatured weights on the chain.
                 if self.current_window % 100 == 0: 

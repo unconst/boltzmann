@@ -99,7 +99,7 @@ class Miner:
             # Delete all runs with my name and create a new one.
             try:
                 [run.delete() for run in wandb.Api().runs(path=self.config.project)
-                 if run.name == f'M{self.uid}' and logger.info(f'Deleting old run: {run}')]
+                 if run.name == f'M{self.uid}-{"r" if self.config.random else ""}' and logger.info(f'Deleting old run: {run}')]
             except: pass
             wandb.init(project=self.config.project, resume='allow', name=f'M{self.uid}', config=self.config)
 
