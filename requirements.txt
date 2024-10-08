@@ -28,3 +28,4 @@ typer
 numpy
 aioboto3
 loguru
+uvloop
