@@ -237,7 +237,8 @@ class Validator:
                         input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
                         labels = input_ids.clone()
                         labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
-                        outputs = self.model(input_ids=input_ids, labels=labels)
+                        with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
+                            outputs = self.model(input_ids=input_ids, labels=labels)
                         loss = outputs.loss
                         loss.backward()
                         if self.step_window != self.current_window:
@@ -325,18 +326,16 @@ class Validator:
                 logger.info(f"\t\tNormalized scores into weights in {time.time() - start_time} seconds")
 
                 # Step 8: Log the results if using Weights and Biases.
+                logger.info('\tWeights:')
+                nonzero_scores = torch.nonzero(self.scores).squeeze()
+                nonzero_scores = [nonzero_scores] if nonzero_scores.numel() == 1 else nonzero_scores
                 if self.config.use_wandb:
-                    for uid in torch.nonzero(self.weights).squeeze():
+                    for uid in nonzero_scores:
                         wandb.log({
                             f"loss_change/{uid.item()}": self.loss_change[uid].item(),
                             f"moving_scores/{uid.item()}": self.scores[uid].item(),
                             f"weights/{uid.item()}": self.weights[uid].item(),
                         })
-
-                # Step 9: Log the rewards, weights, and scores.
-                logger.info('\tWeights:')
-                nonzero_scores = torch.nonzero(self.scores).squeeze()
-                nonzero_scores = [nonzero_scores] if nonzero_scores.numel() == 1 else nonzero_scores
                 for uid in nonzero_scores:
                     moving_score = self.scores[uid].item()
                     weight = self.weights[uid].item()

@@ -39,7 +39,7 @@ BUCKET=${1:-decis}
 python3 tools/clean.py --bucket $BUCKET
 
 # Start all the processes again.
-# pm2 start validator.py --interpreter python3 --name V1 -- --wallet.name Alice --wallet.hotkey default --bucket $BUCKET --device cuda:0 --use_wandb
+pm2 start validator.py --interpreter python3 --name V1 -- --wallet.name Alice --wallet.hotkey default --bucket $BUCKET --device cuda:0 --use_wandb
 pm2 start miner.py --interpreter python3 --name M1 -- --wallet.name Alice --wallet.hotkey M1 --bucket $BUCKET --device cuda:1 --use_wandb 
 pm2 start miner.py --interpreter python3 --name M2 -- --wallet.name Alice --wallet.hotkey M2 --bucket $BUCKET --device cuda:2 --use_wandb
 pm2 start miner.py --interpreter python3 --name M3 -- --wallet.name Alice --wallet.hotkey M3 --bucket $BUCKET --device cuda:3 --use_wandb
