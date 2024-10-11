@@ -437,8 +437,9 @@ async def delete_files_before_window(window_max: int):
                 window_id = int(parts[1])
                 if window_id < window_max:
                     file_path = os.path.join(temp_dir, filename)
-                    os.remove(file_path)
-                    logger.debug(f"Deleted file {file_path}")
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        logger.debug(f"Deleted file {file_path}")
             except Exception as e:
                 logger.error(f"Error deleting file {filename}: {e}")
 

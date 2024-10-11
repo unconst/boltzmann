@@ -205,7 +205,7 @@ class Miner:
                         n_pages = self.hparams.validator_window_eval_size,
                         seed = self.uid if not self.config.random else random.randint(0, 1000)
                     ), 
-                    int(math.ceil(self.optimal_pages_per_step))
+                    int(min( self.hparams.validator_window_eval_size, math.ceil(self.optimal_pages_per_step) ))
                 )
                 dataset = await AsyncSubsetFineWebEdu2Loader.create(
                     batch_size = self.config.actual_batch_size,
