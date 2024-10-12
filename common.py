@@ -36,7 +36,6 @@ from dotenv import dotenv_values
 from types import SimpleNamespace
 from aiobotocore.session import get_session
 from filelock import FileLock, Timeout
-import tempfile
 
 # Configure loguru logger
 logger.remove()
@@ -63,7 +62,7 @@ asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 semaphore = asyncio.Semaphore(1000)
 
 
-async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, compression: int, temp_dir: str) -> List[str]:
+async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, compression: int) -> List[str]:
     """
     Applies slices from a specific window to the given model.
 
@@ -72,7 +71,6 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
         window (int): The window identifier.
         seed (str): The seed used for generating indices.
         compression (int): The compression factor.
-        temp_dir (str): the temporary directory
 
     Returns:
         List[str]: A list of all the slice files that were applied.
@@ -81,7 +79,7 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
     indices_dict = await get_indices_for_window(model, seed, compression)
     
     # Load all the slices associated with this window.
-    slice_files = await load_files_for_window(window=window, temp_dir=temp_dir)
+    slice_files = await load_files_for_window(window=window)
 
     # Dictionary to keep track of the number of slices applied per parameter.
     slices_per_param = {name: 0 for name, _ in model.named_parameters()}
@@ -249,7 +247,7 @@ async def get_indices_for_window(model: torch.nn.Module, seed: str, compression:
         result[name] = torch.from_numpy(indices).long().cpu()
     return result
 
-async def download_file(s3_client, bucket: str, filename: str, temp_dir: str) -> str:
+async def download_file(s3_client, bucket: str, filename: str) -> str:
     """
     Downloads a file from S3, using parallel downloads for large files.
 
@@ -262,7 +260,7 @@ async def download_file(s3_client, bucket: str, filename: str, temp_dir: str) ->
         str: The path to the downloaded file in the temporary directory.
     """
     async with semaphore:
-        temp_file = os.path.join(temp_dir, filename)
+        temp_file = os.path.join(tempfile.gettempdir(), filename)
         # Check if the file exists.
         if os.path.exists(temp_file):
             logger.debug(f"File {temp_file} already exists, skipping download.")
@@ -299,7 +297,7 @@ async def download_file(s3_client, bucket: str, filename: str, temp_dir: str) ->
             # The lock is automatically released when exiting the 'with' block
             pass
 
-async def handle_file(s3_client, bucket: str, filename: str, hotkey: str, window: int, temp_dir: str):
+async def handle_file(s3_client, bucket: str, filename: str, hotkey: str, window: int):
     """
     Handles downloading a single file from S3.
 
@@ -314,12 +312,12 @@ async def handle_file(s3_client, bucket: str, filename: str, hotkey: str, window
         SimpleNamespace: An object containing file metadata and the path to the downloaded file.
     """
     logger.debug(f"Handling file {filename} for window {window} and hotkey {hotkey}")
-    temp_file = await download_file(s3_client, bucket, filename, temp_dir)
+    temp_file = await download_file(s3_client, bucket, filename)
     if temp_file:
         return SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, window=window, temp_file=temp_file)
     return None
 
-async def process_bucket(s3_client, bucket: str, windows: List[int], temp_dir: str):
+async def process_bucket(s3_client, bucket: str, windows: List[int]):
     """
     Processes an S3 bucket to download files matching the given windows.
 
@@ -353,7 +351,7 @@ async def process_bucket(s3_client, bucket: str, windows: List[int], temp_dir: s
                     slice_hotkey = parts[2].split('.')[0]
                     logger.trace(f"Parsed filename {filename} into window {slice_window} and hotkey {slice_hotkey}")
                     if slice_window == window:
-                        download_tasks.append(handle_file(s3_client, bucket, filename, slice_hotkey, slice_window, temp_dir))
+                        download_tasks.append(handle_file(s3_client, bucket, filename, slice_hotkey, slice_window))
                 except Exception:
                     logger.exception(f"Error processing filename {filename}")
                     continue
@@ -364,7 +362,7 @@ async def process_bucket(s3_client, bucket: str, windows: List[int], temp_dir: s
     logger.trace(f"Completed processing bucket {bucket} for windows {windows}")
     return files
 
-async def download_slices_for_buckets_and_windows(buckets: List[str], windows: List[int], temp_dir: str) -> Dict[int, List[SimpleNamespace]]:
+async def download_slices_for_buckets_and_windows(buckets: List[str], windows: List[int]) -> Dict[int, List[SimpleNamespace]]:
     """
     Downloads files from multiple S3 buckets for the given windows.
 
@@ -388,7 +386,7 @@ async def download_slices_for_buckets_and_windows(buckets: List[str], windows: L
         for bucket in set(buckets):
             if not bucket:
                 continue
-            tasks.append(process_bucket(s3_client, bucket, windows, temp_dir))
+            tasks.append(process_bucket(s3_client, bucket, windows))
         results = await asyncio.gather(*tasks)
         # Flatten the list of lists
         files = [item for sublist in results for item in sublist]
@@ -404,7 +402,7 @@ async def download_slices_for_buckets_and_windows(buckets: List[str], windows: L
         logger.debug(f"Downloaded all files grouped by windows: {windows}")
         return windows_dict
 
-async def load_files_for_window(window: int, temp_dir: str) -> List[str]:
+async def load_files_for_window(window: int) -> List[str]:
     """
     Retrieves the paths to downloaded window files from the temporary directory.
 
@@ -415,6 +413,7 @@ async def load_files_for_window(window: int, temp_dir: str) -> List[str]:
         List[str]: A list of file paths corresponding to the window.
     """
     logger.debug(f"Retrieving files for window {window} from temporary directory")
+    temp_dir = tempfile.gettempdir()
     window_files = []
     for filename in os.listdir(temp_dir):
         if filename.startswith(f"slice-{window}-") and filename.endswith(".pt"):
@@ -422,7 +421,7 @@ async def load_files_for_window(window: int, temp_dir: str) -> List[str]:
             logger.debug(f"Found file {filename} for window {window}")
     return window_files
 
-async def delete_files_before_window(window_max: int, temp_dir: str):
+async def delete_files_before_window(window_max: int):
     """
     Deletes all files on the local machine which have a window id before a specific value window_max.
 
@@ -430,6 +429,7 @@ async def delete_files_before_window(window_max: int, temp_dir: str):
         window_max (int): The maximum window id. Files with window ids less than this value will be deleted.
     """
     logger.debug(f"Deleting files with window id before {window_max}")
+    temp_dir = tempfile.gettempdir()
     for filename in os.listdir(temp_dir):
         if filename.startswith("slice-") and ( filename.endswith(".pt") or filename.endswith(".lock") ):
             try:
@@ -437,9 +437,8 @@ async def delete_files_before_window(window_max: int, temp_dir: str):
                 window_id = int(parts[1])
                 if window_id < window_max:
                     file_path = os.path.join(temp_dir, filename)
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                        logger.debug(f"Deleted file {file_path}")
+                    os.remove(file_path)
+                    logger.debug(f"Deleted file {file_path}")
             except Exception as e:
                 logger.error(f"Error deleting file {filename}: {e}")
 
@@ -476,24 +475,3 @@ async def delete_files_from_bucket_before_window(bucket: str, window_max: int):
                             logger.error(f"Error deleting file {filename} from bucket {bucket}: {e}")
         except Exception as e:
             logger.error(f"Error listing objects in bucket {bucket}: {e}")
-
-def create_temp_dir(wallet) -> str:
-    """
-    Creates a unique temporary directory based on the wallet's hotkey address.
-
-    Args:
-        wallet (bt.wallet.Wallet): The wallet object containing the hotkey.
-
-    Returns:
-        str: The path to the created temporary directory.
-    """
-    # Generate the temporary directory path using the wallet's hotkey address
-    temp_dir = os.path.join(tempfile.gettempdir(), wallet.hotkey.ss58_address)
-    
-    # Create the directory if it doesn't exist
-    os.makedirs(temp_dir, exist_ok=True)
-    
-    # Log the creation of the temporary directory
-    logger.info(f"Temporary directory for wallet {wallet.hotkey.ss58_address}: {temp_dir}")
-    
-    return temp_dir

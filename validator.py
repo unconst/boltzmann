@@ -91,9 +91,6 @@ class Validator:
             self.subtensor.commit(self.wallet, self.config.netuid, self.config.bucket)
         logger.info('Bucket:' + self.config.bucket)
 
-        # Create a unique temporary directory for this validator
-        self.temp_dir = create_temp_dir(self.wallet)
-
         # Init Wandb.
         if self.config.use_wandb:
             # Delete all runs with my name and create a new one.
@@ -170,8 +167,7 @@ class Validator:
                 start_time = time.time()
                 slice_infos = await download_slices_for_buckets_and_windows(
                     buckets=self.buckets,
-                    windows=[self.eval_window],
-                    temp_dir=self.temp_dir
+                    windows=[self.eval_window]
                 )
                 # If there are no slices to eval, wait until the next window then start again.
                 if self.eval_window not in slice_infos or len(slice_infos[self.eval_window]) == 0:
@@ -369,7 +365,7 @@ class Validator:
                 del gradients
                 del fisher_diagonal
                 torch.cuda.empty_cache()
-                await delete_files_before_window( window_max = self.current_window - self.hparams.max_history, temp_dir=self.temp_dir )
+                await delete_files_before_window( window_max = self.current_window - self.hparams.max_history )
                 logger.info(f"\t\tFinished cleaning space in {time.time() - start_time} seconds.")
                 
                 # Step 2: Apply slices to the model from the previous window.
@@ -379,8 +375,7 @@ class Validator:
                     model=self.model,
                     window=self.eval_window,  # Get files from previous window.
                     seed=self.window_seeds[self.step_window],  # Use seed as the hash of the current window.
-                    compression=self.hparams.compression,
-                    temp_dir=self.temp_dir
+                    compression=self.hparams.compression
                 )
                 applied_per_step = len(eval_slices)
                 logger.info(f"\t\tApplied {applied_per_step} slices from previous window: {self.eval_window} with seed: {self.window_seeds[self.step_window]} in {time.time() - start_time} seconds")
