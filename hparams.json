@@ -2,7 +2,7 @@
     "epoch_length": 250000,
     "compression": 30,
     "sequence_length": 2048,
-    "tokenizer_name": "togethercomputer/LLaMA-2-7B-32K",
+    "tokenizer_name": "TinyLlama/TinyLlama_v1.1",
     "num_hidden_layers": 16,
     "hidden_size": 2048,
     "intermediate_size": 8192,
