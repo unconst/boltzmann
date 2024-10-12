@@ -130,7 +130,7 @@ class Miner:
 
         # Init run state.
         self.global_step = 0
-        self.optimal_pages_per_step = 2.0
+        self.sample_rate = 1.0
         self.current_block = self.subtensor.block
         self.current_window = self.block_to_window( self.current_block )
         self.window_seeds = {self.current_window: self.window_to_seed( self.current_window) }
@@ -198,15 +198,13 @@ class Miner:
                 #   eval_pages_end   : ( window_idx * window_length * window_speed ) + window_eval_size
                 start_time = time.time()
                 offset = self.step_window * self.hparams.window_length * self.hparams.window_speed
-                logger.info(f"\tLoading {int(math.ceil(self.optimal_pages_per_step))} pages for current window: { self.step_window } and offset: {offset}")
-                pages = random.sample(
-                    await AsyncSubsetFineWebEdu2Loader.next_pages(
-                        offset = offset,
-                        n_pages = self.hparams.validator_window_eval_size,
-                        seed = self.uid if not self.config.random else random.randint(0, 1000)
-                    ), 
-                    int(min( self.hparams.validator_window_eval_size, math.ceil(self.optimal_pages_per_step) ))
+                logger.info(f"\tLoading {self.hparams.validator_window_eval_size} pages for current window: { self.step_window } and offset: {offset}")
+                pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
+                    offset = offset,
+                    n_pages = self.hparams.validator_window_eval_size,
+                    seed = self.uid if not self.config.random else random.randint(0, 1000)
                 )
+                random.shuffle( pages ) 
                 dataset = await AsyncSubsetFineWebEdu2Loader.create(
                     batch_size = self.config.actual_batch_size,
                     sequence_length = self.hparams.sequence_length,
@@ -217,36 +215,31 @@ class Miner:
                 logger.info(f"\t\tLoaded dataset pages: {[p[1] for p in pages]} in {time.time() - start_time} seconds")
 
                 # Train the model on the current page.
-                logger.info(f"\tTraining on pages: {[p[1] for p in pages]}")
+                logger.info(f"\tTraining on pages: {[p[1] for p in pages]} with sample rate: {self.sample_rate}")
                 start_time = time.time()
                 torch.cuda.empty_cache()  # Empty cache going into the training step.
                 self.optimizer.zero_grad()  # Clear any lingering grads.
                 total_loss = 0.0
                 total_steps = self.hparams.desired_batch_size // self.config.actual_batch_size
-                window_exhuasted = False
+                exhuasted_window = False
                 for idx, batch in enumerate(dataset):
-                    input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
-                    labels = input_ids.clone()
-                    labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
-                    with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
-                        outputs = self.model(input_ids=input_ids, labels=labels)
-                    total_loss += outputs.loss.item()
-                    loss = outputs.loss / (total_steps + 1)  # Divide by number of accumulations.
-                    loss.backward()
-                    if self.step_window != self.current_window:
-                        window_exhuasted = True
-                        break
-                    
-                # Update training pages based on window exhuastion.
-                if window_exhuasted:
-                    # Did exhuast window during training, decrease number of pages.
-                    logger.info(f"\t\tExhuasted window during training.")
-                    self.optimal_pages_per_step = max(1, self.optimal_pages_per_step * 0.9 )
-                else: 
-                    # Did not exhuast window during training.
-                    # Waits until window is over.
-                    logger.info(f"\t\tExhuasted dataset during training.")
-                    self.optimal_pages_per_step *= 1.1
+                    # Randomly sample every sample_rate examples
+                    if random.random() < self.sample_rate:
+                        input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
+                        labels = input_ids.clone()
+                        labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
+                        with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
+                            outputs = self.model(input_ids=input_ids, labels=labels)
+                        total_loss += outputs.loss.item()
+                        loss = outputs.loss / (total_steps + 1)  # Divide by number of accumulations.
+                        loss.backward()
+                        if self.step_window != self.current_window:
+                            exhuasted_window = True
+                            break
+                if exhuasted_window:
+                    self.sample_rate = max(0.0001, self.sample_rate * 0.95)
+                else:
+                    self.sample_rate = min(1, self.sample_rate * 1.05)
 
                 # Apply step and clean memory.
                 if self.hparams.grad_clip:
@@ -304,6 +297,7 @@ class Miner:
                         "learning_rate": self.scheduler.get_last_lr()[0],
                         "seconds_per_step": seconds_per_step,
                         "steps_per_second": steps_per_second,
+                        "sample_rate": self.sample_rate,
                     })
                 print (f'\nGlobal step completed in {seconds_per_step} seconds\n')
                 
