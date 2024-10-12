@@ -217,6 +217,7 @@ class Validator:
                     ),
                     min( self.hparams.validator_pages_per_eval, self.hparams.validator_window_eval_size )
                 )
+                random.shuffle(sampled_pages) # Important to not preference early pages.
                 logger.info(f"\t\tLoading pages: {[p[1] for p in sampled_pages]} for offset: {offset_i} and uid: {uid}")
                 eval_dataset = await AsyncSubsetFineWebEdu2Loader.create(
                     batch_size=self.config.actual_batch_size,
