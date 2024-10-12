@@ -142,7 +142,7 @@ class Validator:
             self.buckets = next_buckets                              # Update self.buckets with next_buckets
             for idx, hotkey in enumerate(self.metagraph.hotkeys):    # Iterate over current metagraph hotkeys
                 if hotkey != nxt_meta.hotkeys[idx]:                  # Check if hotkey has changed in the new metagraph
-                    self.scores[idx] = 0                            # Reset rewards for the changed hotkey
+                    self.scores[idx] = 0                             # Reset rewards for the changed hotkey
                     self.weights[idx] = 0                            # Reset weights for the changed hotkey
             self.metagraph = nxt_meta                                # Update self.metagraph with new_metagraph
             await asyncio.sleep(60)                                  # Sleep for 60 seconds before the next iteration
@@ -179,17 +179,14 @@ class Validator:
                 slice_infos = slice_infos[self.eval_window]
                 logger.info(f"\t\tDownloaded {len(slice_infos)} slices for previous window: {self.eval_window} in {time.time() - start_time} seconds")
                 
-                # Step 2: Compute slice importance using second-order approximation with Fisher Information Matrix.
-                logger.info(f"\tComputing slice importance scores using second-order approximation")
-                start_time = time.time()
                 indices = await get_indices_for_window(
                     model=self.model,
                     seed=self.window_to_seed(self.eval_window + 1),  # Seed index for the eval window.
                     compression=self.hparams.compression
-                )
+                )       
                 
-                # Step 2: Eval each slice.
-                eval_start_time = time.time()
+                # Step 2: Compute slice importance using second-order approximation with Fisher Information Matrix.
+                eval_start_time = time.time()         
                 info_i = random.choice(slice_infos)
                 
                 # Get the UID we are evalling.
@@ -215,7 +212,7 @@ class Validator:
                         n_pages=self.hparams.validator_window_eval_size,
                         seed=uid
                     ),
-                    min( self.hparams.validator_pages_per_eval, self.hparams.validator_window_eval_size )
+                    self.hparams.validator_window_eval_size
                 )
                 random.shuffle(sampled_pages) # Important to not preference early pages.
                 logger.info(f"\t\tLoading pages: {[p[1] for p in sampled_pages]} for offset: {offset_i} and uid: {uid}")
@@ -229,8 +226,8 @@ class Validator:
 
                 
                 # Run the eval.
-                logger.info(f"\t\tRunning evaluation for uid: {uid}")
-                start_time = time()
+                logger.info(f"\t\tRunning evaluation for uid: {uid} with sample rate: {self.sample_rate}")
+                start_time = time.time()
                 self.model.zero_grad()
                 self.model.eval()
                 # Enable gradient computation
@@ -249,11 +246,11 @@ class Validator:
                             if self.step_window != self.current_window:
                                 exhuasted_window = True
                                 break
+                logger.info(f"\t\t\tFinished running eval with sample rate: {self.sample_rate} on pages in {time.time() - start_time} seconds")
                 if exhuasted_window:
-                    self.sample_rate = max(0.0001, self.sample_rate * 0.9)
+                    self.sample_rate = max(0.0001, self.sample_rate * 0.99)
                 else:
-                    self.sample_rate = min(1, self.sample_rate * 1.1)
-                logger.info(f"\t\t\tRun eval on pages in {time.time() - start_time} seconds")
+                    self.sample_rate = min(1, self.sample_rate * 1.01)
 
                 # Collect gradients for all parameters.
                 logger.info(f"\t\tComputing scores")
@@ -303,7 +300,6 @@ class Validator:
                 del slice_data
                 del eval_dataset
                 del gradients
-                del fisher_diagonal
                 torch.cuda.empty_cache()
               
                 # Step 7: Normalize the scores as rewards and use them as weights.
@@ -330,6 +326,7 @@ class Validator:
                             f"loss_change/{uid.item()}": self.loss_change[uid].item(),
                             f"moving_scores/{uid.item()}": self.scores[uid].item(),
                             f"weights/{uid.item()}": self.weights[uid].item(),
+                            'self.sample_rate': self.sample_rate,
                         })
                 for uid in nonzero_scores:
                     moving_score = self.scores[uid].item()
