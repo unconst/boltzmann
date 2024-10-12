@@ -86,9 +86,6 @@ class Miner:
         logger.info('\n' + '-' * 40 + ' Objects ' + '-' * 40)
         logger.info(f'\nWallet: {self.wallet}\nSubtensor: {self.subtensor}\nMetagraph: {self.metagraph}\nUID: {self.uid}')
 
-        # Create a unique temporary directory for this miner
-        self.temp_dir = create_temp_dir(self.wallet)
-
         # Init bucket.
         try:
             if self.config.bucket != self.subtensor.get_commitment(self.config.netuid, self.uid):
@@ -178,8 +175,7 @@ class Miner:
                 start_time = time.time()
                 slice_files = await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
-                    windows = [self.step_window - 1],
-                    temp_dir=self.temp_dir
+                    windows = [self.step_window - 1]
                 )
                 downloaded_per_step = sum([len(slice_files[k]) for k in slice_files])
                 logger.info(f"\t\tDownloaded {downloaded_per_step} slices for previous window: {self.step_window - 1} in {time.time() - start_time} seconds")
@@ -191,8 +187,7 @@ class Miner:
                     model = self.model, 
                     window = self.step_window - 1, # Get files from previous window.
                     seed = self.window_seeds[ self.step_window ], # Use seed as the hash of the current window.
-                    compression = self.hparams.compression,
-                    temp_dir=self.temp_dir 
+                    compression = self.hparams.compression
                 )
                 applied_per_step = len(slice_files)
                 logger.info(f"\t\tApplied {applied_per_step} from previous window: {self.step_window - 1} with seed: { self.window_seeds[ self.step_window ] } in {time.time() - start_time} seconds")
@@ -210,7 +205,7 @@ class Miner:
                         n_pages = self.hparams.validator_window_eval_size,
                         seed = self.uid if not self.config.random else random.randint(0, 1000)
                     ), 
-                    int(min( self.hparams.validator_window_eval_size, math.ceil(self.optimal_pages_per_step) ))
+                    int(math.ceil(self.optimal_pages_per_step))
                 )
                 dataset = await AsyncSubsetFineWebEdu2Loader.create(
                     batch_size = self.config.actual_batch_size,
@@ -290,7 +285,7 @@ class Miner:
                 # Delete lingering files 
                 logger.info(f"\tCleaning space.")
                 start_time = time.time()
-                await delete_files_before_window( window_max = self.current_window - self.hparams.max_history, temp_dir=self.temp_dir )
+                await delete_files_before_window( window_max = self.current_window - self.hparams.max_history )
                 await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = self.current_window - self.hparams.max_history )
                 logger.info(f"\t\tFinished cleaning space in {time.time() - start_time} seconds.")
 
