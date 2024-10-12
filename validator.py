@@ -206,16 +206,14 @@ class Validator:
                 # Load the dataset for this miner.
                 start_time = time.time()
                 offset_i = self.eval_window * self.hparams.window_length * self.hparams.window_speed
-                sampled_pages = random.sample(
-                    await AsyncSubsetFineWebEdu2Loader.next_pages(
-                        offset=offset_i,
-                        n_pages=self.hparams.validator_window_eval_size,
-                        seed=uid
-                    ),
-                    self.hparams.validator_window_eval_size
+                seed = uid
+                sampled_pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
+                    offset = offset_i,
+                    n_pages = self.hparams.validator_window_eval_size,
+                    seed = seed
                 )
                 random.shuffle(sampled_pages) # Important to not preference early pages.
-                logger.info(f"\t\tLoading pages: {[p[1] for p in sampled_pages]} for offset: {offset_i} and uid: {uid}")
+                logger.info(f"\t\tLoading pages: {[p[1] for p in sampled_pages]} for offset: {offset_i}, uid: {uid} and seed: {seed}")
                 eval_dataset = await AsyncSubsetFineWebEdu2Loader.create(
                     batch_size=self.config.actual_batch_size,
                     sequence_length=self.hparams.sequence_length,

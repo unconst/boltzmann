@@ -198,11 +198,12 @@ class Miner:
                 #   eval_pages_end   : ( window_idx * window_length * window_speed ) + window_eval_size
                 start_time = time.time()
                 offset = self.step_window * self.hparams.window_length * self.hparams.window_speed
-                logger.info(f"\tLoading {self.hparams.validator_window_eval_size} pages for current window: { self.step_window } and offset: {offset}")
+                seed = self.uid if not self.config.random else random.randint(0, 1000)
+                logger.info(f"\tLoading {self.hparams.validator_window_eval_size} pages for current window: { self.step_window } and offset: {offset} and uid: {self.uid} and seed: {seed}")
                 pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
                     offset = offset,
                     n_pages = self.hparams.validator_window_eval_size,
-                    seed = self.uid if not self.config.random else random.randint(0, 1000)
+                    seed = seed
                 )
                 random.shuffle( pages ) 
                 dataset = await AsyncSubsetFineWebEdu2Loader.create(
