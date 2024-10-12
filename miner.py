@@ -107,7 +107,8 @@ class Miner:
         logger.info('\n' + '-' * 40 + ' Hparams ' + '-' * 40)
         self.hparams = load_hparams()
         torch.manual_seed(42); np.random.seed(42); random.seed(42)
-        self.model = LlamaForCausalLM(config=self.hparams.model_config)
+        # self.model = LlamaForCausalLM(config=self.hparams.model_config)
+        self.model = LlamaForCausalLM.from_pretrained('TinyLlama/TinyLlama_v1.1')
         self.model.to(self.config.device)
         self.model.train()
         self.optimizer = optim.AdamW(
@@ -137,7 +138,8 @@ class Miner:
         self.window_seeds = {self.current_window: self.window_to_seed( self.current_window) }
         self.new_block_event = asyncio.Event()
         self.new_window_event = asyncio.Event()
-        self.stop_event = asyncio.Event()        
+        self.stop_event = asyncio.Event()    
+        self.last_full_steps = self.hparams.desired_batch_size // self.config.actual_batch_size    
         print ( self.hparams )
         
     async def update(self):
@@ -222,20 +224,19 @@ class Miner:
                 torch.cuda.empty_cache()  # Empty cache going into the training step.
                 self.optimizer.zero_grad()  # Clear any lingering grads.
                 total_loss = 0.0
-                total_steps = self.hparams.desired_batch_size // self.config.actual_batch_size
                 exhuasted_window = False
-                full_steps = 0
+                self.full_steps = 0
                 for idx, batch in enumerate(dataset):
                     # Randomly sample every sample_rate examples
                     if random.random() < self.sample_rate:
-                        full_steps += 1
+                        self.full_steps += 1
                         input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
                         labels = input_ids.clone()
                         labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
                         with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
                             outputs = self.model(input_ids=input_ids, labels=labels)
                         total_loss += outputs.loss.item()
-                        loss = outputs.loss / (total_steps + 1)  # Divide by number of accumulations.
+                        loss = outputs.loss / (self.last_full_steps + 1)  # Divide by number of accumulations.
                         loss.backward()
                         if self.step_window != self.current_window:
                             exhuasted_window = True
@@ -251,11 +252,12 @@ class Miner:
                 torch.cuda.empty_cache()
 
                 # Calculate, print and log average loss
-                average_loss = total_loss / (full_steps + 1)
+                self.last_full_steps = self.full_steps
+                average_loss = total_loss / (self.full_steps + 1)
                 total_time = time.time() - start_time
-                tokens_per_step = self.hparams.sequence_length * self.config.actual_batch_size * (full_steps + 1)
+                tokens_per_step = self.hparams.sequence_length * self.config.actual_batch_size * (self.full_steps + 1)
                 tokens_per_second =  tokens_per_step / total_time
-                logger.info(f"\t\tTotal steps: {idx}, Applied: {full_steps}, Rate: {full_steps/(idx + 1)}, Sample Probability: {self.sample_rate}")
+                logger.info(f"\t\tTotal steps: {idx}, Applied: {self.full_steps}, Rate: {self.full_steps/(idx + 1)}, Sample Probability: {self.sample_rate}")
                 logger.info(f"\t\tLoss: {average_loss}, learning_rate: {self.scheduler.get_last_lr()[0]}")
                 logger.info(f"\t\tTraining completed in {total_time} seconds, Tokens per step: {tokens_per_step}, Tokens per second: {tokens_per_second}")
                 if exhuasted_window:

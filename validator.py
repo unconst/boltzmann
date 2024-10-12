@@ -104,7 +104,8 @@ class Validator:
         logger.info('\n' + '-' * 40 + ' Hparams ' + '-' * 40)
         self.hparams = load_hparams()
         torch.manual_seed(42); np.random.seed(42); random.seed(42)
-        self.model = LlamaForCausalLM(config=self.hparams.model_config)
+        #self.model = LlamaForCausalLM(config=self.hparams.model_config)
+        self.model = LlamaForCausalLM.from_pretrained('TinyLlama/TinyLlama_v1.1')
         self.model.to(self.config.device)
         self.model.eval()
         
@@ -294,7 +295,7 @@ class Validator:
                     # Accumulate the importance score for the current slice.
                     param_subset = param.data.view(-1)[param_indices]
                     # Calculate the weight of the parameter subset.
-                    weight = param_subset.norm().item() + 1e-8
+                    weight = g.norm().item() + 1e-8
                     # Update the total importance score.
                     delta_L += weight * cosine_similarity
 
@@ -311,7 +312,7 @@ class Validator:
                 start_time = time.time()
                 logger.info('\t\t\tWeights:')
                 self.loss_change[uid] = delta_L
-                self.scores[uid] = (1 - self.hparams.validator_moving_alpha) * -delta_L + self.hparams.validator_moving_alpha * self.scores[uid]
+                self.scores[uid] = (1 - self.hparams.validator_moving_alpha) * delta_L + self.hparams.validator_moving_alpha * self.scores[uid]
                 # If a score is NaN, set it to zero
                 self.scores[torch.isnan(self.scores)] = 0
                 # Get all valid score value indices.
