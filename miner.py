@@ -222,9 +222,11 @@ class Miner:
                 total_loss = 0.0
                 total_steps = self.hparams.desired_batch_size // self.config.actual_batch_size
                 exhuasted_window = False
+                full_steps = 0
                 for idx, batch in enumerate(dataset):
                     # Randomly sample every sample_rate examples
                     if random.random() < self.sample_rate:
+                        full_steps += 1
                         input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
                         labels = input_ids.clone()
                         labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
@@ -251,10 +253,11 @@ class Miner:
                 torch.cuda.empty_cache()
 
                 # Calculate, print and log average loss
-                average_loss = total_loss / (idx + 1)
+                average_loss = total_loss / (full_steps + 1)
                 total_time = time.time() - start_time
-                tokens_per_step = self.hparams.sequence_length * self.config.actual_batch_size * (idx + 1)
+                tokens_per_step = self.hparams.sequence_length * self.config.actual_batch_size * (full_steps + 1)
                 tokens_per_second =  tokens_per_step / total_time
+                logger.info(f"\t\tTotal steps: {idx}, Applied: {full_steps}, Rate: {full_steps/idx}, Sample Probability: {self.sample_rate}")
                 logger.info(f"\t\tLoss: {average_loss}, learning_rate: {self.scheduler.get_last_lr()[0]}")
                 logger.info(f"\t\tTraining completed in {total_time} seconds, Tokens per step: {tokens_per_step}, Tokens per second: {tokens_per_second}")
                 
