@@ -127,6 +127,7 @@ class Validator:
         self.loss_change = torch.zeros( 256, dtype = torch.float32 ) 
         self.scores = torch.zeros( 256, dtype = torch.float32 ) 
         self.weights = torch.zeros( 256, dtype = torch.float32 ) 
+        self.sample_rate = 1.0
         print ( self.hparams )
         
     async def update(self):
@@ -188,29 +189,26 @@ class Validator:
                 )
                 
                 # Step 2: Eval each slice.
-                logger.info(f"\tLoading slices from previous window: {self.eval_window}")
-                start_time = time.time()
-                
-                # Select a UID to sample.
+                eval_start_time = time.time()
                 info_i = random.choice(slice_infos)
                 
-                # Get the UID.
-                try:
-                    uid = self.metagraph.hotkeys.index(info_i.hotkey)
+                # Get the UID we are evalling.
+                try: uid = self.metagraph.hotkeys.index(info_i.hotkey)
                 except ValueError:
                     logger.warning(f"Hotkey {info_i.hotkey} not found in metagraph hotkeys.")
                     continue
+                
                 # Load the slice for the current miner.
-                logger.info(f"\t\tLoading slice for hotkey: {info_i.hotkey} and uid: {uid}")
+                logger.info(f"\tEvalling slice from hotkey: {info_i.hotkey} and uid: {uid}")
                 slice_data = torch.load(
                     info_i.temp_file,
                     map_location=torch.device(self.model.device),
                     weights_only=True
                 )
-                # Determine the offset for page loading.
+                
+                # Load the dataset for this miner.
+                start_time = time.time()
                 offset_i = self.eval_window * self.hparams.window_length * self.hparams.window_speed
-                logger.info(f"\t\tSampling pages for evaluation with offset: {offset_i} and uid: {uid}")
-                # Sample pages for evaluation.
                 sampled_pages = random.sample(
                     await AsyncSubsetFineWebEdu2Loader.next_pages(
                         offset=offset_i,
@@ -219,45 +217,51 @@ class Validator:
                     ),
                     min( self.hparams.validator_pages_per_eval, self.hparams.validator_window_eval_size )
                 )
-                # Load the dataset.
-                logger.info(f"\t\tLoading dataset for evaluation")
+                logger.info(f"\t\tLoading pages: {[p[1] for p in sampled_pages]} for offset: {offset_i} and uid: {uid}")
                 eval_dataset = await AsyncSubsetFineWebEdu2Loader.create(
                     batch_size=self.config.actual_batch_size,
                     sequence_length=self.hparams.sequence_length,
                     pages_info = sampled_pages,
                     tokenizer=self.hparams.tokenizer
                 )
+                logger.info(f"\t\t\tLoaded pages in {time.time() - start_time} seconds")
+
+                
                 # Run the eval.
                 logger.info(f"\t\tRunning evaluation for uid: {uid}")
+                start_time = time()
                 self.model.zero_grad()
                 self.model.eval()
                 # Enable gradient computation
+                exhuasted_window = False
                 with torch.enable_grad():
-                    for batch in eval_dataset:
-                        input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
-                        labels = input_ids.clone()
-                        labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
-                        with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
-                            outputs = self.model(input_ids=input_ids, labels=labels)
-                        loss = outputs.loss
-                        loss.backward()
-                        if self.step_window != self.current_window:
-                            # Stop eval.
-                            break
-                        
+                    for idx, batch in enumerate(eval_dataset):
+                        # Randomly sample every sample_rate examples
+                        if random.random() < self.sample_rate:
+                            input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
+                            labels = input_ids.clone()
+                            labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
+                            with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
+                                outputs = self.model(input_ids=input_ids, labels=labels)
+                            loss = outputs.loss
+                            loss.backward()
+                            if self.step_window != self.current_window:
+                                exhuasted_window = True
+                                break
+                if exhuasted_window:
+                    self.sample_rate = max(0.0001, self.sample_rate * 0.9)
+                else:
+                    self.sample_rate = min(1, self.sample_rate * 1.1)
+                logger.info(f"\t\t\tRun eval on pages in {time.time() - start_time} seconds")
+
                 # Collect gradients for all parameters.
-                logger.info(f"\t\tCollecting gradients for all parameters: {uid}")
+                logger.info(f"\t\tComputing scores")
+                start_time = time.time()
                 gradients = {}
                 for name, param in self.model.named_parameters():
                     if param.grad is None:
                         continue
                     gradients[name] = param.grad.view(-1).clone().detach()
-
-                # Compute Fisher Information Matrix diagonal approximation (g_i^2).
-                logger.info(f"\t\tComputing Fisher Information Matrix diagonal approximation for uid: {uid}")
-                fisher_diagonal = {}
-                for name, grad in gradients.items():
-                    fisher_diagonal[name] = grad.pow(2)
                     
                 delta_L = 0.0 
                 for name, param in self.model.named_parameters():
@@ -272,7 +276,6 @@ class Validator:
 
                     # Extract and flatten the slice vector for the current parameter subset.
                     s = slice_data[name].view(-1).to(self.model.device)  # Shape: [num_params_in_subset]
-
                     # Compute the scaled slice vector:
                     # Since theta is the average of all slices, removing one slice adjusts the average.
                     # s_scaled = s_j / (M - 1), where s_j is the slice being removed.
@@ -286,23 +289,14 @@ class Validator:
                     # This represents the change to parameters when slice_i is removed from the average.
                     delta_theta = s_scaled - theta  # Shape: [num_params_in_subset]
 
-                    # # Compute the first-order term: g^T * Δθ
-                    # # Represents the linear approximation of loss change due to Δθ.
-                    # first_order = torch.nn.functional.cosine_similarity(g, delta_theta, dim=0).item()  # Scalar
-                    first_order = torch.dot(g, delta_theta).item()
-                    # delta_L += first_order
-
-                    # Compute the second-order term: 0.5 * Δθ^T * H * Δθ
-                    # Using the diagonal Hessian approximation: H ≈ diag(fisher_diagonal)
-                    # Represents the quadratic approximation of loss change due to Δθ.
-                    second_order = 0.5 * torch.dot(delta_theta.pow(2), fisher_diagonal[name][param_indices]).item()  # Scalar
+                    # Compute the cosine similarity between the delta_theta and the gradient g
+                    cosine_similarity = torch.nn.functional.cosine_similarity(delta_theta, gradients[name][param_indices], dim=0).item()
 
                     # Accumulate the importance score for the current slice.
-                    # ΔL ≈ g^T * Δθ + 0.5 * Δθ^T * H * Δθ
-                    delta_L += first_order # + second_order
+                    delta_L += cosine_similarity
 
                 # Assign the computed importance score to the corresponding UID.
-                logger.info(f"\t\tAssigning computed importance score to UID: {uid} with score {delta_L}")
+                logger.info(f"\t\t\tAssigning computed importance score to UID: {uid} with score {delta_L}")
 
                 # Clean up GPU memory
                 del slice_data
@@ -312,21 +306,21 @@ class Validator:
                 torch.cuda.empty_cache()
               
                 # Step 7: Normalize the scores as rewards and use them as weights.
-                logger.info(f"\tNormalizing scores to compute weights")
                 start_time = time.time()
                 self.loss_change[uid] = delta_L
-                self.scores[uid] = self.hparams.validator_moving_alpha * -delta_L + (1 - self.hparams.validator_moving_alpha) * self.scores[uid]
+                self.scores[uid] = (1 - self.hparams.validator_moving_alpha) * -delta_L + self.hparams.validator_moving_alpha * self.scores[uid]
                 # Apply softmax to normalize scores into weights.
                 # To ensure numerical stability, subtract the max before exponentiating.
                 if torch.any(self.scores != 0):
                     scores_nonzero = self.scores[self.scores != 0]
-                    max_score = torch.max(scores_nonzero)
-                    normalized_scores = torch.softmax((scores_nonzero - max_score) * self.hparams.validator_weights_temperature, dim=0)
-                    self.weights[self.scores != 0] = normalized_scores
-                logger.info(f"\t\tNormalized scores into weights in {time.time() - start_time} seconds")
+                    scores_nonzero = scores_nonzero[~torch.isnan(scores_nonzero)]  # Remove NaNs
+                    if len(scores_nonzero) > 0:
+                        max_score = torch.max(scores_nonzero)
+                        normalized_scores = torch.softmax((scores_nonzero - max_score) * self.hparams.validator_weights_temperature, dim=0)
+                        self.weights[self.scores != 0] = normalized_scores
 
                 # Step 8: Log the results if using Weights and Biases.
-                logger.info('\tWeights:')
+                logger.info('\t\t\tWeights:')
                 nonzero_scores = torch.nonzero(self.scores).squeeze()
                 nonzero_scores = [nonzero_scores] if nonzero_scores.numel() == 1 else nonzero_scores
                 if self.config.use_wandb:
@@ -340,8 +334,10 @@ class Validator:
                     moving_score = self.scores[uid].item()
                     weight = self.weights[uid].item()
                     step_score = self.loss_change[uid].item()
-                    logger.info(f"\t\tuid: {uid.item()}, loss_change: {step_score:.6f}, moving_score: {moving_score:.6f}, weight: {weight:.6f}")
+                    logger.info(f"\t\t\t\tuid: {uid.item()}, loss_change: {step_score:.6f}, moving_score: {moving_score:.6f}, weight: {weight:.6f}")
                     
+                logger.info(f"\t\tFinished evalling uid: {uid} in {time.time() - eval_start_time} seconds")
+
                 # Delete lingering files 
                 logger.info(f"\tCleaning space.")
                 start_time = time.time()
