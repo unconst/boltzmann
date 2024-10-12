@@ -239,10 +239,6 @@ class Miner:
                         if self.step_window != self.current_window:
                             exhuasted_window = True
                             break
-                if exhuasted_window:
-                    self.sample_rate = max(0.0001, self.sample_rate * 0.95)
-                else:
-                    self.sample_rate = min(1, self.sample_rate * 1.05)
 
                 # Apply step and clean memory.
                 if self.hparams.grad_clip:
@@ -258,9 +254,13 @@ class Miner:
                 total_time = time.time() - start_time
                 tokens_per_step = self.hparams.sequence_length * self.config.actual_batch_size * (full_steps + 1)
                 tokens_per_second =  tokens_per_step / total_time
-                logger.info(f"\t\tTotal steps: {idx}, Applied: {full_steps}, Rate: {full_steps/idx}, Sample Probability: {self.sample_rate}")
+                logger.info(f"\t\tTotal steps: {idx}, Applied: {full_steps}, Rate: {full_steps/(idx + 1)}, Sample Probability: {self.sample_rate}")
                 logger.info(f"\t\tLoss: {average_loss}, learning_rate: {self.scheduler.get_last_lr()[0]}")
                 logger.info(f"\t\tTraining completed in {total_time} seconds, Tokens per step: {tokens_per_step}, Tokens per second: {tokens_per_second}")
+                if exhuasted_window:
+                    self.sample_rate = max(0.0001, self.sample_rate * 0.95)
+                else:
+                    self.sample_rate = min(1, self.sample_rate * 1.05)
                 
                 # Wait until we are on a new window.
                 while self.current_window == self.step_window:
@@ -335,7 +335,7 @@ class Miner:
                 self.window_seeds[ self.block_to_window(self.current_block) ] = self.window_to_seed( self.block_to_window(self.current_block) )
                 self.current_window = self.block_to_window(self.current_block)
                 loop.call_soon_threadsafe(self.new_window_event.set)
-                logger.info(f"\t\tNew window: {self.current_window}")
+                logger.info(f"-- New window: {self.current_window} -- ")
         # Run listener with retry.
         while not self.stop_event.is_set():
             try:

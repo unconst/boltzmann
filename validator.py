@@ -396,7 +396,7 @@ class Validator:
                 self.window_seeds[ self.block_to_window(self.current_block) ] = self.window_to_seed( self.block_to_window(self.current_block) )
                 self.current_window = self.block_to_window(self.current_block)
                 loop.call_soon_threadsafe(self.new_window_event.set)
-                logger.info(f"\t\tNew window: {self.current_window}")
+                logger.info(f"-- New window: {self.current_window} -- ")
         # Run listener with retry.
         while not self.stop_event.is_set():
             try:
