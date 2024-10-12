@@ -103,6 +103,7 @@ class Validator:
         # Init model.
         logger.info('\n' + '-' * 40 + ' Hparams ' + '-' * 40)
         self.hparams = load_hparams()
+        torch.manual_seed(42); np.random.seed(42); random.seed(42)
         self.model = LlamaForCausalLM(config=self.hparams.model_config)
         self.model.to(self.config.device)
         self.model.eval()
@@ -180,6 +181,18 @@ class Validator:
                 slice_infos = slice_infos[self.eval_window]
                 logger.info(f"\t\tDownloaded {len(slice_infos)} slices for previous window: {self.eval_window} in {time.time() - start_time} seconds")
                 
+                # Step 2: Apply slices to the model from the previous window.
+                logger.info(f"\tApplying slices from previous window: {self.eval_window} to model.")
+                start_time = time.time()
+                eval_slices = await apply_slices_to_model(
+                    model=self.model,
+                    window=self.eval_window,  # Get files from previous window.
+                    seed=self.window_seeds[self.step_window],  # Use seed as the hash of the current window.
+                    compression=self.hparams.compression
+                )
+                applied_per_step = len(eval_slices)
+                logger.info(f"\t\tApplied {applied_per_step} slices from previous window: {self.eval_window} with seed: {self.window_seeds[self.step_window]} in {time.time() - start_time} seconds")
+                
                 indices = await get_indices_for_window(
                     model=self.model,
                     seed=self.window_to_seed(self.eval_window + 1),  # Seed index for the eval window.
@@ -222,7 +235,6 @@ class Validator:
                     tokenizer=self.hparams.tokenizer
                 )
                 logger.info(f"\t\t\tLoaded pages in {time.time() - start_time} seconds")
-
                 
                 # Run the eval.
                 logger.info(f"\t\tRunning evaluation for uid: {uid} with sample rate: {self.sample_rate}")
@@ -231,10 +243,12 @@ class Validator:
                 self.model.eval()
                 # Enable gradient computation
                 exhuasted_window = False
+                full_steps = 0
                 with torch.enable_grad():
                     for idx, batch in enumerate(eval_dataset):
                         # Randomly sample every sample_rate examples
                         if random.random() < self.sample_rate:
+                            full_steps += 1
                             input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
                             labels = input_ids.clone()
                             labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
@@ -245,6 +259,7 @@ class Validator:
                             if self.step_window != self.current_window:
                                 exhuasted_window = True
                                 break
+                logger.info(f"\t\t\tTotal steps: {idx}, Applied: {full_steps}, Rate: {full_steps/(idx + 1)}, Sample Probability: {self.sample_rate}")
                 logger.info(f"\t\t\tFinished running eval with sample rate: {self.sample_rate} on pages in {time.time() - start_time} seconds")
                 if exhuasted_window:
                     self.sample_rate = max(0.0001, self.sample_rate * 0.99)
@@ -259,38 +274,29 @@ class Validator:
                     if param.grad is None:
                         continue
                     gradients[name] = param.grad.view(-1).clone().detach()
-                    
+                                        
                 delta_L = 0.0 
                 for name, param in self.model.named_parameters():
                     if param.grad is None:
                         continue  # Skip parameters without gradients
-
                     # Retrieve the indices for the current parameter subset.
                     param_indices = indices[name].to(self.model.device)
-
                     # Extract the gradient vector for the current parameter subset.
                     g = gradients[name][param_indices].to(self.model.device)  # Shape: [num_params_in_subset]
-
                     # Extract and flatten the slice vector for the current parameter subset.
                     s = slice_data[name].view(-1).to(self.model.device)  # Shape: [num_params_in_subset]
-                    # Compute the scaled slice vector:
-                    # Since theta is the average of all slices, removing one slice adjusts the average.
-                    # s_scaled = s_j / (M - 1), where s_j is the slice being removed.
-                    s_scaled = s / (len(slice_infos) - 1)  # Shape: [num_params_in_subset]
-
                     # Retrieve the current parameter values for the subset.
                     theta = param.data.view(-1)[param_indices]  # Shape: [num_params_in_subset]
-
-                    # Compute the perturbation vector:
-                    # Δθ = s_scaled - theta
-                    # This represents the change to parameters when slice_i is removed from the average.
-                    delta_theta = s_scaled - theta  # Shape: [num_params_in_subset]
-
-                    # Compute the cosine similarity between the delta_theta and the gradient g
+                    # Calculate the change in parameter values.
+                    delta_theta = (theta - s) / (len(slice_infos) - 1)
+                    # Compute the cosine similarity between delta_theta and the gradient vector.
                     cosine_similarity = torch.nn.functional.cosine_similarity(delta_theta, gradients[name][param_indices], dim=0).item()
-
                     # Accumulate the importance score for the current slice.
-                    delta_L += cosine_similarity
+                    param_subset = param.data.view(-1)[param_indices]
+                    # Calculate the weight of the parameter subset.
+                    weight = param_subset.norm().item() + 1e-8
+                    # Update the total importance score.
+                    delta_L += weight * cosine_similarity
 
                 # Assign the computed importance score to the corresponding UID.
                 logger.info(f"\t\t\tAssigning computed importance score to UID: {uid} with score {delta_L}")
@@ -309,9 +315,9 @@ class Validator:
                 # If a score is NaN, set it to zero
                 self.scores[torch.isnan(self.scores)] = 0
                 # Get all valid score value indices.
-                valid_score_indices = torch.nonzero((self.scores != 0) & (~torch.isnan(self.scores))).squeeze()
+                valid_score_indices = torch.nonzero((self.scores != 0) & (~torch.isnan(self.scores))).squeeze().view(-1, 1)
                 # Get all valid score values.
-                valid_scores = self.scores[valid_score_indices]
+                valid_scores = self.scores[valid_score_indices].view(-1, 1) if valid_score_indices.dim() == 0 else self.scores[valid_score_indices]
                 if len(valid_scores) > 0:
                     max_score = torch.max(valid_scores)
                     normalized_scores = torch.softmax((valid_scores - max_score) * self.hparams.validator_weights_temperature, dim=0)
@@ -337,18 +343,6 @@ class Validator:
                 await delete_files_before_window( window_max = self.current_window - self.hparams.max_history )
                 logger.info(f"\t\tFinished cleaning space in {time.time() - start_time} seconds.")
                 
-                # Step 2: Apply slices to the model from the previous window.
-                logger.info(f"\tApplying slices from previous window: {self.eval_window} to model.")
-                start_time = time.time()
-                eval_slices = await apply_slices_to_model(
-                    model=self.model,
-                    window=self.eval_window,  # Get files from previous window.
-                    seed=self.window_seeds[self.step_window],  # Use seed as the hash of the current window.
-                    compression=self.hparams.compression
-                )
-                applied_per_step = len(eval_slices)
-                logger.info(f"\t\tApplied {applied_per_step} slices from previous window: {self.eval_window} with seed: {self.window_seeds[self.step_window]} in {time.time() - start_time} seconds")
-
                 # Ensure window is over.
                 print (f'\nGlobal step completed in {time.time() - step_start_time} seconds\n')
                 while self.current_window == self.step_window: await asyncio.sleep(0.1)
