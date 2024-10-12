@@ -302,36 +302,32 @@ class Validator:
               
                 # Step 7: Normalize the scores as rewards and use them as weights.
                 start_time = time.time()
+                logger.info('\t\t\tWeights:')
                 self.loss_change[uid] = delta_L
                 self.scores[uid] = (1 - self.hparams.validator_moving_alpha) * -delta_L + self.hparams.validator_moving_alpha * self.scores[uid]
-                # Apply softmax to normalize scores into weights.
-                # To ensure numerical stability, subtract the max before exponentiating.
-                if torch.any(self.scores != 0):
-                    scores_nonzero = self.scores[self.scores != 0]
-                    scores_nonzero = scores_nonzero[~torch.isnan(scores_nonzero)]  # Remove NaNs
-                    if len(scores_nonzero) > 0:
-                        max_score = torch.max(scores_nonzero)
-                        normalized_scores = torch.softmax((scores_nonzero - max_score) * self.hparams.validator_weights_temperature, dim=0)
-                        self.weights[self.scores != 0] = normalized_scores
-
-                # Step 8: Log the results if using Weights and Biases.
-                logger.info('\t\t\tWeights:')
-                nonzero_scores = torch.nonzero(self.scores).squeeze()
-                nonzero_scores = [nonzero_scores] if nonzero_scores.numel() == 1 else nonzero_scores
+                # If a score is NaN, set it to zero
+                self.scores[torch.isnan(self.scores)] = 0
+                # Get all valid score value indices.
+                valid_score_indices = torch.nonzero((self.scores != 0) & (~torch.isnan(self.scores))).squeeze()
+                # Get all valid score values.
+                valid_scores = self.scores[valid_score_indices]
+                if len(valid_scores) > 0:
+                    max_score = torch.max(valid_scores)
+                    normalized_scores = torch.softmax((valid_scores - max_score) * self.hparams.validator_weights_temperature, dim=0)
+                    self.weights[valid_score_indices] = normalized_scores
                 if self.config.use_wandb:
-                    for uid in nonzero_scores:
+                    for uid in valid_score_indices:
                         wandb.log({
                             f"loss_change/{uid.item()}": self.loss_change[uid].item(),
                             f"moving_scores/{uid.item()}": self.scores[uid].item(),
                             f"weights/{uid.item()}": self.weights[uid].item(),
                             'self.sample_rate': self.sample_rate,
                         })
-                for uid in nonzero_scores:
+                for uid in valid_score_indices:
                     moving_score = self.scores[uid].item()
                     weight = self.weights[uid].item()
                     step_score = self.loss_change[uid].item()
                     logger.info(f"\t\t\t\tuid: {uid.item()}, loss_change: {step_score:.6f}, moving_score: {moving_score:.6f}, weight: {weight:.6f}")
-                    
                 logger.info(f"\t\tFinished evalling uid: {uid} in {time.time() - eval_start_time} seconds")
 
                 # Delete lingering files 
