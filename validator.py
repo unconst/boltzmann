@@ -160,6 +160,7 @@ class Validator:
                 logger.info('\n' + '-' * 40 + f' Step: {self.global_step} ' + '-' * 40)
                 logger.info(f"Step: {self.global_step}, Window: {self.current_window}, "
                             f"Block: {self.current_block}, Time: {int(time.time())}")
+                step_start_time = time.time()
                 self.global_step += 1
                 self.step_window = self.current_window
                 self.eval_window = self.current_window - 2
@@ -349,6 +350,7 @@ class Validator:
                 logger.info(f"\t\tApplied {applied_per_step} slices from previous window: {self.eval_window} with seed: {self.window_seeds[self.step_window]} in {time.time() - start_time} seconds")
 
                 # Ensure window is over.
+                print (f'\nGlobal step completed in {time.time() - step_start_time} seconds\n')
                 while self.current_window == self.step_window: await asyncio.sleep(0.1)
                                         
                 # Set temperatured weights on the chain.
