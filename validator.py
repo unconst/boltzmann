@@ -160,12 +160,12 @@ class Validator:
             try:
                 # Start step.
                 logger.info('\n' + '-' * 40 + f' Step: {self.global_step} ' + '-' * 40)
-                logger.info(f"Step: {self.global_step}, Window: {self.current_window}, "
-                            f"Block: {self.current_block}, Time: {int(time.time())}")
                 step_start_time = time.time()
                 self.global_step += 1
                 self.step_window = self.current_window
                 self.eval_window = self.current_window - 2
+                logger.info(f"Step: {self.global_step}, Step Window: {self.step_window}, Eval Window: {self.eval_window}"
+                            f"Block: {self.current_block}, Time: {int(step_start_time)}")
                 
                 # Download the slices for the window.
                 logger.info(f"\tDownloading slices from previous window: { self.eval_window }")
