@@ -1,6 +1,6 @@
 {
     "epoch_length": 250000,
-    "compression": 1,
+    "compression": 10,
     "sequence_length": 2048,
     "tokenizer_name": "TinyLlama/TinyLlama_v1.1",
     "num_hidden_layers": 16,
