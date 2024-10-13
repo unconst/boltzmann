@@ -212,11 +212,7 @@ class Validator:
                 
                 # Load the slice for the current miner.
                 logger.info(f"\tEvalling slice from hotkey: {info_i.hotkey} and uid: {uid}")
-                slice_data = torch.load(
-                    info_i.temp_file,
-                    map_location=torch.device(self.model.device),
-                    weights_only=True
-                )
+                slice_data = await get_slices( info_i.temp_file, self.model.device )
                 
                 # Load the dataset for this miner.
                 start_time = time.time()
@@ -295,7 +291,7 @@ class Validator:
                     # Accumulate the importance score for the current slice.
                     param_subset = param.data.view(-1)[param_indices]
                     # Calculate the weight of the parameter subset.
-                    weight = g.norm().item() + 1e-8
+                    weight = param_subset.norm().item() + 1e-8
                     # Update the total importance score.
                     delta_L += weight * cosine_similarity
 
@@ -324,18 +320,18 @@ class Validator:
                     normalized_scores = torch.softmax((valid_scores - max_score) * self.hparams.validator_weights_temperature, dim=0)
                     self.weights[valid_score_indices] = normalized_scores
                 if self.config.use_wandb:
-                    for uid in valid_score_indices:
+                    for uid_i in valid_score_indices:
                         wandb.log({
-                            f"loss_change/{uid.item()}": self.loss_change[uid].item(),
-                            f"moving_scores/{uid.item()}": self.scores[uid].item(),
-                            f"weights/{uid.item()}": self.weights[uid].item(),
+                            f"loss_change/{uid_i.item()}": self.loss_change[uid_i].item(),
+                            f"moving_scores/{uid_i.item()}": self.scores[uid_i].item(),
+                            f"weights/{uid_i.item()}": self.weights[uid_i].item(),
                             'self.sample_rate': self.sample_rate,
                         })
-                for uid in valid_score_indices:
-                    moving_score = self.scores[uid].item()
-                    weight = self.weights[uid].item()
-                    step_score = self.loss_change[uid].item()
-                    logger.info(f"\t\t\t\tuid: {uid.item()}, loss_change: {step_score:.6f}, moving_score: {moving_score:.6f}, weight: {weight:.6f}")
+                for uid_i in valid_score_indices:
+                    moving_score = self.scores[uid_i].item()
+                    weight = self.weights[uid_i].item()
+                    step_score = self.loss_change[uid_i].item()
+                    logger.info(f"\t\t\t\tuid: {uid_i.item()}, loss_change: {step_score:.6f}, moving_score: {moving_score:.6f}, weight: {weight:.6f}")
                 logger.info(f"\t\tFinished evalling uid: {uid} in {time.time() - eval_start_time} seconds")
 
                 # Delete lingering files 
@@ -345,19 +341,19 @@ class Validator:
                 logger.info(f"\t\tFinished cleaning space in {time.time() - start_time} seconds.")
                 
                 # Ensure window is over.
-                print (f'\nGlobal step completed in {time.time() - step_start_time} seconds\n')
+                logger.info(f'\nGlobal step completed in {time.time() - step_start_time} seconds\n')
                 while self.current_window == self.step_window: await asyncio.sleep(0.1)
                                         
                 # Set temperatured weights on the chain.
-                if self.current_window % 100 == 0: 
-                    self.subtensor.set_weights(
-                        wallet = self.wallet,
-                        netuid = self.config.netuid,
-                        uids = self.metagraph.uids,
-                        weights = self.weights[ self.metagraph.uids ],
-                        wait_for_inclusion = False,
-                        wait_for_finalization = False,
-                    )
+                # if self.current_window % 100 == 0: 
+                #     self.subtensor.set_weights(
+                #         wallet = self.wallet,
+                #         netuid = self.config.netuid,
+                #         uids = self.metagraph.uids,
+                #         weights = self.weights[ self.metagraph.uids ],
+                #         wait_for_inclusion = False,
+                #         wait_for_finalization = False,
+                #     )
                         
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:

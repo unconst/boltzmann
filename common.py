@@ -61,6 +61,16 @@ asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 # Define a semaphore to limit concurrent downloads (adjust as needed)
 semaphore = asyncio.Semaphore(1000)
 
+async def get_slices( filename:str, device:str ) -> Dict[str, torch.Tensor]:
+    # Attempt to acquire the lock with a timeout of 1 second.
+    lock: FileLock = FileLock(f"{filename}.lock")
+    with lock.acquire(timeout=1):
+        pass
+    return torch.load(
+        filename,
+        map_location=torch.device(device),
+        weights_only = True,
+    )
 
 async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, compression: int) -> List[str]:
     """
@@ -87,21 +97,8 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
     # Iterate over each slice file and apply it to the model.
     for file_i in slice_files:
         # Create a file lock to ensure exclusive access to the slice file.
-        lock: FileLock = FileLock(f"{file_i}.lock")
         try:
-            # Attempt to acquire the lock with a timeout of 1 second.
-            lock.acquire(timeout=1)
-            try:
-                # Load the slice state from the file into a dictionary.
-                slice_i: Dict[str, torch.Tensor] = torch.load(
-                    file_i,
-                    map_location=torch.device(model.device),
-                    weights_only = True,
-                )
-            finally:
-                # Release the lock after loading.
-                lock.release()
-
+            slice_i = await get_slices( file_i, model.device )
             for name, param in model.named_parameters():
                 if name not in indices_dict or name not in slice_i:
                     continue
