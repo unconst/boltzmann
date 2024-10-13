@@ -111,7 +111,7 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
                 slices_per_param[name] += 1
                 del values
             del slice_i
-        except FileLock.Timeout:
+        except Timeout:
             # The lock could not be acquired within the timeout.
             logger.error(f"Timeout occurred while trying to acquire lock on {file_i}")
             continue  
@@ -123,7 +123,7 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
         if name not in slices_per_param or name not in indices_dict or slices_per_param[name] == 0:
             continue
         param_indices = indices_dict[name].to(param.data.device)
-        avg_param = param_sums[name].view(-1)[param_indices] / (slices_per_param[name] + 1)
+        avg_param = param_sums[name].view(-1)[param_indices] / slices_per_param[name]
         avg_param = avg_param.to(param.data.dtype)
         avg_param = avg_param.to(param.data.device)
         param.data.view(-1)[param_indices] = avg_param.clone()
