@@ -94,33 +94,39 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
     # Dictionary to keep track of the number of slices applied per parameter.
     slices_per_param = {name: 0 for name, _ in model.named_parameters()}
 
-    # Iterate over each slice file and apply it to the model.
+    # Dictionary to accumulate the sum of values for each parameter.
+    param_sums = {name: torch.zeros_like(param.data) for name, param in model.named_parameters()}
+
+    # Iterate over each slice file and compute the sum of values.
     for file_i in slice_files:
         # Create a file lock to ensure exclusive access to the slice file.
         try:
-            slice_i = await get_slices( file_i, model.device )
+            slice_i = await get_slices(file_i, model.device)
             for name, param in model.named_parameters():
                 if name not in indices_dict or name not in slice_i:
                     continue
-                values = slice_i[name].to(model.device)
-                param_indices = indices_dict[name].to(model.device)
-                param.data.view(-1)[param_indices] += values
+                values = slice_i[name].to(param.data.device)
+                param_indices = indices_dict[name].to(param.data.device)
+                param_sums[name].view(-1)[param_indices] += values
                 slices_per_param[name] += 1
                 del values
             del slice_i
-        except Timeout:
+        except FileLock.Timeout:
             # The lock could not be acquired within the timeout.
             logger.error(f"Timeout occurred while trying to acquire lock on {file_i}")
             continue  
         except Exception as e:
             logger.exception(f"Error applying slice from {file_i}: {e}")
 
-    # Average the parameters by the number of slices applied.
+    # Apply the average to the parameters.
     for name, param in model.named_parameters():
         if name not in slices_per_param or name not in indices_dict or slices_per_param[name] == 0:
             continue
-        param_indices = indices_dict[name].to(model.device)
-        param.data.view(-1)[param_indices] /= (slices_per_param[name] + 1)
+        param_indices = indices_dict[name].to(param.data.device)
+        avg_param = param_sums[name].view(-1)[param_indices] / (slices_per_param[name] + 1)
+        avg_param = avg_param.to(param.data.dtype)
+        avg_param = avg_param.to(param.data.device)
+        param.data.view(-1)[param_indices] = avg_param.clone()
 
     # Return the list of the files applied.
     return slice_files

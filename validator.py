@@ -182,18 +182,6 @@ class Validator:
                 slice_infos = slice_infos[self.eval_window]
                 logger.info(f"\t\tDownloaded {len(slice_infos)} slices for previous window: {self.eval_window} in {time.time() - start_time} seconds")
                 
-                # Step 2: Apply slices to the model from the previous window.
-                logger.info(f"\tApplying slices from previous window: {self.eval_window} to model.")
-                start_time = time.time()
-                eval_slices = await apply_slices_to_model(
-                    model=self.model,
-                    window=self.eval_window,  # Get files from previous window.
-                    seed=self.window_seeds[self.step_window],  # Use seed as the hash of the current window.
-                    compression=self.hparams.compression
-                )
-                applied_per_step = len(eval_slices)
-                logger.info(f"\t\tApplied {applied_per_step} slices from previous window: {self.eval_window} with seed: {self.window_seeds[self.step_window]} in {time.time() - start_time} seconds")
-                
                 indices = await get_indices_for_window(
                     model=self.model,
                     seed=self.window_to_seed(self.eval_window + 1),  # Seed index for the eval window.
@@ -285,13 +273,11 @@ class Validator:
                     # Retrieve the current parameter values for the subset.
                     theta = param.data.view(-1)[param_indices]  # Shape: [num_params_in_subset]
                     # Calculate the change in parameter values.
-                    delta_theta = (theta - s) / (len(slice_infos) - 1)
+                    delta_theta = theta - s
                     # Compute the cosine similarity between delta_theta and the gradient vector.
                     cosine_similarity = torch.nn.functional.cosine_similarity(delta_theta, gradients[name][param_indices], dim=0).item()
-                    # Accumulate the importance score for the current slice.
-                    param_subset = param.data.view(-1)[param_indices]
                     # Calculate the weight of the parameter subset.
-                    weight = param_subset.norm().item() + 1e-8
+                    weight = param.data.view(-1)[param_indices].norm().item() + 1e-8
                     # Update the total importance score.
                     delta_L += weight * cosine_similarity
 
@@ -333,6 +319,18 @@ class Validator:
                     step_score = self.loss_change[uid_i].item()
                     logger.info(f"\t\t\t\tuid: {uid_i.item()}, loss_change: {step_score:.6f}, moving_score: {moving_score:.6f}, weight: {weight:.6f}")
                 logger.info(f"\t\tFinished evalling uid: {uid} in {time.time() - eval_start_time} seconds")
+                
+                # Step 2: Apply slices to the model from the previous window.
+                logger.info(f"\tApplying slices from previous window: {self.eval_window} to model.")
+                start_time = time.time()
+                eval_slices = await apply_slices_to_model(
+                    model=self.model,
+                    window=self.eval_window,  # Get files from previous window.
+                    seed=self.window_seeds[self.step_window],  # Use seed as the hash of the current window.
+                    compression=self.hparams.compression
+                )
+                applied_per_step = len(eval_slices)
+                logger.info(f"\t\tApplied {applied_per_step} slices from previous window: {self.eval_window} with seed: {self.window_seeds[self.step_window]} in {time.time() - start_time} seconds")
 
                 # Delete lingering files 
                 logger.info(f"\tCleaning space.")
@@ -343,18 +341,7 @@ class Validator:
                 # Ensure window is over.
                 logger.info(f'\nGlobal step completed in {time.time() - step_start_time} seconds\n')
                 while self.current_window == self.step_window: await asyncio.sleep(0.1)
-                                        
-                # Set temperatured weights on the chain.
-                # if self.current_window % 100 == 0: 
-                #     self.subtensor.set_weights(
-                #         wallet = self.wallet,
-                #         netuid = self.config.netuid,
-                #         uids = self.metagraph.uids,
-                #         weights = self.weights[ self.metagraph.uids ],
-                #         wait_for_inclusion = False,
-                #         wait_for_finalization = False,
-                #     )
-                        
+                                                                
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
                 logger.info("Training interrupted by user. Stopping the run.")

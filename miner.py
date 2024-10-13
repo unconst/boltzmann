@@ -306,7 +306,8 @@ class Miner:
                         "steps_per_second": steps_per_second,
                         "sample_rate": self.sample_rate,
                     })
-                print (f'\nGlobal step completed in {seconds_per_step} seconds\n')
+                    
+                logger.info(f'\nGlobal step completed in {seconds_per_step} seconds\n')
                 
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
