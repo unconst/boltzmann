@@ -22,6 +22,7 @@ import uuid
 import fcntl
 import torch
 import uvloop
+import logging
 import hashlib
 import asyncio
 import tempfile
@@ -30,20 +31,37 @@ import numpy as np
 import aiobotocore
 import bittensor as bt
 import botocore.config
-from loguru import logger
 from typing import List, Dict
 from dotenv import dotenv_values
 from types import SimpleNamespace
-from aiobotocore.session import get_session
+from rich.logging import RichHandler
 from filelock import FileLock, Timeout
+from aiobotocore.session import get_session
+from rich.highlighter import NullHighlighter
 
 # Configure loguru logger
-logger.remove()
-logger.add(sys.stderr, format="<level>{message}</level>", level="INFO")
+FORMAT = "%(message)s"
+logging.basicConfig( 
+    level=logging.INFO, 
+    format=FORMAT, 
+    datefmt="[%X]", 
+    handlers=[
+        RichHandler(
+            markup=True, 
+            rich_tracebacks=True, 
+            highlighter=NullHighlighter(),
+            show_level=False,
+            show_time=False,
+            show_path=False
+        )
+    ]
+)
+logger = logging.getLogger("rich")
+logger.setLevel(logging.INFO)
 def debug():
-    logger.add(sys.stderr, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>", level="DEBUG")
+    logger.setLevel(logging.DEBUG)
 def trace():
-    logger.add(sys.stderr, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>", level="TRACE")
+    logger.setLevel(logging.TRACE)
 
 # Load environment variables
 env_config = {**dotenv_values(".env"), **os.environ}
@@ -61,6 +79,20 @@ asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 # Define a semaphore to limit concurrent downloads (adjust as needed)
 semaphore = asyncio.Semaphore(1000)
 
+async def load_slices( filename: str, device: str ) -> Dict[ str, torch.Tensor ]:
+    # # Create a file lock to ensure exclusive access to the slice file.
+    lock: FileLock = FileLock(f"{filename}.lock")
+    # # Attempt to acquire the lock with a timeout of 1 second.
+    with lock.acquire(timeout=2):
+        pass
+    # Load the slice state from the file into a dictionary.
+    slices: Dict[str, torch.Tensor] = torch.load(
+        filename,
+        map_location=torch.device(device),
+        weights_only = True,
+    )
+    # Return slices after load.
+    return slices
 
 async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, compression: int) -> List[str]:
     """
@@ -86,22 +118,8 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
 
     # Iterate over each slice file and apply it to the model.
     for file_i in slice_files:
-        # Create a file lock to ensure exclusive access to the slice file.
-        lock: FileLock = FileLock(f"{file_i}.lock")
         try:
-            # Attempt to acquire the lock with a timeout of 1 second.
-            lock.acquire(timeout=1)
-            try:
-                # Load the slice state from the file into a dictionary.
-                slice_i: Dict[str, torch.Tensor] = torch.load(
-                    file_i,
-                    map_location=torch.device(model.device),
-                    weights_only = True,
-                )
-            finally:
-                # Release the lock after loading.
-                lock.release()
-
+            slice_i = await load_slices( file_i, device = model.device )
             for name, param in model.named_parameters():
                 if name not in indices_dict or name not in slice_i:
                     continue
