@@ -50,7 +50,7 @@ class Validator:
     @staticmethod
     def config():
         parser = argparse.ArgumentParser(description='Validator script')
-        parser.add_argument('--project', type=str, default='QZWXEC', help='Optional wandb project name')
+        parser.add_argument('--project', type=str, default='aesop2', help='Optional wandb project name')
         parser.add_argument('--netuid', type=int, default=220, help='Bittensor network UID.')
         parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
         parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
@@ -103,7 +103,9 @@ class Validator:
         # Init model.
         logger.info('\n' + '-' * 40 + ' Hparams ' + '-' * 40)
         self.hparams = load_hparams()
-        self.model = LlamaForCausalLM(config=self.hparams.model_config)
+        torch.manual_seed(42); np.random.seed(42); random.seed(42)
+        #self.model = LlamaForCausalLM(config=self.hparams.model_config)
+        self.model = LlamaForCausalLM.from_pretrained('TinyLlama/TinyLlama_v1.1')
         self.model.to(self.config.device)
         self.model.eval()
         
@@ -123,9 +125,11 @@ class Validator:
         self.window_seeds = {self.current_window: self.window_to_seed( self.current_window) }
         self.block_event = asyncio.Event()
         self.new_window_event = asyncio.Event()
-        self.stop_event = asyncio.Event()       
+        self.stop_event = asyncio.Event()     
+        self.step_scores = torch.zeros( 256, dtype = torch.float32 ) 
         self.scores = torch.zeros( 256, dtype = torch.float32 ) 
         self.weights = torch.zeros( 256, dtype = torch.float32 ) 
+        self.sample_rate = 1.0
         print ( self.hparams )
         
     async def update(self):
@@ -140,7 +144,7 @@ class Validator:
             self.buckets = next_buckets                              # Update self.buckets with next_buckets
             for idx, hotkey in enumerate(self.metagraph.hotkeys):    # Iterate over current metagraph hotkeys
                 if hotkey != nxt_meta.hotkeys[idx]:                  # Check if hotkey has changed in the new metagraph
-                    self.scores[idx] = 0                            # Reset rewards for the changed hotkey
+                    self.scores[idx] = 0                             # Reset rewards for the changed hotkey
                     self.weights[idx] = 0                            # Reset weights for the changed hotkey
             self.metagraph = nxt_meta                                # Update self.metagraph with new_metagraph
             await asyncio.sleep(60)                                  # Sleep for 60 seconds before the next iteration
@@ -152,248 +156,154 @@ class Validator:
         self.listener = threading.Thread(target=self.block_listener, args=(self.loop,), daemon=True).start()
 
         while True:
-            
             try:
-                # Start step.
-                logger.info('\n' + '-' * 40 + f' Step: {self.global_step} ' + '-' * 40)
-                logger.info(f"Step: {self.global_step}, Window: {self.current_window}, "
-                            f"Block: {self.current_block}, Time: {int(time.time())}")
-                self.global_step += 1
-                self.step_window = self.current_window
-                self.eval_window = self.current_window - 2
+                # Get the window we are evalling.
+                eval_window = self.current_window - 1
                 
-                # Download the slices for the window.
-                logger.info(f"\tDownloading slices from previous window: { self.eval_window }")
-                start_time = time.time()
-                slice_infos = await download_slices_for_buckets_and_windows(
-                    buckets=self.buckets,
-                    windows=[self.eval_window]
+                # Download the state for the eval window.
+                await download_slices_for_buckets_and_windows(
+                    buckets = self.buckets,
+                    windows = [ eval_window ],
+                    key = 'state'
                 )
-                # If there are no slices to eval, wait until the next window then start again.
-                if self.eval_window not in slice_infos or len(slice_infos[self.eval_window]) == 0:
-                    print ('\t\tNo slices to download, waiting for next window...')
-                    while self.current_window == self.step_window: await asyncio.sleep(0.1)
+                logger.info(f"{eval_window}: Downloaded the state for the eval window: {eval_window} with current: {self.current_window}")
+                
+                # Download the delta for the eval window.
+                eval_slices = await download_slices_for_buckets_and_windows(
+                    buckets = self.buckets,
+                    windows = [ eval_window ],
+                    key = 'delta'
+                ) 
+                logger.info(f"{eval_window}: Downloaded the delta from the eval window: {eval_window} with current: {self.current_window}")
+                
+                # Check for slices.
+                if len(list(eval_slices.keys())) == 0:
+                    logger.info(f"{eval_window}: No slices to eval, continue ...")
+                    while self.current_window == eval_window: 
+                        await asyncio.sleep(0.1)
                     continue
-                slice_infos = slice_infos[self.eval_window]
-                logger.info(f"\t\tDownloaded {len(slice_infos)} slices for previous window: {self.eval_window} in {time.time() - start_time} seconds")
+                logger.info(f"{eval_window}: Found {len(eval_slices[ eval_window ])} deltas for {eval_window}")
                 
-                # Step 3: Load the slices and pages for each.
-                logger.info(f"\tLoading slices from previous window: {self.eval_window}")
-                uids_to_eval = []
-                slices_to_eval = []
-                pages_to_eval = []
-                start_time = time.time()
-                for info_i in slice_infos:
-                    try:
-                        uid = self.metagraph.hotkeys.index(info_i.hotkey)
-                    except ValueError:
-                        logger.warning(f"Hotkey {info_i.hotkey} not found in metagraph hotkeys.")
-                        continue
-                    uids_to_eval.append(uid)
-                    # Load the slice for the current miner.
-                    slice_data = torch.load(
-                        info_i.temp_file,
-                        map_location=torch.device(self.model.device),
-                        weights_only=True
-                    )
-                    slices_to_eval.append(slice_data)
-                    # Determine the offset for page loading.
-                    offset_i = self.eval_window * self.hparams.window_length * self.hparams.window_speed
-                    # Sample pages for evaluation.
-                    sampled_pages = random.sample(
-                        await AsyncSubsetFineWebEdu2Loader.next_pages(
-                            offset=offset_i,
-                            n_pages=self.hparams.validator_window_eval_size,
-                            seed=uid
-                        ),
-                        self.hparams.validator_pages_per_eval
-                    )
-                    pages_to_eval.extend(sampled_pages)
-                logger.info(f"\t\tLoaded {len(slices_to_eval)} slices for uids: {uids_to_eval} from previous window: {self.eval_window} in {time.time() - start_time} seconds")
-
-                # Step 4: Load the full eval dataset from all the pages.
-                logger.info(f"\tDownloading {len(pages_to_eval)} pages for uids: {uids_to_eval}")
-                random.shuffle(pages_to_eval)  # Shuffle to ensure randomness in evaluation.
-                start_time = time.time()
-                eval_dataset = await AsyncSubsetFineWebEdu2Loader.create(
-                    batch_size=self.config.actual_batch_size,
-                    sequence_length=self.hparams.sequence_length,
-                    pages_info=pages_to_eval,
-                    tokenizer=self.hparams.tokenizer
+                # Applied the model state state for the eval window.
+                await apply_slices_to_model( 
+                    model = self.model, 
+                    window = eval_window,
+                    seed = eval_window,
+                    compression = self.hparams.compression,
+                    key = 'state',
                 )
-                logger.info(f"\t\tFinished downloading {len(pages_to_eval)} pages in {time.time() - start_time} seconds")
+                logger.info(f"{eval_window}: Applied the state for the eval window: {eval_window}")
+                
+                # Attain the indicies for the eval window.
+                indices = await get_indices_for_window(
+                    model = self.model,
+                    seed = eval_window,
+                    compression = self.hparams.compression
+                ) 
+                logger.info(f"{eval_window}: Attained the indices for the eval window: {eval_window}")
+                               
+                # Select the random slice to eval.
+                eval_slice_info = random.choice( eval_slices[ eval_window ] )                
+                logger.info(f"{eval_window}: Selected {eval_slice_info} to eval this window.")
 
-                # Step 5: Compute gradients on this dataset.
-                logger.info(f"\tComputing gradients for {len(pages_to_eval)} pages")
-                start_time = time.time()
+                # Attain the UID of this slice.                
+                try: eval_uid = self.metagraph.hotkeys.index(eval_slice_info.hotkey)
+                except ValueError:
+                    logger.warning(f"Hotkey {eval_slice_info.hotkey} not found in metagraph hotkeys.")
+                    continue                                
+                logger.info(f"{eval_window}: Evaluating UID: {eval_uid}")
+                
+                # Load the slice data for this UID
+                eval_slice_data = await get_slices( eval_slice_info.temp_file, self.model.device )                
+                logger.info(f"{eval_window}: Loaded the slice data.")
+
+                # Download the eval page for this uid.,
+                eval_page = await AsyncSubsetFineWebEdu2Loader.next_pages(
+                    offset = eval_window,
+                    n_pages = 1,
+                    seed = eval_uid
+                )                
+                eval_dataset = await AsyncSubsetFineWebEdu2Loader.create(
+                    batch_size = self.config.actual_batch_size,
+                    sequence_length = self.hparams.sequence_length,
+                    pages_info = eval_page,
+                    tokenizer = self.hparams.tokenizer
+                )                
+                logger.info(f"{eval_window}: Downloaded the eval page: {eval_page[0][1]} for this window.")
+  
+                # Accumulate gradients from this page.
                 self.model.zero_grad()
                 self.model.eval()
-                # Enable gradient computation
+                total_loss = 0
                 with torch.enable_grad():
-                    for batch in eval_dataset:
+                    for idx, batch in enumerate(eval_dataset):
                         input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
                         labels = input_ids.clone()
                         labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
-                        outputs = self.model(input_ids=input_ids, labels=labels)
-                        loss = outputs.loss
-                        loss.backward()
-                        # Check if a new window has started to possibly abort early.
-                        if self.current_window != self.step_window:
-                            logger.info(f'\t\tBreak eval on new window: {self.current_window} > {self.step_window}')
-                            break
-                logger.info(f"\t\tFinished computing gradients in {time.time() - start_time} seconds")
+                        with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
+                            outputs = self.model(input_ids=input_ids, labels=labels)
+                        total_loss += outputs.loss.item()
+                        outputs.loss.backward()
+                logger.info(f"{eval_window}: Accumulated gradients with loss: {total_loss} over over: {idx} steps.")
 
-                # Step 6: Compute slice importance using second-order approximation with Fisher Information Matrix.
-                logger.info(f"\tComputing slice importance scores using second-order approximation")
-                start_time = time.time()
-                indices = await get_indices_for_window(
-                    model=self.model,
-                    seed=self.window_to_seed(self.eval_window + 1),  # Seed index for the eval window.
-                    compression=self.hparams.compression
-                )
+                # Compute the score for this slice.
+                score = 0.0 
+                for i, (name_i, param_i) in enumerate( self.model.named_parameters() ):
+                    if param_i.grad is None: continue  # Skip parameters without gradients
+                    idxs_i = indices[name_i].to(self.model.device)
+                    grad_i = param_i.grad.view(-1).clone()[idxs_i].to(self.model.device) 
+                    slice_i = eval_slice_data[name_i].view(-1).to(self.model.device)  # Shape: [num_params_in_subset]
+                    theta_i = param_i.data.view(-1)[idxs_i]  # Shape: [num_params_in_subset]
+                    delta_i = theta_i - slice_i
+                    sim_i = torch.nn.functional.cosine_similarity(delta_i, grad_i, dim=0).item()
+                    weight_i = param_i.data.view(-1)[idxs_i].norm().item() + 1e-8
+                    score += weight_i * sim_i
+                logger.info(f"{eval_window}: Computed score for this slice with score: {score}")           
 
-                # Collect gradients for all parameters.
-                gradients = {}
-                for name, param in self.model.named_parameters():
-                    if param.grad is None:
-                        continue
-                    gradients[name] = param.grad.view(-1).clone().detach()
+                # Assign scores.
+                self.step_scores[ eval_uid ] = score
+                self.scores[ eval_uid ] = (1 - self.hparams.validator_moving_alpha) * score + self.hparams.validator_moving_alpha * self.scores[eval_uid]
+                self.scores[ torch.isnan(self.scores) ] = 0
+                valid_score_indices = torch.nonzero((self.scores != 0) & (~torch.isnan(self.scores))).squeeze().view(-1, 1)
+                valid_scores = self.scores[valid_score_indices].view(-1, 1) if valid_score_indices.dim() == 1 else self.scores[valid_score_indices]
+                if valid_scores.numel() > 0:
+                    min_score = torch.min(valid_scores)
+                    max_score = torch.max(valid_scores)
+                    self.weights[valid_score_indices] = (valid_scores - min_score) / (max_score - min_score + 1e-8)
+                logger.info(f"{eval_window}: Assign the scores and compute the weights.")  
 
-                # Compute Fisher Information Matrix diagonal approximation (g_i^2).
-                fisher_diagonal = {}
-                for name, grad in gradients.items():
-                    fisher_diagonal[name] = grad.pow(2)
-
-                # Iterate over each slice to compute importance scores.
-                M = len(slices_to_eval)  # Total number of slices being averaged
-                loss_change = torch.zeros(256, dtype=torch.float32).to(self.model.device)  # Initialize step scores.
-                for idx, slice_i in enumerate(slices_to_eval):
-                    uid = uids_to_eval[idx]
-                    delta_L = 0.0  # Initialize importance score for the current slice.
-
-                    for name, param in self.model.named_parameters():
-                        if param.grad is None:
-                            continue  # Skip parameters without gradients
-
-                        # Retrieve the indices for the current parameter subset.
-                        param_indices = indices[name].to(self.model.device)
-
-                        # Extract the gradient vector for the current parameter subset.
-                        g = gradients[name][param_indices].to(self.model.device)  # Shape: [num_params_in_subset]
-
-                        # Extract and flatten the slice vector for the current parameter subset.
-                        s = slice_i[name].view(-1).to(self.model.device)  # Shape: [num_params_in_subset]
-
-                        # Compute the scaled slice vector:
-                        # Since theta is the average of all slices, removing one slice adjusts the average.
-                        # s_scaled = s_j / (M - 1), where s_j is the slice being removed.
-                        s_scaled = s / (M - 1)  # Shape: [num_params_in_subset]
-
-                        # Retrieve the current parameter values for the subset.
-                        theta = param.data.view(-1)[param_indices]  # Shape: [num_params_in_subset]
-
-                        # Compute the perturbation vector:
-                        # Δθ = s_scaled - theta
-                        # This represents the change to parameters when slice_i is removed from the average.
-                        delta_theta = s_scaled - theta  # Shape: [num_params_in_subset]
-
-                        # # Compute the first-order term: g^T * Δθ
-                        # # Represents the linear approximation of loss change due to Δθ.
-                        # first_order = torch.nn.functional.cosine_similarity(g, delta_theta, dim=0).item()  # Scalar
-                        first_order = torch.dot(g, delta_theta).item()
-                        # delta_L += first_order
-
-                        # Compute the second-order term: 0.5 * Δθ^T * H * Δθ
-                        # Using the diagonal Hessian approximation: H ≈ diag(fisher_diagonal)
-                        # Represents the quadratic approximation of loss change due to Δθ.
-                        second_order = 0.5 * torch.dot(delta_theta.pow(2), fisher_diagonal[name][param_indices]).item()  # Scalar
-
-                        # Accumulate the importance score for the current slice.
-                        # ΔL ≈ g^T * Δθ + 0.5 * Δθ^T * H * Δθ
-                        delta_L += first_order + second_order
-
-                    # Assign the computed importance score to the corresponding UID.
-                    loss_change[uid] += delta_L
-                logger.info(f"\t\tFinished computing slice importance scores in {time.time() - start_time} seconds")
-
-                # Step 7: Normalize the scores as rewards and use them as weights.
-                logger.info(f"\tNormalizing scores to compute weights")
-                start_time = time.time()
-                # Update moving average of scores.
-                if loss_change.max() != loss_change.min():
-                    nonzero_loss_change = loss_change[loss_change != 0]
-                    normalized_loss_change = torch.zeros_like(loss_change)
-                    if nonzero_loss_change.numel() > 0:
-                        normalized_nonzero_loss_change = (nonzero_loss_change - nonzero_loss_change.min()) / (nonzero_loss_change.max() - nonzero_loss_change.min())
-                        normalized_loss_change[loss_change != 0] = normalized_nonzero_loss_change
-                else:
-                    normalized_loss_change = loss_change.clone()  # or torch.zeros_like(loss_change) if you prefer
-                self.scores = self.hparams.validator_moving_alpha * normalized_loss_change.cpu() + (1 - self.hparams.validator_moving_alpha) * self.scores
-                # Apply softmax to normalize scores into weights.
-                # To ensure numerical stability, subtract the max before exponentiating.
-                if torch.any(self.scores != 0):
-                    scores_nonzero = self.scores[self.scores != 0]
-                    max_score = torch.max(scores_nonzero)
-                    normalized_scores = torch.softmax((scores_nonzero - max_score) * self.hparams.validator_weights_temperature, dim=0)
-                    self.weights[self.scores != 0] = normalized_scores
-                logger.info(f"\t\tNormalized scores into weights in {time.time() - start_time} seconds")
-
-                # Step 8: Log the results if using Weights and Biases.
+                # Log and print scores.
                 if self.config.use_wandb:
-                    for uid in torch.nonzero(self.weights).squeeze():
+                    for uid_i in valid_score_indices:
                         wandb.log({
-                            f"loss_change/{uid.item()}": loss_change[uid].item(),
-                            f"moving_scores/{uid.item()}": self.scores[uid].item(),
-                            f"weights/{uid.item()}": self.weights[uid].item(),
+                            f"step_scores/{uid_i.item()}": self.step_scores[ uid_i ].item(),
+                            f"moving_scores/{uid_i.item()}": self.scores[ uid_i ].item(),
+                            f"weights/{uid_i.item()}": self.weights[ uid_i ].item(),
+                            'self.sample_rate': self.sample_rate,
                         })
-
-                # Step 9: Log the rewards, weights, and scores.
-                logger.info('\tWeights:')
-                nonzero_weights = torch.nonzero(self.weights).squeeze()
-                for uid, moving_score, weight, step_score in zip(
-                    nonzero_weights,
-                    self.scores[nonzero_weights],
-                    self.weights[nonzero_weights],
-                    loss_change[nonzero_weights]
-                ):
-                    logger.info(f"\t\tuid: {uid.item()}, loss_change: {step_score.item():.6f}, moving_score: {moving_score.item():.6f}, weight: {weight.item():.6f}")
-     
-                # Delete lingering files 
-                logger.info(f"\tCleaning space.")
-                start_time = time.time()
-                del slices_to_eval
-                del gradients
-                del fisher_diagonal
-                torch.cuda.empty_cache()
-                await delete_files_before_window( window_max = self.current_window - self.hparams.max_history )
-                logger.info(f"\t\tFinished cleaning space in {time.time() - start_time} seconds.")
+                for uid_i in valid_score_indices:
+                    moving_score = self.scores[ uid_i ].item()
+                    weight = self.weights[ uid_i ].item()
+                    step_score = self.step_scores[ uid_i ].item()
+                    logger.info(f"\t\tuid: {uid_i.item()}, step_scores: {step_score:.6f}, moving_score: {moving_score:.6f}, weight: {weight:.6f}")
                 
-                # Step 2: Apply slices to the model from the previous window.
-                logger.info(f"\tApplying slices from previous window: {self.eval_window} to model.")
-                start_time = time.time()
-                eval_slices = await apply_slices_to_model(
-                    model=self.model,
-                    window=self.eval_window,  # Get files from previous window.
-                    seed=self.window_seeds[self.step_window],  # Use seed as the hash of the current window.
-                    compression=self.hparams.compression
+                # Apply all deltas to the model state.
+                await apply_slices_to_model( 
+                    model = self.model, 
+                    window = self.current_window - 1,
+                    seed = self.current_window - 1,
+                    compression = self.hparams.compression,
+                    key = 'delta',
                 )
-                applied_per_step = len(eval_slices)
-                logger.info(f"\t\tApplied {applied_per_step} slices from previous window: {self.eval_window} with seed: {self.window_seeds[self.step_window]} in {time.time() - start_time} seconds")
+                logger.info(f"{eval_window}: Applied deltas to the model for window: {eval_window}")
 
-                # Ensure window is over.
-                while self.current_window == self.step_window: await asyncio.sleep(0.1)
-                                        
-                # Set temperatured weights on the chain.
-                if self.current_window % 100 == 0: 
-                    self.subtensor.set_weights(
-                        wallet = self.wallet,
-                        netuid = self.config.netuid,
-                        uids = self.metagraph.uids,
-                        weights = self.weights[ self.metagraph.uids ],
-                        wait_for_inclusion = False,
-                        wait_for_finalization = False,
-                    )
-                        
+                # Finish step.
+                while self.current_window == eval_window: 
+                    await asyncio.sleep(0.1)
+                continue
+                logger.info(f"{eval_window}: Finished step.")                
+
+                                                                
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
                 logger.info("Training interrupted by user. Stopping the run.")
@@ -424,7 +334,7 @@ class Validator:
                 self.window_seeds[ self.block_to_window(self.current_block) ] = self.window_to_seed( self.block_to_window(self.current_block) )
                 self.current_window = self.block_to_window(self.current_block)
                 loop.call_soon_threadsafe(self.new_window_event.set)
-                logger.info(f"\t\tNew window: {self.current_window}")
+                logger.info(f"-- New window: {self.current_window} -- ")
         # Run listener with retry.
         while not self.stop_event.is_set():
             try:
