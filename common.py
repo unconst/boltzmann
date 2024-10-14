@@ -72,7 +72,7 @@ async def get_slices( filename:str, device:str ) -> Dict[str, torch.Tensor]:
         weights_only = True,
     )
 
-async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, compression: int) -> List[str]:
+async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, compression: int, key:str = 'slice') -> List[str]:
     """
     Applies slices from a specific window to the given model.
 
@@ -89,7 +89,7 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
     indices_dict = await get_indices_for_window(model, seed, compression)
     
     # Load all the slices associated with this window.
-    slice_files = await load_files_for_window(window=window)
+    slice_files = await load_files_for_window(window=window, key = key)
 
     # Dictionary to keep track of the number of slices applied per parameter.
     slices_per_param = {name: 0 for name, _ in model.named_parameters()}
@@ -131,7 +131,7 @@ async def apply_slices_to_model(model: torch.nn.Module, window: int, seed: str, 
     # Return the list of the files applied.
     return slice_files
 
-async def upload_slice_for_window(bucket: str, model: torch.nn.Module, window: int, seed: str, wallet: 'bt.wallet', compression: int):
+async def upload_slice_for_window(bucket: str, model: torch.nn.Module, window: int, seed: str, wallet: 'bt.wallet', compression: int, key:str = 'slice'):
     """
     Uploads a compressed slice of a PyTorch model to an S3 bucket.
 
@@ -142,7 +142,7 @@ async def upload_slice_for_window(bucket: str, model: torch.nn.Module, window: i
         wallet (bt.wallet): The wallet object containing the hotkey.
         compression (int): The compression factor.
     """
-    filename = f'slice-{window}-{wallet.hotkey.ss58_address}.pt'
+    filename = f'{key}-{window}-{wallet.hotkey.ss58_address}.pt'
     logger.debug(f"Uploading slice to S3: {filename}")
 
     model_state_dict = model.state_dict()
@@ -320,7 +320,7 @@ async def handle_file(s3_client, bucket: str, filename: str, hotkey: str, window
         return SimpleNamespace(bucket=bucket, hotkey=hotkey, filename=filename, window=window, temp_file=temp_file)
     return None
 
-async def process_bucket(s3_client, bucket: str, windows: List[int]):
+async def process_bucket(s3_client, bucket: str, windows: List[int], key:str = 'slice'):
     """
     Processes an S3 bucket to download files matching the given windows.
 
@@ -337,7 +337,7 @@ async def process_bucket(s3_client, bucket: str, windows: List[int]):
     paginator = s3_client.get_paginator('list_objects_v2')
 
     for window in windows:
-        prefix = f'slice-{window}'
+        prefix = f'{key}-{window}'
         logger.debug(f"Listing objects with prefix {prefix}")
         async for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             logger.trace(f"Processing page for prefix {prefix}")
@@ -365,7 +365,7 @@ async def process_bucket(s3_client, bucket: str, windows: List[int]):
     logger.trace(f"Completed processing bucket {bucket} for windows {windows}")
     return files
 
-async def download_slices_for_buckets_and_windows(buckets: List[str], windows: List[int]) -> Dict[int, List[SimpleNamespace]]:
+async def download_slices_for_buckets_and_windows(buckets: List[str], windows: List[int], key:str = 'slice') -> Dict[int, List[SimpleNamespace]]:
     """
     Downloads files from multiple S3 buckets for the given windows.
 
@@ -389,7 +389,7 @@ async def download_slices_for_buckets_and_windows(buckets: List[str], windows: L
         for bucket in set(buckets):
             if not bucket:
                 continue
-            tasks.append(process_bucket(s3_client, bucket, windows))
+            tasks.append(process_bucket(s3_client, bucket, windows, key))
         results = await asyncio.gather(*tasks)
         # Flatten the list of lists
         files = [item for sublist in results for item in sublist]
@@ -405,7 +405,7 @@ async def download_slices_for_buckets_and_windows(buckets: List[str], windows: L
         logger.debug(f"Downloaded all files grouped by windows: {windows}")
         return windows_dict
 
-async def load_files_for_window(window: int) -> List[str]:
+async def load_files_for_window(window: int, key: str = 'slice') -> List[str]:
     """
     Retrieves the paths to downloaded window files from the temporary directory.
 
@@ -419,12 +419,12 @@ async def load_files_for_window(window: int) -> List[str]:
     temp_dir = tempfile.gettempdir()
     window_files = []
     for filename in os.listdir(temp_dir):
-        if filename.startswith(f"slice-{window}-") and filename.endswith(".pt"):
+        if filename.startswith(f"{key}-{window}-") and filename.endswith(".pt"):
             window_files.append(os.path.join(temp_dir, filename))
             logger.debug(f"Found file {filename} for window {window}")
     return window_files
 
-async def delete_files_before_window(window_max: int):
+async def delete_files_before_window(window_max: int, key:str = 'slice'):
     """
     Deletes all files on the local machine which have a window id before a specific value window_max.
 
@@ -434,7 +434,7 @@ async def delete_files_before_window(window_max: int):
     logger.debug(f"Deleting files with window id before {window_max}")
     temp_dir = tempfile.gettempdir()
     for filename in os.listdir(temp_dir):
-        if filename.startswith("slice-") and ( filename.endswith(".pt") or filename.endswith(".lock") ):
+        if filename.startswith(f"{key}-") and ( filename.endswith(".pt") or filename.endswith(".lock") ):
             try:
                 parts = filename.split('-')
                 window_id = int(parts[1])
@@ -446,7 +446,7 @@ async def delete_files_before_window(window_max: int):
             except Exception as e:
                 logger.error(f"Error deleting file {filename}: {e}")
 
-async def delete_files_from_bucket_before_window(bucket: str, window_max: int):
+async def delete_files_from_bucket_before_window(bucket: str, window_max: int, key: str = 'slice'):
     """
     Deletes all files in the specified S3 bucket which have a window id before a specific value window_max.
 
@@ -468,7 +468,7 @@ async def delete_files_from_bucket_before_window(bucket: str, window_max: int):
             if 'Contents' in response:
                 for obj in response['Contents']:
                     filename = obj['Key']
-                    if filename.startswith("slice-") and filename.endswith(".pt"):
+                    if filename.startswith(f"{key}-") and filename.endswith(".pt"):
                         try:
                             parts = filename.split('-')
                             window_id = int(parts[1])

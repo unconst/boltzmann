@@ -51,7 +51,7 @@ class Miner:
     @staticmethod
     def config():
         parser = argparse.ArgumentParser(description='Miner script')
-        parser.add_argument('--project', type=str, default='QZWXEC', help='Optional wandb project name')
+        parser.add_argument('--project', type=str, default='aesop2', help='Optional wandb project name')
         parser.add_argument('--netuid', type=int, default=220, help='Bittensor network UID.')
         parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
         parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
@@ -164,42 +164,49 @@ class Miner:
         self.listener = threading.Thread(target=self.block_listener, args=(self.loop,), daemon=True).start()
         while True:
 
-            try:     
+            try:               
+                # Get the current step window.      
+                step_window = self.current_window
                 
-                1. load state for this window.
-                1.b download vals for next sync
-                2. change vals under sync
-                3. upload vals for under sync 
-                4.a upload vals for next      
-                
-                # Load state for this window 
-                last_update_window = (self.current_window - 1) * 1000
-                upload_window = self.current_window * 1000
-                sync_window = self.current_window * 100 
-                # Load the syns state with indicies equal to the current window.
+                # Download the state for the current window.
                 await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
-                    windows = [ sync_window ]
+                    windows = [ step_window ],
+                    key = 'state'
                 )
-                await apply_slices_to_model( 
-                    model = self.model, 
-                    window = sync_window,
-                    seed = self.current_window,
-                    compression = self.hparams.compression
-                )
+                logger.info(f"{step_window}: Downloaded the state for the step window: {step_window}")
+                
+                # Download the delta from the previous window.
                 await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
-                    windows = [ last_update_window ]
-                )
+                    windows = [ step_window - 1 ],
+                    key = 'delta'
+                )       
+                logger.info(f"{step_window}: Download the delta from the previous window: {step_window-1} ")
+                
+                # Apply the state for the current window.
                 await apply_slices_to_model( 
                     model = self.model, 
-                    window = last_update_window,
-                    seed = self.current_window,
-                    compression = self.hparams.compression
+                    window = step_window,
+                    seed = step_window,
+                    compression = self.hparams.compression,
+                    key = 'state'
                 )
-                # Load dataset for this window.
+                logger.info(f"{step_window}: Applied the state for the current window: {step_window}")
+
+                # Apply the delta from the previous window.
+                await apply_slices_to_model( 
+                    model = self.model, 
+                    window = step_window - 1,
+                    seed = step_window - 1,
+                    compression = self.hparams.compression,
+                    key = 'delta'
+                )         
+                logger.info(f"{step_window}: Applied the delta from the previous window: {step_window - 1}")
+                       
+                # Download the page for the current window.
                 pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
-                    offset = self.current_window,
+                    offset = step_window,
                     n_pages = 1,
                     seed = self.uid if not self.config.random else random.randint(0, 1000)
                 )
@@ -209,33 +216,50 @@ class Miner:
                     pages_info = pages,
                     tokenizer = self.hparams.tokenizer
                 )
-                # Accumualte gradients.
+                logger.info(f"{step_window}: Downloaded the page: {pages[0][1]} for window: {step_window}, is_random: {self.config.random}")
+
+                # Accumualte gradients on the model applied to the base state.
                 for idx, batch in enumerate(dataset):
                     input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
                     labels = input_ids.clone()
                     labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
                     with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
                         outputs = self.model(input_ids=input_ids, labels=labels)
-                    outputs.loss.backward()
-                # Apply steps.
+                    outputs.loss.backward()                
                 self.optimizer.step()
                 self.scheduler.step()
                 self.optimizer.zero_grad()
-                # Wait until we are on a new window.
-                while self.current_window == start_window
-                    await asyncio.sleep(0.1)
-                # Upload the slice from this window
+                logger.info(f"{step_window}: Accumualted gradients on the model applied with {idx} steps.")
+                
+                # Upload the delta for the previous window.
                 await upload_slice_for_window(
                     bucket = self.config.bucket, 
                     model = self.model, 
-                    window = self.current_window,
-                    seed = self.current_window,
+                    window = step_window,
+                    seed = step_window,
                     wallet = self.wallet, 
-                    compression = self.hparams.compression
-                )
-                await delete_files_before_window( window_max = self.current_window - self.hparams.max_history )
-                await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = self.current_window - self.hparams.max_history )
+                    compression = self.hparams.compression,
+                    key = 'delta'
+                )                
+                logger.info(f"{step_window}: Uploaded the delta for the current window: {step_window}")
                 
+                # Upload the state for the current window.
+                await upload_slice_for_window(
+                    bucket = self.config.bucket, 
+                    model = self.model, 
+                    window = step_window + 1,
+                    seed = step_window + 1, 
+                    wallet = self.wallet, 
+                    compression = self.hparams.compression,
+                    key = 'state',
+                )
+                logger.info(f"{step_window}: Uploaded the state for the next window: {step_window + 1}")
+                
+                # Wait until we are on a new window.
+                while self.current_window == step_window:
+                    await asyncio.sleep(0.1)
+                logger.info(f"{step_window}: Finished step.")
+                            
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
                 logger.info("Training interrupted by user. Stopping the run.")
