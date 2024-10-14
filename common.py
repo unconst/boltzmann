@@ -24,27 +24,45 @@ import torch
 import uvloop
 import hashlib
 import asyncio
+import logging
 import tempfile
 import aiofiles
 import numpy as np
 import aiobotocore
 import bittensor as bt
 import botocore.config
-from loguru import logger
 from typing import List, Dict
 from dotenv import dotenv_values
 from types import SimpleNamespace
-from aiobotocore.session import get_session
+from rich.logging import RichHandler
 from filelock import FileLock, Timeout
+from aiobotocore.session import get_session
+from rich.highlighter import NullHighlighter
 
 # Configure loguru logger
-logger.remove()
-logger.add(sys.stderr, format="<level>{message}</level>", level="INFO")
+FORMAT = "%(message)s"
+logging.basicConfig( 
+    level=logging.INFO, 
+    format=FORMAT, 
+    datefmt="[%X]", 
+    handlers=[
+        RichHandler(
+            markup=True, 
+            rich_tracebacks=True, 
+            highlighter=NullHighlighter(),
+            show_level=False,
+            show_time=False,
+            show_path=False
+        )
+    ]
+)
+logger = logging.getLogger("rich")
+logger.setLevel(logging.INFO)
 def debug():
-    logger.add(sys.stderr, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>", level="DEBUG")
+    logger.setLevel(logging.DEBUG)
 def trace():
-    logger.add(sys.stderr, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>", level="TRACE")
-
+    logger.setLevel(logging.TRACE)
+    
 # Load environment variables
 env_config = {**dotenv_values(".env"), **os.environ}
 AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')

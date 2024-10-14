@@ -158,68 +158,70 @@ class Validator:
         while True:
             try:
                 # Get the window we are evalling.
-                eval_window = self.current_window - 1
+                logger.info('[bold]' + '\n' + '-' * 40 + f' Step: {self.global_step} ' + '-' * 40)
+                start_step_time = time.time()
+                self.global_step += 1
+                offset = 1
+                window = self.current_window - offset
                 
                 # Download the state for the eval window.
+                start_time = time.time()
                 await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
-                    windows = [ eval_window ],
+                    windows = [ window ],
                     key = 'state'
                 )
-                logger.info(f"{eval_window}: Downloaded the state for the eval window: {eval_window} with current: {self.current_window}")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded window state.")
                 
                 # Download the delta for the eval window.
+                start_time = time.time()
                 eval_slices = await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
-                    windows = [ eval_window ],
+                    windows = [ window ],
                     key = 'delta'
                 ) 
-                logger.info(f"{eval_window}: Downloaded the delta from the eval window: {eval_window} with current: {self.current_window}")
-                
-                # Check for slices.
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded window delta.")                
                 if len(list(eval_slices.keys())) == 0:
-                    logger.info(f"{eval_window}: No slices to eval, continue ...")
-                    while self.current_window == eval_window: 
+                    logger.info(f"[steel_blue]{window}[/steel_blue]: No slices to eval, continue ...")
+                    while self.current_window == window: 
                         await asyncio.sleep(0.1)
                     continue
-                logger.info(f"{eval_window}: Found {len(eval_slices[ eval_window ])} deltas for {eval_window}")
                 
                 # Applied the model state state for the eval window.
+                start_time = time.time()
                 await apply_slices_to_model( 
                     model = self.model, 
-                    window = eval_window,
-                    seed = eval_window,
+                    window = window,
+                    seed = window,
                     compression = self.hparams.compression,
                     key = 'state',
                 )
-                logger.info(f"{eval_window}: Applied the state for the eval window: {eval_window}")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window state.")
                 
                 # Attain the indicies for the eval window.
+                start_time = time.time()
                 indices = await get_indices_for_window(
                     model = self.model,
-                    seed = eval_window,
+                    seed = window,
                     compression = self.hparams.compression
                 ) 
-                logger.info(f"{eval_window}: Attained the indices for the eval window: {eval_window}")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Attained window indices.")
                                
-                # Select the random slice to eval.
-                eval_slice_info = random.choice( eval_slices[ eval_window ] )                
-                logger.info(f"{eval_window}: Selected {eval_slice_info} to eval this window.")
 
-                # Attain the UID of this slice.                
+                # Attain the UID of this slice.
+                start_time = time.time()
+                eval_slice_info = random.choice( eval_slices[ window ] )                
                 try: eval_uid = self.metagraph.hotkeys.index(eval_slice_info.hotkey)
                 except ValueError:
                     logger.warning(f"Hotkey {eval_slice_info.hotkey} not found in metagraph hotkeys.")
                     continue                                
-                logger.info(f"{eval_window}: Evaluating UID: {eval_uid}")
-                
-                # Load the slice data for this UID
                 eval_slice_data = await get_slices( eval_slice_info.temp_file, self.model.device )                
-                logger.info(f"{eval_window}: Loaded the slice data.")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Loaded window slices for uid: [dark_sea_green]{eval_uid}[/dark_sea_green].")
 
-                # Download the eval page for this uid.,
+                # Download the eval page for this uid.
+                start_time = time.time()
                 eval_page = await AsyncSubsetFineWebEdu2Loader.next_pages(
-                    offset = eval_window,
+                    offset = window,
                     n_pages = 1,
                     seed = eval_uid
                 )                
@@ -229,9 +231,10 @@ class Validator:
                     pages_info = eval_page,
                     tokenizer = self.hparams.tokenizer
                 )                
-                logger.info(f"{eval_window}: Downloaded the eval page: {eval_page[0][1]} for this window.")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded eval page: [tan]{eval_page[0][1]}[/tan].")
   
                 # Accumulate gradients from this page.
+                start_time = time.time()
                 self.model.zero_grad()
                 self.model.eval()
                 total_loss = 0
@@ -244,34 +247,33 @@ class Validator:
                             outputs = self.model(input_ids=input_ids, labels=labels)
                         total_loss += outputs.loss.item()
                         outputs.loss.backward()
-                logger.info(f"{eval_window}: Accumulated gradients with loss: {total_loss} over over: {idx} steps.")
+                step_loss = total_loss/(idx+1)
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Accumulated gradients with loss: [salmon1]{step_loss:.3f}[/salmon1] over over: [salmon1]{idx}[/salmon1] steps.")
 
                 # Compute the score for this slice.
+                start_time = time.time()
                 score = 0.0 
                 for i, (name_i, param_i) in enumerate( self.model.named_parameters() ):
                     if param_i.grad is None: continue  # Skip parameters without gradients
                     idxs_i = indices[name_i].to(self.model.device)
                     grad_i = param_i.grad.view(-1).clone()[idxs_i].to(self.model.device) 
-                    slice_i = eval_slice_data[name_i].view(-1).to(self.model.device)  # Shape: [num_params_in_subset]
-                    theta_i = param_i.data.view(-1)[idxs_i]  # Shape: [num_params_in_subset]
+                    slice_i = eval_slice_data[name_i].view(-1).to(self.model.device) 
+                    theta_i = param_i.data.view(-1)[idxs_i]
                     delta_i = theta_i - slice_i
                     sim_i = torch.nn.functional.cosine_similarity(delta_i, grad_i, dim=0).item()
                     weight_i = param_i.data.view(-1)[idxs_i].norm().item() + 1e-8
                     score += weight_i * sim_i
-                logger.info(f"{eval_window}: Computed score for this slice with score: {score}")           
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Computed score: [bold dark_sea_green]{score:.4f}[/bold dark_sea_green]")           
 
-                # Assign scores.
+                # Assign scores and log scores.
+                start_time = time.time()
                 self.step_scores[ eval_uid ] = score
                 self.scores[ eval_uid ] = (1 - self.hparams.validator_moving_alpha) * score + self.hparams.validator_moving_alpha * self.scores[eval_uid]
                 self.scores[ torch.isnan(self.scores) ] = 0
                 valid_score_indices = torch.nonzero((self.scores != 0) & (~torch.isnan(self.scores))).squeeze().view(-1, 1)
                 valid_scores = self.scores[valid_score_indices].view(-1, 1) if valid_score_indices.dim() == 1 else self.scores[valid_score_indices]
                 if valid_scores.numel() > 0:
-                    min_score = torch.min(valid_scores)
-                    max_score = torch.max(valid_scores)
-                    self.weights[valid_score_indices] = (valid_scores - min_score) / (max_score - min_score + 1e-8)
-                logger.info(f"{eval_window}: Assign the scores and compute the weights.")  
-
+                    self.weights[valid_score_indices] = torch.nn.functional.softmax((valid_scores - valid_scores.max()) * self.hparams.validator_weights_temperature, dim=0)
                 # Log and print scores.
                 if self.config.use_wandb:
                     for uid_i in valid_score_indices:
@@ -280,28 +282,34 @@ class Validator:
                             f"moving_scores/{uid_i.item()}": self.scores[ uid_i ].item(),
                             f"weights/{uid_i.item()}": self.weights[ uid_i ].item(),
                             'self.sample_rate': self.sample_rate,
+                            'loss': step_loss,
                         })
                 for uid_i in valid_score_indices:
                     moving_score = self.scores[ uid_i ].item()
                     weight = self.weights[ uid_i ].item()
                     step_score = self.step_scores[ uid_i ].item()
-                    logger.info(f"\t\tuid: {uid_i.item()}, step_scores: {step_score:.6f}, moving_score: {moving_score:.6f}, weight: {weight:.6f}")
+                    logger.info(
+                        f"\tuid: [dark_sea_green]{uid_i.item()}[/dark_sea_green], "
+                        f"last: [dark_sea_green]{step_score:.3f}[/dark_sea_green], "
+                        f"moving: [dark_sea_green]{moving_score:.3f}[/dark_sea_green], "
+                        f"weight: [dark_sea_green]{weight:.3f}[/dark_sea_green]"
+                    )
                 
                 # Apply all deltas to the model state.
+                start_time = time.time()
                 await apply_slices_to_model( 
                     model = self.model, 
-                    window = self.current_window - 1,
-                    seed = self.current_window - 1,
+                    window = window,
+                    seed = window,
                     compression = self.hparams.compression,
                     key = 'delta',
                 )
-                logger.info(f"{eval_window}: Applied deltas to the model for window: {eval_window}")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window deltas.")
 
                 # Finish step.
-                while self.current_window == eval_window: 
+                while self.current_window - offset == window: 
                     await asyncio.sleep(0.1)
-                continue
-                logger.info(f"{eval_window}: Finished step.")                
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([bold grey63]{time.time() - start_step_time:.2f}s[/bold grey63]): Finished step.")                
 
                                                                 
             # Catch keyboard interrrupt.
