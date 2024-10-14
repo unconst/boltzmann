@@ -51,7 +51,7 @@ class Miner:
     @staticmethod
     def config():
         parser = argparse.ArgumentParser(description='Miner script')
-        parser.add_argument('--project', type=str, default='QZWXEC', help='Optional wandb project name')
+        parser.add_argument('--project', type=str, default='aesop2', help='Optional wandb project name')
         parser.add_argument('--netuid', type=int, default=220, help='Bittensor network UID.')
         parser.add_argument('--bucket', type=str, default='decis', help='S3 bucket name')
         parser.add_argument('--actual_batch_size', type=int, default=8, help='Training batch size per accumulation.')
@@ -164,151 +164,102 @@ class Miner:
         self.listener = threading.Thread(target=self.block_listener, args=(self.loop,), daemon=True).start()
         while True:
 
-            try:                
-                # Start step.
-                logger.info('\n' + '-' * 40 + f' Step: {self.global_step} ' + '-' * 40)
-                logger.info(f"Step: {self.global_step}, Window: {self.current_window}, "
-                            f"Block: {self.current_block}, Time: {int(time.time())}")
-                global_step_start_time = time.time()
-                self.step_window = self.current_window
-                self.global_step += 1
-
-                # Download files.    
-                logger.info(f"\tDownloading slices from previous window: {self.step_window - 1}")
-                start_time = time.time()
-                slice_files = await download_slices_for_buckets_and_windows(
+            try:               
+                # Get the current step window.      
+                step_window = self.current_window
+                
+                # Download the state for the current window.
+                await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
-                    windows = [self.step_window - 1]
+                    windows = [ step_window ],
+                    key = 'state'
                 )
-                downloaded_per_step = sum([len(slice_files[k]) for k in slice_files])
-                logger.info(f"\t\tDownloaded {downloaded_per_step} slices for previous window: {self.step_window - 1} in {time.time() - start_time} seconds")
+                logger.info(f"{step_window}: Downloaded the state for the step window: {step_window}")
                 
-                # Apply slices to the model from the previous window.
-                logger.info(f"\tApplying slices from previous window: {self.step_window - 1} to model.")
-                start_time = time.time()
-                slice_files = await apply_slices_to_model( 
+                # Download the delta from the previous window.
+                await download_slices_for_buckets_and_windows(
+                    buckets = self.buckets,
+                    windows = [ step_window - 1 ],
+                    key = 'delta'
+                )       
+                logger.info(f"{step_window}: Download the delta from the previous window: {step_window-1} ")
+                
+                # Apply the state for the current window.
+                await apply_slices_to_model( 
                     model = self.model, 
-                    window = self.step_window - 1, # Get files from previous window.
-                    seed = self.window_seeds[ self.step_window ], # Use seed as the hash of the current window.
-                    compression = self.hparams.compression
+                    window = step_window,
+                    seed = step_window,
+                    compression = self.hparams.compression,
+                    key = 'state'
                 )
-                applied_per_step = len(slice_files)
-                logger.info(f"\t\tApplied {applied_per_step} from previous window: {self.step_window - 1} with seed: { self.window_seeds[ self.step_window ] } in {time.time() - start_time} seconds")
-                
-                # Train for performance on the current window.
-                # Load pages from the current eval window. The validators will sample pages from (eval_pages_start, eval_pages_end)
-                #   eval_pages_start : ( window_idx * window_length * window_speed )
-                #   eval_pages_end   : ( window_idx * window_length * window_speed ) + window_eval_size
-                start_time = time.time()
-                offset = self.step_window * self.hparams.window_length * self.hparams.window_speed
-                seed = self.uid if not self.config.random else random.randint(0, 1000)
-                logger.info(f"\tLoading {self.hparams.validator_window_eval_size} pages for current window: { self.step_window } and offset: {offset} and uid: {self.uid} and seed: {seed}")
+                logger.info(f"{step_window}: Applied the state for the current window: {step_window}")
+
+                # Apply the delta from the previous window.
+                await apply_slices_to_model( 
+                    model = self.model, 
+                    window = step_window - 1,
+                    seed = step_window - 1,
+                    compression = self.hparams.compression,
+                    key = 'delta'
+                )         
+                logger.info(f"{step_window}: Applied the delta from the previous window: {step_window - 1}")
+                       
+                # Download the page for the current window.
                 pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
-                    offset = offset,
-                    n_pages = self.hparams.validator_window_eval_size,
-                    seed = seed
+                    offset = step_window,
+                    n_pages = 1,
+                    seed = self.uid if not self.config.random else random.randint(0, 1000)
                 )
-                random.shuffle( pages ) 
                 dataset = await AsyncSubsetFineWebEdu2Loader.create(
                     batch_size = self.config.actual_batch_size,
                     sequence_length = self.hparams.sequence_length,
                     pages_info = pages,
                     tokenizer = self.hparams.tokenizer
                 )
-                pages_per_step = len(pages)
-                logger.info(f"\t\tLoaded dataset pages: {[p[1] for p in pages]} in {time.time() - start_time} seconds")
+                logger.info(f"{step_window}: Downloaded the page: {pages[0][1]} for window: {step_window}, is_random: {self.config.random}")
 
-                # Train the model on the current page.
-                logger.info(f"\tTraining on pages: {[p[1] for p in pages]} with sample rate: {self.sample_rate}")
-                start_time = time.time()
-                torch.cuda.empty_cache()  # Empty cache going into the training step.
-                self.optimizer.zero_grad()  # Clear any lingering grads.
-                total_loss = 0.0
-                exhuasted_window = False
-                self.full_steps = 0
+                # Accumualte gradients on the model applied to the base state.
                 for idx, batch in enumerate(dataset):
-                    # Randomly sample every sample_rate examples
-                    if random.random() < self.sample_rate:
-                        self.full_steps += 1
-                        input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
-                        labels = input_ids.clone()
-                        labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
-                        with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
-                            outputs = self.model(input_ids=input_ids, labels=labels)
-                        total_loss += outputs.loss.item()
-                        loss = outputs.loss / (self.last_full_steps + 1)  # Divide by number of accumulations.
-                        loss.backward()
-                        if self.step_window != self.current_window:
-                            exhuasted_window = True
-                            break
-
-                # Apply step and clean memory.
-                if self.hparams.grad_clip:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.hparams.grad_clip)
+                    input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
+                    labels = input_ids.clone()
+                    labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
+                    with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
+                        outputs = self.model(input_ids=input_ids, labels=labels)
+                    outputs.loss.backward()                
                 self.optimizer.step()
-                self.scheduler.step()  # Update the learning rate.
+                self.scheduler.step()
                 self.optimizer.zero_grad()
-                del input_ids, labels, outputs
-                torch.cuda.empty_cache()
-
-                # Calculate, print and log average loss
-                self.last_full_steps = self.full_steps
-                average_loss = total_loss / (self.full_steps + 1)
-                total_time = time.time() - start_time
-                tokens_per_step = self.hparams.sequence_length * self.config.actual_batch_size * (self.full_steps + 1)
-                tokens_per_second =  tokens_per_step / total_time
-                logger.info(f"\t\tTotal steps: {idx}, Applied: {self.full_steps}, Rate: {self.full_steps/(idx + 1)}, Sample Probability: {self.sample_rate}")
-                logger.info(f"\t\tLoss: {average_loss}, learning_rate: {self.scheduler.get_last_lr()[0]}")
-                logger.info(f"\t\tTraining completed in {total_time} seconds, Tokens per step: {tokens_per_step}, Tokens per second: {tokens_per_second}")
-                if exhuasted_window:
-                    self.sample_rate = max(0.0001, self.sample_rate * 0.95)
-                else:
-                    self.sample_rate = min(1, self.sample_rate * 1.05)
+                logger.info(f"{step_window}: Accumualted gradients on the model applied with {idx} steps.")
                 
-                # Wait until we are on a new window.
-                while self.current_window == self.step_window:
-                    await asyncio.sleep(0.1)
-
-                # Upload our model slice to S3.
-                logger.info(f"\tUploading for window: { self.step_window }")
-                start_time = time.time()
+                # Upload the delta for the previous window.
                 await upload_slice_for_window(
                     bucket = self.config.bucket, 
                     model = self.model, 
-                    window = self.step_window, # Upload for the previous window 
-                    seed = self.window_seeds[ self.step_window + 1 ], # Seed the index by the hash of the new window.
+                    window = step_window,
+                    seed = step_window,
                     wallet = self.wallet, 
-                    compression = self.hparams.compression
+                    compression = self.hparams.compression,
+                    key = 'delta'
+                )                
+                logger.info(f"{step_window}: Uploaded the delta for the current window: {step_window}")
+                
+                # Upload the state for the current window.
+                await upload_slice_for_window(
+                    bucket = self.config.bucket, 
+                    model = self.model, 
+                    window = step_window + 1,
+                    seed = step_window + 1, 
+                    wallet = self.wallet, 
+                    compression = self.hparams.compression,
+                    key = 'state',
                 )
-                logger.info(f"\t\tFinished upload for window: {self.step_window} with seed: {self.window_seeds[ self.step_window + 1 ]} in {time.time() - start_time} seconds.")
+                logger.info(f"{step_window}: Uploaded the state for the next window: {step_window + 1}")
                 
-                # Delete lingering files 
-                logger.info(f"\tCleaning space.")
-                start_time = time.time()
-                await delete_files_before_window( window_max = self.current_window - self.hparams.max_history )
-                await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = self.current_window - self.hparams.max_history )
-                logger.info(f"\t\tFinished cleaning space in {time.time() - start_time} seconds.")
-
-                # Calculate and log global steps per second
-                seconds_per_step = time.time() - global_step_start_time
-                steps_per_second = 1 / seconds_per_step
-                if self.config.use_wandb:
-                    wandb.log({
-                        "step_loss": average_loss,
-                        "tokens_per_step": tokens_per_step,
-                        "tokens_per_second": tokens_per_second,
-                        "applied_per_step": applied_per_step,
-                        "pages_per_step": pages_per_step,
-                        "downloaded_per_step": downloaded_per_step,
-                        "incentive": float(self.metagraph.I[self.uid]),
-                        "learning_rate": self.scheduler.get_last_lr()[0],
-                        "seconds_per_step": seconds_per_step,
-                        "steps_per_second": steps_per_second,
-                        "sample_rate": self.sample_rate,
-                    })
-                    
-                logger.info(f'\nGlobal step completed in {seconds_per_step} seconds\n')
-                
+                # Wait until we are on a new window.
+                while self.current_window == step_window:
+                    await asyncio.sleep(0.1)
+                logger.info(f"{step_window}: Finished step.")
+                            
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
                 logger.info("Training interrupted by user. Stopping the run.")
