@@ -142,8 +142,13 @@ if ! command -v git &> /dev/null; then
             . /etc/os-release
             if [[ "$ID" == "ubuntu" || "$ID_LIKE" == *"ubuntu"* ]]; then
                 ohai "Detected Ubuntu, installing Git..."
-                execute_sudo apt-get update -y > /dev/null 2>&1
-                execute_sudo apt-get install git -y > /dev/null 2>&1
+                if [[ "$1" == "--debug" ]]; then
+                    execute_sudo apt-get update -y
+                    execute_sudo apt-get install git -y
+                else
+                    execute_sudo apt-get update -y > /dev/null 2>&1
+                    execute_sudo apt-get install git -y > /dev/null 2>&1
+                fi
             else
                 warn "Unsupported Linux distribution: $ID"
                 abort "Cannot install Git automatically"
@@ -158,7 +163,11 @@ if ! command -v git &> /dev/null; then
             warn "Homebrew is not installed, installing Homebrew..."
             execute /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
         fi
-        execute brew install git > /dev/null 2>&1
+        if [[ "$1" == "--debug" ]]; then
+            execute brew install git
+        else
+            execute brew install git > /dev/null 2>&1
+        fi
     else
         abort "Unsupported OS type: $OSTYPE"
     fi
@@ -189,7 +198,11 @@ pdone "Installed npm"
 # Install pm2
 if ! command -v pm2 &> /dev/null; then
     ohai "Installing pm2 ..."
-    execute npm install pm2 -g > /dev/null 2>&1
+    if [[ "$1" == "--debug" ]]; then
+        execute npm install pm2 -g
+    else
+        execute npm install pm2 -g > /dev/null 2>&1
+    fi
 fi
 pdone "Installed pm2"
 
@@ -202,9 +215,15 @@ if ! command -v python3.12 &> /dev/null; then
             . /etc/os-release
             if [[ "$ID" == "ubuntu" || "$ID_LIKE" == *"ubuntu"* ]]; then
                 ohai "Detected Ubuntu, installing Python 3.12..."
-                execute_sudo add-apt-repository ppa:deadsnakes/ppa -y > /dev/null 2>&1
-                execute_sudo apt-get update -y > /dev/null 2>&1
-                execute_sudo apt-get install python3.12 -y > /dev/null 2>&1
+                if [[ "$1" == "--debug" ]]; then
+                    execute_sudo add-apt-repository ppa:deadsnakes/ppa -y
+                    execute_sudo apt-get update -y
+                    execute_sudo apt-get install python3.12 -y
+                else
+                    execute_sudo add-apt-repository ppa:deadsnakes/ppa -y > /dev/null 2>&1
+                    execute_sudo apt-get update -y > /dev/null 2>&1
+                    execute_sudo apt-get install python3.12 -y > /dev/null 2>&1
+                fi
             else
                 warn "Unsupported Linux distribution: $ID"
                 abort "Cannot install Python 3.12 automatically"
@@ -219,7 +238,11 @@ if ! command -v python3.12 &> /dev/null; then
             warn "Homebrew is not installed, installing Homebrew..."
             execute /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
         fi
-        execute brew install python@3.12 > /dev/null 2>&1
+        if [[ "$1" == "--debug" ]]; then
+            execute brew install python@3.12
+        else
+            execute brew install python@3.12 > /dev/null 2>&1
+        fi
     else
         abort "Unsupported OS type: $OSTYPE"
     fi
@@ -270,7 +293,11 @@ pdone "Pulled Boltzmann $REPO_PATH"
 # Create a virtual environment if it does not exist
 if [ ! -d "$REPO_PATH/venv" ]; then
     ohai "Creating virtual environment at $REPO_PATH..."
-    execute python3.12 -m venv "$REPO_PATH/venv" > /dev/null 2>&1
+    if [[ "$1" == "--debug" ]]; then
+        execute python3.12 -m venv "$REPO_PATH/venv"
+    else
+        execute python3.12 -m venv "$REPO_PATH/venv" > /dev/null 2>&1
+    fi
 fi
 pdone "Created venv at $REPO_PATH"
 
@@ -281,7 +308,13 @@ if [[ -z "${VIRTUAL_ENV:-}" ]]; then
 fi
 pdone "Activated venv at $REPO_PATH"
 
-execute pip install -r $REPO_PATH/requirements.txt > /dev/null 2>&1
+if [[ "$1" == "--debug" ]]; then
+    execute pip install -r $REPO_PATH/requirements.txt
+    execute pip install --upgrade cryptography pyOpenSSL
+else
+    execute pip install -r $REPO_PATH/requirements.txt > /dev/null 2>&1
+    execute pip install --upgrade cryptography pyOpenSSL > /dev/null 2>&1
+fi
 pdone "Installed requirements"
 
 # Check for GPUs
@@ -345,14 +378,22 @@ fi
 pdone "Registered $NUM_GPUS keys to subnet 220"
 
 ohai "Logging into wandb..."
-execute wandb login > /dev/null 2>&1
+if [[ "$1" == "--debug" ]]; then
+    execute wandb login
+else
+    execute wandb login > /dev/null 2>&1
+fi
 pdone "Initialized wandb"
 
 
 # Delete items from bucket
 PROJECT=${2:-aesop}
 ohai "Cleaning bucket $BUCKET..."
-execute python3 $REPO_PATH/tools/clean.py --bucket "$BUCKET"
+if [[ "$1" == "--debug" ]]; then
+    execute python3 $REPO_PATH/tools/clean.py --bucket "$BUCKET"
+else
+    execute python3 $REPO_PATH/tools/clean.py --bucket "$BUCKET" > /dev/null 2>&1
+fi
 pdone "Cleaned bucket"
 
 # Close down all previous processes and restart them
@@ -390,7 +431,11 @@ if [ "$NUM_GPUS" -gt 0 ]; then
             BATCH_SIZE=1
         fi
         ohai "Starting miner on GPU $GPU_INDEX with batch size $BATCH_SIZE..."
-        execute pm2 start "$REPO_PATH/miner.py" --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$GPU_INDEX --use_wandb --project "$PROJECT"
+        if [[ "$1" == "--debug" ]]; then
+            execute pm2 start "$REPO_PATH/miner.py" --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$GPU_INDEX --use_wandb --project "$PROJECT"
+        else
+            execute pm2 start "$REPO_PATH/miner.py" --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$GPU_INDEX --use_wandb --project "$PROJECT" > /dev/null 2>&1
+        fi
     done
 else
     warn "No GPUs found. Skipping miner startup."
