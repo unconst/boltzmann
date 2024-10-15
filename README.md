@@ -8,6 +8,12 @@
 
 ---
 
+<p align="center">
+<code>/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/unconst/boltzmann/refs/heads/master/run.sh)"</code>
+</p>
+
+---
+
 This repository implements an incentive system for decentralized training on the Bittensor network.
 
 ## Overview
