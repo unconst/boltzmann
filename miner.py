@@ -247,9 +247,16 @@ class Miner:
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tTotal steps: [tan]{full_steps}/{total_steps}[/tan], Rate: [tan]{(full_steps/total_steps):.2f}[/tan], Target: [tan]{self.sample_rate:.2f}[/tan]")
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tTotal tokens: [tan]{tokens_per_step}[/tan], Tokens per second: [tan]{tokens_per_second:.2f}[/tan]")
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tLoss: [tan]{step_loss}[tan]")
-                # Update sample rate.
                 if exhuasted_window: self.sample_rate = max(0.0001, self.sample_rate * 0.95)
                 else: self.sample_rate = min(1, self.sample_rate * 1.05)
+                if self.config.use_wandb:
+                    for uid_i in valid_score_indices:
+                        wandb.log({
+                            f"loss": step_loss,
+                            f"tokens_per_step": tokens_per_step,
+                            f"tokens_per_second": tokens_per_second,
+                            f"sample_rate": self.sample_rate,
+                        })
 
                 # Upload the delta for the previous window.
                 start_time = time.time()
