@@ -86,8 +86,7 @@ class Validator:
 
         # Set UID
         set_uid(self.uid)
-
-
+        
         # Init bucket.
         try:
             if self.config.bucket != self.subtensor.get_commitment(self.config.netuid, self.uid):

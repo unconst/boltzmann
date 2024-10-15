@@ -319,8 +319,7 @@ async def download_file(s3_client, bucket: str, filename: str) -> str:
                 logger.debug(f"Downloading file {filename} to {temp_file}")
                 head_response = await s3_client.head_object(Bucket=bucket, Key=filename)
                 object_size = head_response['ContentLength']
-                CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB
-                
+                CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB        
                 response = await s3_client.get_object(Bucket=bucket, Key=filename)
                 async with aiofiles.open(temp_file, 'wb') as outfile:
                     while True:
