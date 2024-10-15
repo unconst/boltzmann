@@ -305,10 +305,10 @@ async def download_file(s3_client, bucket: str, filename: str) -> str:
     async with semaphore:
         uid_dir = get_uid_directory()
         temp_file = os.path.join(uid_dir, filename)
+        # Check if the file exists.
         if os.path.exists(temp_file):
             logger.debug(f"File {temp_file} already exists, skipping download.")
-            return temp_file
-        
+            return temp_file    
         lock_file = f"{temp_file}.lock"
         lock = FileLock(lock_file)
         try:
@@ -332,7 +332,6 @@ async def download_file(s3_client, bucket: str, filename: str) -> str:
         except Timeout:
             logger.error(f"Timeout occurred while trying to acquire lock on {lock_file}")
             return None
-        
         except Exception as e:
             logger.exception(f"Failed to download file {filename} from bucket {bucket}: {e}")
             return None
