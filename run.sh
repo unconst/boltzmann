@@ -17,6 +17,8 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+DEBUG=${1:-false}
+
 set -euo pipefail
 
 trap 'abort "An unexpected error occurred."' ERR
@@ -142,7 +144,7 @@ if ! command -v git &> /dev/null; then
             . /etc/os-release
             if [[ "$ID" == "ubuntu" || "$ID_LIKE" == *"ubuntu"* ]]; then
                 ohai "Detected Ubuntu, installing Git..."
-                if [[ "$1" == "--debug" ]]; then
+                if [[ "$DEBUG" == "true" ]]; then
                     execute_sudo apt-get update -y
                     execute_sudo apt-get install git -y
                 else
@@ -163,7 +165,7 @@ if ! command -v git &> /dev/null; then
             warn "Homebrew is not installed, installing Homebrew..."
             execute /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
         fi
-        if [[ "$1" == "--debug" ]]; then
+        if [[ "$DEBUG" == "true" ]]; then
             execute brew install git
         else
             execute brew install git > /dev/null 2>&1
@@ -181,10 +183,10 @@ if ! command -v npm &> /dev/null; then
     ohai "Installing npm ..."
     if ! command -v node &> /dev/null; then
         ohai "Node.js could not be found, installing..."
-        if ! curl -fsSL https://deb.nodesource.com/setup_14.x | sudo -E bash -; then
+        if ! curl -fsSL https://deb.nodesource.com/setup_14.x | execute_sudo -E bash -; then
             abort "Failed to download Node.js setup script"
         fi
-        if ! sudo apt-get install -y nodejs; then
+        if ! execute_sudo apt-get install -y nodejs; then
             abort "Failed to install Node.js"
         fi
     fi
@@ -198,7 +200,7 @@ pdone "Installed npm"
 # Install pm2
 if ! command -v pm2 &> /dev/null; then
     ohai "Installing pm2 ..."
-    if [[ "$1" == "--debug" ]]; then
+    if [[ "$DEBUG" == "true" ]]; then
         execute npm install pm2 -g
     else
         execute npm install pm2 -g > /dev/null 2>&1
@@ -215,7 +217,7 @@ if ! command -v python3.12 &> /dev/null; then
             . /etc/os-release
             if [[ "$ID" == "ubuntu" || "$ID_LIKE" == *"ubuntu"* ]]; then
                 ohai "Detected Ubuntu, installing Python 3.12..."
-                if [[ "$1" == "--debug" ]]; then
+                if [[ "$DEBUG" == "true" ]]; then
                     execute_sudo add-apt-repository ppa:deadsnakes/ppa -y
                     execute_sudo apt-get update -y
                     execute_sudo apt-get install python3.12 -y
@@ -238,7 +240,7 @@ if ! command -v python3.12 &> /dev/null; then
             warn "Homebrew is not installed, installing Homebrew..."
             execute /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
         fi
-        if [[ "$1" == "--debug" ]]; then
+        if [[ "$DEBUG" == "true" ]]; then
             execute brew install python@3.12
         else
             execute brew install python@3.12 > /dev/null 2>&1
@@ -293,7 +295,7 @@ pdone "Pulled Boltzmann $REPO_PATH"
 # Create a virtual environment if it does not exist
 if [ ! -d "$REPO_PATH/venv" ]; then
     ohai "Creating virtual environment at $REPO_PATH..."
-    if [[ "$1" == "--debug" ]]; then
+    if [[ "$DEBUG" == "true" ]]; then
         execute python3.12 -m venv "$REPO_PATH/venv"
     else
         execute python3.12 -m venv "$REPO_PATH/venv" > /dev/null 2>&1
@@ -308,7 +310,7 @@ if [[ -z "${VIRTUAL_ENV:-}" ]]; then
 fi
 pdone "Activated venv at $REPO_PATH"
 
-if [[ "$1" == "--debug" ]]; then
+if [[ "$DEBUG" == "true" ]]; then
     execute pip install -r $REPO_PATH/requirements.txt
     execute pip install --upgrade cryptography pyOpenSSL
 else
@@ -378,7 +380,7 @@ fi
 pdone "Registered $NUM_GPUS keys to subnet 220"
 
 ohai "Logging into wandb..."
-if [[ "$1" == "--debug" ]]; then
+if [[ "$DEBUG" == "true" ]]; then
     execute wandb login
 else
     execute wandb login > /dev/null 2>&1
@@ -387,9 +389,9 @@ pdone "Initialized wandb"
 
 
 # Delete items from bucket
-PROJECT=${2:-aesop}
+
 ohai "Cleaning bucket $BUCKET..."
-if [[ "$1" == "--debug" ]]; then
+if [[ "$DEBUG" == "true" ]]; then
     execute python3 $REPO_PATH/tools/clean.py --bucket "$BUCKET"
 else
     execute python3 $REPO_PATH/tools/clean.py --bucket "$BUCKET" > /dev/null 2>&1
@@ -431,7 +433,7 @@ if [ "$NUM_GPUS" -gt 0 ]; then
             BATCH_SIZE=1
         fi
         ohai "Starting miner on GPU $GPU_INDEX with batch size $BATCH_SIZE..."
-        if [[ "$1" == "--debug" ]]; then
+        if [[ "$DEBUG" == "true" ]]; then
             execute pm2 start "$REPO_PATH/miner.py" --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$GPU_INDEX --use_wandb --project "$PROJECT"
         else
             execute pm2 start "$REPO_PATH/miner.py" --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$GPU_INDEX --use_wandb --project "$PROJECT" > /dev/null 2>&1
