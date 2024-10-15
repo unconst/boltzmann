@@ -83,6 +83,26 @@ asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 # Define a semaphore to limit concurrent downloads (adjust as needed)
 semaphore = asyncio.Semaphore(1000)
 
+def set_uid(new_uid):
+    global uid
+    uid = new_uid
+    logger.debug(f"UID set to {uid}")
+
+def get_uid_directory() -> str:
+    """
+    Returns the directory path for the current uid within the temporary directory.
+    """
+    global uid
+    if uid is None:
+        raise ValueError("UID has not been set in common.py module.")
+
+    temp_dir = tempfile.gettempdir()
+    uid_dir = os.path.join(temp_dir, str(uid))
+    # Ensure the directory exists
+    os.makedirs(uid_dir, exist_ok=True)
+    logger.debug(f"UID directory is {uid_dir}")
+    return uid_dir
+
 async def get_slices( filename:str, device:str ) -> Dict[str, torch.Tensor]:
     # Attempt to acquire the lock with a timeout of 1 second.
     lock: FileLock = FileLock(f"{filename}.lock")
@@ -274,44 +294,39 @@ async def get_indices_for_window(model: torch.nn.Module, seed: str, compression:
 
 async def download_file(s3_client, bucket: str, filename: str) -> str:
     """
-    Downloads a file from S3, using parallel downloads for large files.
-
+    Downloads a file from S3 and saves it to the uid-specific directory.
+    
     Args:
         s3_client: The S3 client.
         bucket (str): Name of the S3 bucket.
         filename (str): The S3 object key (filename).
-
+    
     Returns:
-        str: The path to the downloaded file in the temporary directory.
+        str: The path to the downloaded file in the uid directory.
     """
     async with semaphore:
-        temp_file = os.path.join(tempfile.gettempdir(), filename)
-        # Check if the file exists.
+        # Get the uid-specific directory
+        uid_dir = get_uid_directory()
+        temp_file = os.path.join(uid_dir, filename)
+        
+        # Check if the file already exists
         if os.path.exists(temp_file):
             logger.debug(f"File {temp_file} already exists, skipping download.")
             return temp_file
+        
         lock_file = f"{temp_file}.lock"
         lock = FileLock(lock_file)
         try:
-            # Try to acquire both locks with a timeout
             with lock.acquire(timeout=1):
-                # Proceed to download the file
                 logger.debug(f"Downloading file {filename} to {temp_file}")
-                head_response = await s3_client.head_object(Bucket=bucket, Key=filename)
-                object_size = head_response['ContentLength']
-                CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB
-
+                
+                # Download the file from S3
                 response = await s3_client.get_object(Bucket=bucket, Key=filename)
                 async with aiofiles.open(temp_file, 'wb') as outfile:
-                    while True:
-                        chunk = await response['Body'].read(CHUNK_SIZE)
-                        if not chunk:
-                            break
-                        await outfile.write(chunk)
-
+                    await outfile.write(await response['Body'].read())
+                
                 logger.debug(f"Successfully downloaded file {filename} to {temp_file}")
                 return temp_file
-
         except Timeout:
             logger.error(f"Timeout occurred while trying to acquire lock on {lock_file}")
             return None
@@ -438,30 +453,38 @@ async def load_files_for_window(window: int, key: str = 'slice') -> List[str]:
         List[str]: A list of file paths corresponding to the window.
     """
     logger.debug(f"Retrieving files for window {window} from temporary directory")
-    temp_dir = tempfile.gettempdir()
+    global uid
+    if uid is None:
+        raise ValueError("UID has not been set in common.py module.")
+
+    uid_dir = get_uid_directory()
     window_files = []
-    for filename in os.listdir(temp_dir):
+    for filename in os.listdir(uid_dir):
         if filename.startswith(f"{key}-{window}-") and filename.endswith(".pt"):
-            window_files.append(os.path.join(temp_dir, filename))
+            window_files.append(os.path.join(uid_dir, filename))
             logger.debug(f"Found file {filename} for window {window}")
     return window_files
 
 async def delete_files_before_window(window_max: int, key:str = 'slice'):
     """
-    Deletes all files on the local machine which have a window id before a specific value window_max.
+    Deletes all files in the uid-specific directory which have a window id before a specific value window_max.
 
     Args:
         window_max (int): The maximum window id. Files with window ids less than this value will be deleted.
     """
-    logger.debug(f"Deleting files with window id before {window_max}")
-    temp_dir = tempfile.gettempdir()
-    for filename in os.listdir(temp_dir):
+    global uid
+    if uid is None:
+        raise ValueError("UID has not been set in common.py module.")
+
+    logger.debug(f"Deleting files with window id before {window_max} for uid {uid}")
+    uid_dir = get_uid_directory()
+    for filename in os.listdir(uid_dir):
         if filename.startswith(f"{key}-") and ( filename.endswith(".pt") or filename.endswith(".lock") ):
             try:
                 parts = filename.split('-')
                 window_id = int(parts[1])
                 if window_id < window_max:
-                    file_path = os.path.join(temp_dir, filename)
+                    file_path = os.path.join(uid_dir, filename)
                     if os.path.exists(file_path):
                         os.remove(file_path)
                         logger.debug(f"Deleted file {file_path}")

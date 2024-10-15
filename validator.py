@@ -36,6 +36,7 @@ from transformers import LlamaForCausalLM
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 # Import local files.
+import common
 from common import *
 from hparams import load_hparams
 from dataset import DatasetLoader
@@ -83,6 +84,10 @@ class Validator:
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         logger.info('\n' + '-' * 40 + ' Objects ' + '-' * 40)
         logger.info(f'\nWallet: {self.wallet}\nSubtensor: {self.subtensor}\nMetagraph: {self.metagraph}\nUID: {self.uid}')
+
+        # Set UID
+        common.set_uid(self.uid)
+
 
         # Init bucket.
         try:
