@@ -180,37 +180,37 @@ class Validator:
             try:
                 # Get the window we are evalling.
                 logger.info('[bold]' + '\n' + '-' * 40 + f' Step: {self.global_step} ' + '-' * 40)
-                start_step_time = time.time()
+                gs_start = T()
                 self.global_step += 1
                 offset = 2
                 window = self.current_window - offset
                 
                 # Download the state for the eval window.
-                start_time = time.time()
+                st = T()
                 state_slices = await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
                     windows = [ window ],
                     key = 'state'
                 )
                 n_state_slices = len(state_slices[ window ]) if window in state_slices else 0
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded {n_state_slices} window states.")
+                logger.info(f"{P(window, T() - st)}: Downloaded {n_state_slices} window states.")
                 
                 # Download the delta for the eval window.
-                start_time = time.time()
+                st = T()
                 eval_slices = await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
                     windows = [ window ],
                     key = 'delta'
                 ) 
                 n_eval_slices = len(eval_slices[ window ]) if window in eval_slices else 0
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded {n_eval_slices} window deltas.")                
+                logger.info(f"{P(window, T() - st)}: Downloaded {n_eval_slices} window deltas.")                
                 if n_eval_slices == 0:
                     logger.info(f"[steel_blue]{window}[/steel_blue]: No slices to eval, continue ...")
                     while self.current_window - offset == window: await asyncio.sleep(0.1) # Wait for next window.
                     continue
                 
                 # Applied the model state state for the eval window.
-                start_time = time.time()
+                st = T()
                 await apply_slices_to_model( 
                     model = self.model, 
                     window = window,
@@ -218,30 +218,30 @@ class Validator:
                     compression = self.hparams.compression,
                     key = 'state',
                 )
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window state.")
+                logger.info(f"{P(window, T() - st)}: Applied window state.")
                 
                 # Attain the indicies for the eval window.
-                start_time = time.time()
+                st = T()
                 indices = await get_indices_for_window(
                     model = self.model,
                     seed = window,
                     compression = self.hparams.compression
                 ) 
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Attained window indices.")
+                logger.info(f"{P(window, T() - st)}: Attained window indices.")
                                
 
                 # Attain the UID of this slice.
-                start_time = time.time()
+                st = T()
                 eval_slice_info = random.choice( eval_slices[ window ] )                
                 try: eval_uid = self.metagraph.hotkeys.index(eval_slice_info.hotkey)
                 except ValueError:
                     logger.warning(f"Hotkey {eval_slice_info.hotkey} not found in metagraph hotkeys.")
                     continue                                
                 eval_slice_data = await get_slices( eval_slice_info.temp_file, self.model.device )                
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Loaded window slices for uid: [dark_sea_green]{eval_uid}[/dark_sea_green].")
+                logger.info(f"{P(window, T() - st)}: Loaded window slices for uid: [dark_sea_green]{eval_uid}[/dark_sea_green].")
 
                 # Download the eval page for this uid.
-                start_time = time.time()
+                st = T()
                 eval_pages = await DatasetLoader.next_pages(
                     offset = window,
                     n_pages = self.hparams.validator_window_eval_size,
@@ -254,10 +254,10 @@ class Validator:
                     pages_info = eval_pages,
                     tokenizer = self.hparams.tokenizer
                 )                
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded eval pages: [light_steel_blue]{[p[1] for p in eval_pages]}[/light_steel_blue].")
+                logger.info(f"{P(window, T() - st)}: Downloaded eval pages: [light_steel_blue]{[p[1] for p in eval_pages]}[/light_steel_blue].")
   
                 # Accumulate gradients from this page.
-                start_time = time.time()
+                eval_start = T()
                 self.model.zero_grad()
                 total_loss = 0.0
                 full_steps = 0; total_steps = 0; 
@@ -276,24 +276,18 @@ class Validator:
                             outputs.loss.backward()
                             if self.current_window - offset != window: exhuasted_window = True; continue
                 step_loss = total_loss/(full_steps+1)
+                eval_duration = T() - eval_start
                 tokens_per_step = self.hparams.sequence_length * self.config.actual_batch_size * (full_steps + 1)
-                tokens_per_second = tokens_per_step / (time.time() - start_time)
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Accumulated gradients:")
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tTotal steps: [tan]{full_steps}/{total_steps}[/tan], Rate: [tan]{(full_steps/total_steps):.2f}[/tan], Target: [tan]{self.sample_rate:.2f}[/tan]")
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tTotal tokens: [tan]{tokens_per_step}[/tan], Tokens per second: [tan]{tokens_per_second:.2f}[/tan]")
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tLoss: [tan]{step_loss}[tan]")
+                tokens_per_second = tokens_per_step / eval_duration
+                logger.info(f"{P(window, eval_duration)}: Accumulated gradients:")
+                logger.info(f"{P(window, eval_duration)}: \tTotal steps: [tan]{full_steps}/{total_steps}[/tan], Rate: [tan]{(full_steps/total_steps):.2f}[/tan], Target: [tan]{self.sample_rate:.2f}[/tan]")
+                logger.info(f"{P(window, eval_duration)}: \tTotal tokens: [tan]{tokens_per_step}[/tan], Tokens per second: [tan]{tokens_per_second:.2f}[/tan]")
+                logger.info(f"{P(window, eval_duration)}: \tLoss: [tan]{step_loss}[tan]")
                 if exhuasted_window: self.sample_rate = max(0.0001, self.sample_rate * 0.95)
                 else: self.sample_rate = min(1, self.sample_rate * 1.05)
-                if self.config.use_wandb:
-                    wandb.log({
-                        f"loss": step_loss,
-                        f"tokens_per_step": tokens_per_step,
-                        f"tokens_per_second": tokens_per_second,
-                        f"sample_rate": self.sample_rate,
-                    })
                 
                 # Compute the score for this slice.
-                start_time = time.time()
+                st = T()
                 score = 0.0 
                 for i, (name_i, param_i) in enumerate( self.model.named_parameters() ):
                     if param_i.grad is None: continue  # Skip parameters without gradients
@@ -305,10 +299,10 @@ class Validator:
                     sim_i = torch.nn.functional.cosine_similarity(delta_i, grad_i, dim=0).item()
                     weight_i = param_i.data.view(-1)[idxs_i].norm().item() + 1e-8
                     score += weight_i * sim_i
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Computed score: [bold dark_sea_green]{score:.4f}[/bold dark_sea_green]")           
+                logger.info(f"{P(window, T() - st)}: Computed score: [bold dark_sea_green]{score:.4f}[/bold dark_sea_green]")           
 
                 # Assign and log scores.
-                start_time = time.time()
+                start_time = T()
                 self.step_scores[ eval_uid ] = score
                 self.scores[ eval_uid ] = (1 - self.hparams.validator_moving_alpha) * score + self.hparams.validator_moving_alpha * self.scores[eval_uid]
                 self.scores[ torch.isnan(self.scores) ] = 0
@@ -316,14 +310,6 @@ class Validator:
                 valid_scores = self.scores[valid_score_indices].view(-1, 1) if valid_score_indices.dim() == 1 else self.scores[valid_score_indices]
                 if valid_scores.numel() > 0:
                     self.weights[valid_score_indices] = valid_scores / (valid_scores.sum() + 1e-8) # Weights are normalized scores.
-                # Log and print scores.
-                if self.config.use_wandb:
-                    for uid_i in valid_score_indices:
-                        wandb.log({
-                            f"step_scores/{uid_i.item()}": self.step_scores[ uid_i ].item(),
-                            f"moving_scores/{uid_i.item()}": self.scores[ uid_i ].item(),
-                            f"weights/{uid_i.item()}": self.weights[ uid_i ].item(),
-                        })
                 for uid_i in valid_score_indices:
                     moving_score = self.scores[ uid_i ].item()
                     weight = self.weights[ uid_i ].item()
@@ -336,7 +322,7 @@ class Validator:
                     )
                 
                 # Apply all deltas to the model state.
-                start_time = time.time()
+                st = T()
                 await apply_slices_to_model( 
                     model = self.model, 
                     window = window,
@@ -344,23 +330,38 @@ class Validator:
                     compression = self.hparams.compression,
                     key = 'delta',
                 )
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window deltas.")
+                logger.info(f"{P(window, T() - st)}: Applied window deltas.")
                 
                 # Clean local and remote space from old slices.
-                start_time = time.time()
+                st = T()
                 await delete_files_before_window( window_max = window - self.hparams.max_history, key = 'slice')
                 await delete_files_before_window( window_max = window - self.hparams.max_history, key = 'delta')
                 await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history, key = 'slice' )
                 await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history, key = 'delta' )
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Cleaned file history.")
+                logger.info(f"{P(window, T() - st)}: Cleaned file history.")
 
                 # Finish step.
-                step_end_time = time.time()
+                gs_end = T()
                 while self.current_window - offset == window:
                     await asyncio.sleep(0.1)
-                window_time_delta = self.window_time - step_end_time
+                window_time_delta = self.window_time - gs_end
                 window_delta_str = f"[red]{window_time_delta:.2f}[/red]" if window_time_delta < 0 else f"[green]+{window_time_delta:.2f}[/green]"
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{step_end_time - start_step_time:.2f}s[/grey63])[{window_delta_str}]: Finished step.")
+                logger.info(f"{P(window, gs_end - gs_start)}[{window_delta_str}]: Finished step.")
+                if self.config.use_wandb:
+                    wandb.log({
+                        f"loss": step_loss,
+                        f"tokens_per_step": tokens_per_step,
+                        f"tokens_per_second": tokens_per_second,
+                        f"sample_rate": self.sample_rate,
+                        f"utilization": eval_duration / (gs_end - gs_start)
+                    })
+                    for uid_i in valid_score_indices:
+                        wandb.log({
+                            f"step_scores/{uid_i.item()}": self.step_scores[ uid_i ].item(),
+                            f"moving_scores/{uid_i.item()}": self.scores[ uid_i ].item(),
+                            f"weights/{uid_i.item()}": self.weights[ uid_i ].item(),
+                        })
+                    
                                                                 
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
@@ -391,9 +392,11 @@ class Validator:
             if self.block_to_window(self.current_block) != self.current_window:
                 self.window_seeds[ self.block_to_window(self.current_block) ] = self.window_to_seed( self.block_to_window(self.current_block) )
                 self.current_window = self.block_to_window(self.current_block)
-                self.window_time = time.time()
+                self.window_duration = T() - self.window_time if hasattr(self, 'window_time') else 0
+                self.window_time = T()
                 loop.call_soon_threadsafe(self.new_window_event.set)
-                logger.info(f"-- New window: {self.current_window} -- ")
+                logger.info(f"{P(self.current_window, self.window_duration)} New Window.")
+                
         # Run listener with retry.
         while not self.stop_event.is_set():
             try:

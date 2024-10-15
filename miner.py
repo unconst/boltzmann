@@ -147,7 +147,7 @@ class Miner:
         
     async def update(self):
         while not self.stop_event.is_set():
-            start_time = time.time()
+            st = T()
             self.subtensor = bt.subtensor(config=self.config)
             self.metagraph = self.subtensor.metagraph(self.config.netuid)
             self.hparams = load_hparams()
@@ -156,7 +156,7 @@ class Miner:
                 try: next_buckets.append(self.config.bucket if not self.config.remote else self.subtensor.get_commitment( self.config.netuid, uid ))
                 except: next_buckets.append(None)    
             self.buckets = next_buckets    
-            logger.info(f"[steel_blue]{self.current_window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Updated global state.")
+            logger.info(f"{P(self.current_window, T() - st)} Updated global state.")
             await asyncio.sleep(60)
 
     async def run(self):
@@ -189,32 +189,32 @@ class Miner:
                 # Start the window step.     
                 logger.info('[bold]' + '\n' + '-' * 40 + f' Step: {self.global_step} ' + '-' * 40)
                 self.global_step += 1
-                start_step_time = time.time()
+                start_step = T()
                 window = self.current_window
                 
                 # Run for non-baseline miners.
                 if not self.config.baseline:
-                    start_time = time.time()
+                    st = T()
                     state_slices = await download_slices_for_buckets_and_windows(
                         buckets = self.buckets,
                         windows = [ window ],
                         key = 'state'
                     )
                     n_slices = len(state_slices[ window ]) if window in state_slices else 0
-                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded {n_slices} window states.")
+                    logger.info(f"{P(window, T() - st)}: Downloaded {n_slices} window states.")
                     
                     # Download the delta from the previous window.
-                    start_time = time.time()
+                    st = T()
                     delta_slices = await download_slices_for_buckets_and_windows(
                         buckets = self.buckets,
                         windows = [ window - 1 ],
                         key = 'delta'
                     )       
                     n_slices = len(delta_slices[ window - 1  ]) if window - 1 in delta_slices else 0
-                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Download {n_slices} window deltas.")
+                    logger.info(f"{P(window, T() - st)}: Download {n_slices} window deltas.")
                     
                     # Apply the state for the current window.
-                    start_time = time.time()
+                    st = T()
                     await apply_slices_to_model( 
                         model = self.model, 
                         window = window,
@@ -222,10 +222,10 @@ class Miner:
                         compression = self.hparams.compression,
                         key = 'state'
                     )
-                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window state.")
+                    logger.info(f"{P(window, T() - st)}: Applied window state.")
         
                 # Download the page for the current window.
-                start_time = time.time()
+                st = T()
                 pages = await DatasetLoader.next_pages(
                     offset = window,
                     n_pages = self.hparams.validator_window_eval_size,
@@ -238,10 +238,10 @@ class Miner:
                     pages_info = pages,
                     tokenizer = self.hparams.tokenizer
                 )
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded training page: [light_steel_blue]{[p[1] for p in pages]}[/light_steel_blue] random = {self.config.random}")
+                logger.info(f"{P(window, T() - st)}: Downloaded training page: [light_steel_blue]{[p[1] for p in pages]}[/light_steel_blue] random = {self.config.random}")
 
                 # Accumualte gradients on the model applied to the base state.
-                start_time = time.time()
+                train_start = T()
                 self.model.zero_grad(); self.model.eval()
                 total_loss = 0.0
                 full_steps = 0; total_steps = 0; 
@@ -257,33 +257,27 @@ class Miner:
                             outputs = self.model(input_ids=input_ids, labels=labels)
                         total_loss += outputs.loss.item()
                         outputs.loss.backward()     
-                        if window != self.current_window: exhuasted_window = True; continue
+                        if window != self.current_window and not self.config.baseline: exhuasted_window = True; continue
                 if self.hparams.grad_clip: torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.hparams.grad_clip)
                 self.optimizer.step()
                 self.scheduler.step()
                 self.optimizer.zero_grad()
                 torch.cuda.empty_cache()
                 step_loss = total_loss/(full_steps+1)
+                train_duration = T() - train_start
                 tokens_per_step = self.hparams.sequence_length * self.config.actual_batch_size * (full_steps + 1)
-                tokens_per_second =  tokens_per_step / (time.time() - start_time)
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Accumulated gradients:")
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tTotal steps: [tan]{full_steps}/{total_steps}[/tan], Rate: [tan]{(full_steps/total_steps):.2f}[/tan], Target: [tan]{self.sample_rate:.2f}[/tan]")
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tTotal tokens: [tan]{tokens_per_step}[/tan], Tokens per second: [tan]{tokens_per_second:.2f}[/tan]")
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tLoss: [tan]{step_loss}[tan]")
+                tokens_per_second =  tokens_per_step / train_duration
+                logger.info(f"{P(window, train_duration)} Accumulated gradients:")
+                logger.info(f"{P(window, train_duration)} \tTotal steps: [tan]{full_steps}/{total_steps}[/tan], Rate: [tan]{(full_steps/total_steps):.2f}[/tan], Target: [tan]{self.sample_rate:.2f}[/tan]")
+                logger.info(f"{P(window, train_duration)} \tTotal tokens: [tan]{tokens_per_step}[/tan], Tokens per second: [tan]{tokens_per_second:.2f}[/tan]")
+                logger.info(f"{P(window, train_duration)} \tLoss: [tan]{step_loss}[tan]")
                 if exhuasted_window: self.sample_rate = max(0.0001, self.sample_rate * 0.95)
                 else: self.sample_rate = min(1, self.sample_rate * 1.05)
-                if self.config.use_wandb:
-                    wandb.log({
-                        f"loss": step_loss,
-                        f"tokens_per_step": tokens_per_step,
-                        f"tokens_per_second": tokens_per_second,
-                        f"sample_rate": self.sample_rate,
-                    })
 
                 # Run for non-baseline nodes.
                 if not self.config.baseline:
                     # Upload the delta for the previous window.
-                    start_time = time.time()
+                    st = T()
                     await upload_slice_for_window(
                         bucket = self.config.bucket, 
                         model = self.model, 
@@ -293,10 +287,10 @@ class Miner:
                         compression = self.hparams.compression,
                         key = 'delta'
                     )                
-                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Uploaded the delta.")
+                    logger.info(f"{P(window, T() - st)}: Uploaded the delta.")
                     
                     # Apply the delta from the previous window.
-                    start_time = time.time()
+                    st = T()
                     await apply_slices_to_model(
                         model = self.model, 
                         window = window - 1,
@@ -304,10 +298,10 @@ class Miner:
                         compression = self.hparams.compression,
                         key = 'delta'
                     )         
-                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window delta.")
+                    logger.info(f"{P(window, T() - st)}: Applied window delta.")
                 
                     # Upload the state for the current window.
-                    start_time = time.time()
+                    st = T()
                     await upload_slice_for_window(
                         bucket = self.config.bucket, 
                         model = self.model, 
@@ -317,23 +311,32 @@ class Miner:
                         compression = self.hparams.compression,
                         key = 'state',
                     )
-                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Uploaded the state.")
+                    logger.info(f"{P(window, T() - st)}: Uploaded the state.")
                     
                     # Clean file history.
-                    start_time = time.time()
+                    st = T()
                     await delete_files_before_window( window_max = window - self.hparams.max_history, key = 'slice')
                     await delete_files_before_window( window_max = window - self.hparams.max_history, key = 'delta')
                     await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history, key = 'slice' )
                     await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history, key = 'delta' )
-                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Cleaned file history.")
+                    logger.info(f"{P(window, T() - st)}: Cleaned file history.")
                     
                     # Wait until we are on a new window.
-                    step_end_time = time.time()
+                    end_step = T()
                     while self.current_window == window:
                         await asyncio.sleep(0.1)
-                    window_time_delta = self.window_time - step_end_time
+                    window_time_delta = self.window_time - end_step
                     window_delta_str = f"[red]{window_time_delta:.2f}[/red]" if window_time_delta < 0 else f"[green]+{window_time_delta:.2f}[/green]"
-                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{step_end_time - start_step_time:.2f}s[/grey63])[{window_delta_str}]: Finished step.")
+                    logger.info(f"{P(window, end_step - start_step)}[{window_delta_str}]: Finished step.")
+                    if self.config.use_wandb:
+                        wandb.log({
+                            f"loss": step_loss,
+                            f"tokens_per_step": tokens_per_step,
+                            f"tokens_per_second": tokens_per_second,
+                            f"sample_rate": self.sample_rate,
+                            f"utilization": train_duration / (end_step - start_step),
+                            f"learning_rate": self.scheduler.get_last_lr()[0]
+                        })
                                 
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
@@ -364,9 +367,10 @@ class Miner:
             if self.block_to_window(self.current_block) != self.current_window:
                 self.window_seeds[ self.block_to_window(self.current_block) ] = self.window_to_seed( self.block_to_window(self.current_block) )
                 self.current_window = self.block_to_window(self.current_block)
-                self.window_time = time.time()
+                self.window_duration = T() - self.window_time if hasattr(self, 'window_time') else 0
+                self.window_time = T()
                 loop.call_soon_threadsafe(self.new_window_event.set)
-                logger.info(f"-- New window: {self.current_window} -- ")
+                logger.info(f"{P(self.current_window, self.window_duration)} New Window.")
         # Run listener with retry.
         while not self.stop_event.is_set():
             try:

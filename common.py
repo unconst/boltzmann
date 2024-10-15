@@ -19,6 +19,7 @@ import os
 import io
 import sys 
 import uuid
+import time
 import fcntl
 import torch
 import uvloop
@@ -62,6 +63,10 @@ def debug():
     logger.setLevel(logging.DEBUG)
 def trace():
     logger.setLevel(logging.TRACE)
+# Log helper.
+def T(): return time.time()
+def P( w, d ): return f"[steel_blue]{w}[/steel_blue] ([grey63]{d:.2f}s[/grey63])"
+
     
 # Load environment variables
 env_config = {**dotenv_values(".env"), **os.environ}
