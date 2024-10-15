@@ -1,10 +1,10 @@
-<p align="center">
-    <img src="https://raw.githubusercontent.com/unconst/bistro/main/assets/logo.png" alt="BISTRO Logo" width="200">
-</p>
+ ______   _____         _______ ______ _______ _______ __   _ __   _
+ |_____] |     | |         |     ____/ |  |  | |_____| | \  | | \  |
+ |_____] |_____| |_____    |    /_____ |  |  | |     | |  \_| |  \_|
 
 ---
 
-# BISTRO: Bittensor Incentivized Scalable Training with Reward Optimization
+# BOLTZMANN: Bittensor Incentivized Scalable Training with Reward Optimization
 
 ---
 
@@ -12,7 +12,7 @@ This repository implements an incentive system for decentralized training on the
 
 ## Overview
 
-**BISTRO** is a framework where **miners** collaboratively train a shared model by processing specific subsets of data, and **validators** ensure the quality and integrity of these contributions. The incentive landscape is designed to reward miners for effectively training on their designated data subsets, promoting efficient and collaborative model improvement in a trustless environment.
+**BOLTZMANN** is a framework where **miners** collaboratively train a shared model by processing specific subsets of data, and **validators** ensure the quality and integrity of these contributions. The incentive landscape is designed to reward miners for effectively training on their designated data subsets, promoting efficient and collaborative model improvement in a trustless environment.
 
 ## How It Works
 
@@ -32,7 +32,7 @@ This repository implements an incentive system for decentralized training on the
 
 ## Incentive Mechanism Explained
 
-The incentive mechanism in **BISTRO** ensures that miners are rewarded for authentic and beneficial contributions to the model's training. By basing rewards on the **cosine similarity** between the miners' updates and the validators' gradients, we promote alignment of miners' efforts with the overall training objectives.
+The incentive mechanism in **boltzmann** ensures that miners are rewarded for authentic and beneficial contributions to the model's training. By basing rewards on the **cosine similarity** between the miners' updates and the validators' gradients, we promote alignment of miners' efforts with the overall training objectives.
 
 ### Key Points
 
@@ -100,8 +100,8 @@ Where **$\alpha$** is a scaling factor determined by the network's economic para
 1. **Clone the Repository**
 
    ```bash
-   git clone https://github.com/unconst/bistro.git
-   cd bistro
+   git clone https://github.com/unconst/boltzmann.git
+   cd boltzmann
    ```
 
 2. **Set Up AWS Credentials**
@@ -175,7 +175,7 @@ Given the computational intensity of training and validating neural networks, it
 
 ## Contributing
 
-Contributions to the **BISTRO** project are welcome. Please open issues and submit pull requests for improvements and fixes.
+Contributions to the **boltzmann** project are welcome. Please open issues and submit pull requests for improvements and fixes.
 
 ## License
 
