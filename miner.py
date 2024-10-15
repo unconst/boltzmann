@@ -38,7 +38,6 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 # Import local files.
 from common import *
-import common
 from hparams import load_hparams
 from dataset import DatasetLoader
 
@@ -98,7 +97,7 @@ class Miner:
         logger.info('Bucket:' + self.config.bucket)
 
         # Set UID
-        common.set_uid(self.uid)
+        set_uid(self.uid)
 
         # Init Wandb.
         if self.config.use_wandb:
