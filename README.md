@@ -1,94 +1,87 @@
 <p align="center">
-]3 | _\~ ~|~ /? ()
+    <img src="https://raw.githubusercontent.com/unconst/bistro/main/assets/logo.png" alt="BISTRO Logo" width="200">
 </p>
 
 ---
-# BISTRO: Bittensor Incentivized and Scalable Training with Reward Optimization
+
+# BISTRO: Bittensor Incentivized Scalable Training with Reward Optimization
+
 ---
 
-Welcome to the BISTRO project! This repository contains the implementation of an innovative incentive system for decentralized machine learning training using the Bittensor network.
+Welcome to the **BISTRO** project! This repository implements an innovative incentive system for decentralized machine learning training on the Bittensor network.
 
 ## Overview
 
-In BISTRO, we introduce a decentralized framework where **miners** contribute to training a shared model by processing specific subsets of data, and **validators** ensure the quality of contributions. The incentive mechanism is designed to reward miners for effectively training on their designated data subsets, promoting efficient and collaborative model improvement.
+**BISTRO** introduces a decentralized framework where **miners** collaboratively train a shared model by processing specific subsets of data, and **validators** ensure the quality and integrity of their contributions. The incentive mechanism is designed to reward miners for effectively training on their designated data subsets, promoting efficient and collaborative model improvement in a trustless environment.
 
 ## How It Works
 
 ### Miners
 
-- **Training**: Miners receive a designated subset of pages from the dataset for each block window. They train the model on this subset, performing a single gradient update per window.
-- **Uploading Slices**: After training, miners upload a subset of their model weights (called **slices**) to an S3 bucket. The specific weights to upload are not known until the end of the window, ensuring fairness and preventing pre-uploading untrained weights.
-- **Window Progression**: Miners proceed to the next window, repeating the process with a new data subset.
+- **Model Synchronization**: Miners start by downloading the latest model state, which is a subset of model parameters (called **slices**) aggregated from other miners.
+- **Training**: They receive a designated subset of data (pages) from the dataset for each window (a fixed number of blocks). They train the model on this subset, performing gradient updates.
+- **Uploading Deltas**: After training, miners compute the **delta** (the change in their model parameters) and upload this delta to an S3 bucket associated with their identity.
+- **Window Progression**: Miners proceed to the next window, repeating the process with new data subsets.
 
 ### Validators
 
-- **Fetching Slices**: Validators download the slices uploaded by miners from the S3 buckets corresponding to the last window.
-- **Evaluation**: Validators evaluate the performance of the miners' slices by comparing the miner's uploaded gradient to the gradient that the validator computes using the same data subset.
-- **Scoring**: The reward for each miner is calculated based on the **negative difference** between the miner's gradient and the validator's recomputed gradient. This means that miners are incentivized to minimize this difference by accurately training on their assigned data.
+- **Model Synchronization**: Validators synchronize their model state by downloading the latest aggregated slices and applying miners' deltas from the previous window.
+- **Fetching Deltas**: Validators download the deltas uploaded by miners corresponding to the last window.
+- **Evaluation**: Validators evaluate the miners' contributions by comparing the miners' deltas to the gradients computed locally on the same data subsets.
+- **Scoring**: The reward for each miner is calculated based on the **cosine similarity** between the miner's delta and the validator's locally computed gradient. This incentivizes miners to provide genuine, high-quality updates that improve the model.
 
-## Understanding the Incentive Mechanism
+## Incentive Mechanism Explained
 
-The incentive mechanism in BISTRO is designed to ensure that miners are rewarded for genuine contributions to the model's training. By making the reward proportional to the **negative estimated change in loss** when a miner's contribution is removed, we ensure the following:
+The incentive mechanism in **BISTRO** ensures that miners are rewarded for authentic and beneficial contributions to the model's training. By basing rewards on the **cosine similarity** between the miners' updates and the validators' gradients, we promote alignment of miners' efforts with the overall training objectives.
 
-- **Alignment of Objectives**: Miners are motivated to perform authentic training on their assigned data subsets, as contributing beneficial updates that improve the model's performance maximizes their rewards.
+### Key Points
 
-- **Provide Beneficial Updates**: By submitting slices that positively impact the model's performance on the evaluation data, miners increase their rewards.
-
-- **Avoid Harmful Updates**: Since contributions that negatively impact the model (i.e., increasing the loss) result in lower rewards, miners are discouraged from submitting detrimental updates.
-
+- **Alignment of Objectives**: Miners are motivated to perform authentic training on their assigned data subsets because providing updates that closely match the true gradient direction maximizes their rewards.
+- **Positive Contributions**: By submitting deltas that positively impact the model's performance on the evaluation data, miners increase their rewards.
+- **Discouraging Malicious Behavior**: Contributions that deviate significantly from the true gradient (e.g., random or adversarial updates) result in lower or negative rewards.
 - **Data Subset Specialization**: Miners are evaluated based on their performance on specific data subsets, encouraging them to specialize and optimize their training for those subsets.
+- **Fairness**: By not revealing which model slices need to be uploaded until the end of the window, all miners are on a level playing field, preventing exploitation of the system.
 
-- **Fairness**: By not revealing which weights need to be uploaded until the end of the window, all miners are on a level playing field, preventing any potential exploitation of the system.
+### Mathematical Details
 
-This mathematical design drives miners to consistently train on their designated data subsets, ensuring the overall model benefits from diverse and comprehensive training across different portions of the dataset.
+#### Notations
 
-### Mathematical Incentive Design
+- **$\theta$**: Current model parameters.
+- **$\delta_i$**: Delta (model update) contributed by miner **$i$**.
+- **$g_i$**: Gradient of the loss with respect to the model parameters on the data subset assigned to miner **$i$**.
+- **$\hat{g}_i$**: Validator's locally computed gradient on the same data subset.
+- **$s_i$**: Cosine similarity score between **$\delta_i$** and **$\hat{g}_i$**.
+- **$R_i$**: Reward assigned to miner **$i$**.
 
-Let's denote:
+#### Cosine Similarity Calculation
 
-- $\theta$: The current model parameters.
-- $s_i$: The parameter slice (model update) contributed by miner $i$.
-- $M$: Total number of miner slices being aggregated.
-- $\delta\theta_i$: The perturbation vector representing the change to parameters if miner $i$'s slice is removed from the aggregated model.
-- $g$: Gradient of the loss with respect to the model parameters on the evaluation data.
-- $H$: Approximation of the Hessian matrix (we use the diagonal of the Fisher Information Matrix, $H \approx \text{diag}(g^2)$ ).
-- $\Delta L_i$: Estimated change in loss if miner $i$'s slice is removed.
-- $R_i$: Reward assigned to miner $i$.
-
-#### Perturbation Vector Calculation
-
-The perturbation vector $\delta\theta_i$ is calculated as:
+The cosine similarity between the miner's delta and the validator's gradient is calculated as:
 
 $$
-\delta\theta_i = \frac{s_i}{M - 1} - \theta
+s_i = \frac{\delta_i \cdot \hat{g}_i}{\|\delta_i\| \|\hat{g}_i\|}
 $$
 
-Where:
-
-- $\frac{s_i}{M - 1}$ adjusts the miner's slice to account for the aggregation without miner $i$.
-- $\theta$ is the average model parameters including all slices.
-
-#### Loss Change Estimation
-
-The estimated change in loss $\Delta L_i$ when miner $i$'s slice is removed is computed using a second-order Taylor series approximation:
-
-$$
-\Delta L_i \approx g^\top \delta\theta_i + \frac{1}{2} \delta\theta_i^\top H \delta\theta_i
-$$
-
-- **First-Order Term ($g^\top \delta\theta_i$)**: Represents the linear impact of the perturbation on the loss.
-- **Second-Order Term ($\frac{1}{2} \delta\theta_i^\top H \delta\theta_i$)**: Accounts for the curvature of the loss surface.
+- **$\delta_i \cdot \hat{g}_i$**: Dot product of the miner's delta and the validator's gradient.
+- **$\|\delta_i\|$** and **$\|\hat{g}_i\|$**: Euclidean norms of the miner's delta and the validator's gradient, respectively.
 
 #### Reward Calculation
 
-The reward for miner $i$ is then determined based on the negative of the estimated loss change:
+The reward for miner **$i$** is directly proportional to the cosine similarity score:
 
 $$
-R_i = -\Delta L_i
+R_i = \alpha \cdot s_i
 $$
 
-- Miners aim to **maximize** their rewards by **minimizing** $\Delta L_i$, which corresponds to contributing slices that **improve** the model (i.e., reduce the loss on the evaluation data).
+Where **$\alpha$** is a scaling factor determined by the network's economic parameters.
 
+- A higher cosine similarity **$s_i$** indicates that the miner's update is closely aligned with the true gradient, resulting in a higher reward.
+- If **$s_i$** is negative, it indicates that the miner's update is detrimental to the model's performance on the validation data, leading to a lower or negative reward.
+
+#### Intuition Behind the Mechanism
+
+- **Positive Reinforcement**: Miners are rewarded for updates that point in the same direction as the true gradient, improving the model.
+- **Penalty for Divergence**: Miners submitting random or harmful updates receive lower rewards due to low or negative cosine similarity.
+- **Efficient Collaboration**: This mechanism encourages miners to focus on genuine training rather than attempting to game the system.
 
 ## Installation Guide
 
@@ -99,7 +92,7 @@ $$
 - **Git** for cloning the repository
 - **AWS Account** with access to S3 (Simple Storage Service)
 - **Compute Resources**:
-  - **Miner**: High-performance GPU (e.g., NVIDIA H100) recommended for training.
+  - **Miner**: High-performance GPU (e.g., NVIDIA A100 or better) recommended for training.
   - **Validator**: Similar compute requirements as miners due to the need to recompute gradients.
 
 ### Setup Instructions
@@ -113,14 +106,14 @@ $$
 
 2. **Set Up AWS Credentials**
 
-   Create an S3 bucket and configure your AWS credentials:
+   Configure your AWS credentials to allow read and write access to your S3 bucket:
 
    ```bash
    export AWS_ACCESS_KEY_ID=your_access_key_id
    export AWS_SECRET_ACCESS_KEY=your_secret_access_key
    ```
 
-   Ensure that your S3 bucket has the necessary permissions for read and write operations. It is important 
+   Ensure that your S3 bucket has the necessary permissions for read and write operations.
 
 3. **Install Dependencies**
 
@@ -147,7 +140,7 @@ $$
 
    ```bash
    # Replace <> with your actual wallet names and hotkeys.
-   btcli register --wallet.name <wallet_name> --wallet.hotkey <hotkey_name> --subtensor.network test --netuid 212
+   btcli register --wallet.name <wallet_name> --wallet.hotkey <hotkey_name> --subtensor.network test --netuid 220
    ```
 
 ## Running the Miner and Validator
@@ -159,7 +152,7 @@ python3 miner.py \
     --wallet.name <wallet_name> \
     --wallet.hotkey <hotkey_name> \
     --subtensor.network test \
-    --netuid 212 \
+    --netuid 220 \
     --bucket <your_s3_bucket_name> \
     --device cuda
 ```
@@ -171,19 +164,23 @@ python3 validator.py \
     --wallet.name <wallet_name> \
     --wallet.hotkey <hotkey_name> \
     --subtensor.network test \
-    --netuid 212 \
+    --netuid 220 \
     --bucket <your_s3_bucket_name> \
     --device cuda
 ```
 
 ## Hardware Requirements
 
-Given the computational intensity of training and validating neural networks, it is highly recommended to use machines equipped with high-performance GPUs like NVIDIA H100. Adequate CPU resources and memory are also necessary to handle data loading and preprocessing tasks.
+Given the computational intensity of training and validating neural networks, it is highly recommended to use machines equipped with high-performance GPUs like NVIDIA A100 or better. Adequate CPU resources and memory are also necessary to handle data loading and preprocessing tasks.
 
 ## Contributing
 
-Contributions to the BISTRO project are welcome. Please open issues and submit pull requests for improvements and fixes.
+Contributions to the **BISTRO** project are welcome. Please open issues and submit pull requests for improvements and fixes.
 
 ## License
 
-This project is licensed under the MIT License © 2024 Chakana.tech. See the `LICENSE` file for details.
+This project is licensed under the MIT License © 2024 Chakana.tech. See the [LICENSE](LICENSE) file for details.
+
+---
+
+**Note**: The mathematical formulations and mechanisms described are integral to ensuring the security and efficiency of the decentralized training process. By participating as a miner or validator, you contribute to a collaborative effort to advance decentralized machine learning.
