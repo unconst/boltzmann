@@ -98,8 +98,9 @@ class Miner:
         if self.config.use_wandb:
             # Delete all runs with my name and create a new one.
             try:
-                [run.delete() for run in wandb.Api().runs(path=self.config.project)
-                 if run.name == f'M{self.uid}-{"r" if self.config.random else ""}' and logger.info(f'Deleting old run: {run}')]
+                for run in wandb.Api().runs(path=self.config.project):
+                    if run.name == f'M{self.uid}':
+                        logger.info(f'Deleting old run: {run}'); run.delete()
             except: pass
             wandb.init(project=self.config.project, resume='allow', name=f'M{self.uid}', config=self.config)
 
@@ -187,7 +188,7 @@ class Miner:
                     windows = [ window - 1 ],
                     key = 'delta'
                 )       
-                n_slices = len(delta_slices[ window - 1  ]) if window - 1  in delta_slices else 0
+                n_slices = len(delta_slices[ window - 1  ]) if window - 1 in delta_slices else 0
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Download {n_slices} window deltas.")
                 
                 # Apply the state for the current window.

@@ -95,8 +95,9 @@ class Validator:
         if self.config.use_wandb:
             # Delete all runs with my name and create a new one.
             try:
-                [run.delete() for run in wandb.Api().runs(path=self.config.project)
-                 if run.name == f'V{self.uid}' and logger.info(f'Deleting old run: {run}')]
+                for run in wandb.Api().runs(path=self.config.project):
+                    if run.name == f'V{self.uid}':
+                        logger.info(f'Deleting old run: {run}'); run.delete()
             except: pass
             wandb.init(project=self.config.project, resume='allow', name=f'V{self.uid}', config=self.config)
 
@@ -161,7 +162,7 @@ class Validator:
                 logger.info('[bold]' + '\n' + '-' * 40 + f' Step: {self.global_step} ' + '-' * 40)
                 start_step_time = time.time()
                 self.global_step += 1
-                offset = 1
+                offset = 2
                 window = self.current_window - offset
                 
                 # Download the state for the eval window.
