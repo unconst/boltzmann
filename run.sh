@@ -275,7 +275,7 @@ fi
 pdone "Created venv at $REPO_PATH"
 
 
-if [[ "$VIRTUAL_ENV" == "" ]]; then
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
     ohai "Activating virtual environment..."
     source venv/bin/activate > /dev/null 2>&1
 fi
