@@ -315,7 +315,7 @@ ohai "Creating wallets ..."
 if ! python3 -c "import bittensor as bt; w = bt.wallet(); print(w.coldkey_file.exists_on_device())" | grep -q "True"; then
     execute btcli w new_coldkey --wallet.path ~/.bittensor/wallets --wallet.name default --n-words 12 
 fi
-pdone "Attained wallet (default)"
+pdone "Attained Wallet(default)"
 
 # Ensure btcli is installed
 if ! command -v btcli &> /dev/null; then
@@ -323,7 +323,6 @@ if ! command -v btcli &> /dev/null; then
 fi
 
 # Create hotkeys and register them
-ohai "Creating hotkeys ..."
 if [ "$NUM_GPUS" -gt 0 ]; then
     for i in $(seq 0 $((NUM_GPUS - 1))); do
         # Check if the hotkey file exists on the device
@@ -331,6 +330,7 @@ if [ "$NUM_GPUS" -gt 0 ]; then
         if [ "$exists_on_device" != "True" ]; then
             echo "n" | btcli wallet new_hotkey --wallet.name default --wallet.hotkey C$i --n-words 12 > /dev/null 2>&1;
         fi
+        pdone "Created Hotkey( C$i )"
 
         # Check if the hotkey is registered on subnet 220
         is_registered=$(python3 -c "import bittensor as bt; w = bt.wallet(hotkey='C$i'); sub = bt.subtensor('test'); print(sub.is_hotkey_registered_on_subnet(hotkey_ss58=w.hotkey.ss58_address, netuid=220))" 2>/dev/null)
@@ -338,7 +338,7 @@ if [ "$NUM_GPUS" -gt 0 ]; then
             ohai "Registering key on subnet 220"
             btcli subnet pow_register --wallet.name default --wallet.hotkey C$i --netuid 220 --subtensor.network test --no_prompt > /dev/null 2>&1;
         fi
-        pdone "Registered Wallet( default, C$i )"
+        pdone "Registered Hotkey( C$i )"
     done
 else
     warn "No GPUs found. Skipping hotkey creation."
@@ -350,15 +350,19 @@ ohai "Logging into wandb..."
 execute wandb login > /dev/null 2>&1
 pdone "Initialized wandb"
 
-# # Close down all previous processes and restart them
-# ohai "Stopping all pm2 processes..."
-# pm2 delete all
 
 # Delete items from bucket
 PROJECT=${2:-aesop}
 ohai "Cleaning bucket $BUCKET..."
 execute python3 $REPO_PATH/tools/clean.py --bucket "$BUCKET" > /dev/null 2>&1
 pdone "Cleaned bucket"
+
+# Close down all previous processes and restart them
+if pm2 list | grep -q 'online'; then
+    ohai "Stopping old pm2 processes..."
+    pm2 delete all
+    pdone "Stopped old processes"
+fi
 
 # Start all the processes again
 ohai "Starting miners ..."
@@ -373,13 +377,13 @@ if [ "$NUM_GPUS" -gt 0 ]; then
             BATCH_SIZE=6
         elif [ "$GPU_MEMORY" -ge 40000 ]; then
             BATCH_SIZE=3
-        elif [ "$GPU_MEMORY" -ge 20000 ]; then
-            BATCH_SIZE=2
+        elif [ "$GPU_MEMORY" -ge 30000 ]; then
+            BATCH_SIZE=1
         else
             BATCH_SIZE=1
         fi
         ohai "Starting miner on GPU $((i-1)) with batch size $BATCH_SIZE..."
-        execute pm2 start $REPO_PATH/miner.py --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$((i-1)) --use_wandb --project "$PROJECT" > /dev/null 2>&1
+        execute pm2 start $REPO_PATH/miner.py --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$((i-1)) --use_wandb --project "$PROJECT" 
     done
 else
     warn "No GPUs found. Skipping miner startup."
