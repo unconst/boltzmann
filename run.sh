@@ -221,7 +221,7 @@ else
 fi
 
 # Source the bashrc file to apply the changes
-source ~/.bashrc
+# source ~/.bashrc
 
 # Create a virtual environment if it does not exist
 if [ ! -d "venv" ]; then
