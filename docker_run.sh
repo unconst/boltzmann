@@ -306,7 +306,7 @@ fi
 # Create the default key
 ohai "Creating the coldkey"
 if ! python3.12 -c "import bittensor as bt; w = bt.wallet(); print(w.coldkey_file.exists_on_device())" | grep -q "True"; then
-    execute btcli w new_coldkey --wallet.path ~/.bittensor/wallets --wallet.name default --n-words 12
+    execute btcli w new_coldkey --wallet.path ~/.bittensor/wallets --wallet.name default --n-words 12 --no_password
 else
     ohai "Default key already exists on device."
 fi
