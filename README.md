@@ -7,10 +7,9 @@
 # BOLTZMANN: Bittensor Incentivized Scalable Training with Reward Optimization
 
 ---
-
-<p align="center">
-<code>/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/unconst/boltzmann/refs/heads/master/run.sh)"</code>
-</p>
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/unconst/boltzmann/refs/heads/master/run.sh)"
+```
 
 ---
 
