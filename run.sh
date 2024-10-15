@@ -40,7 +40,7 @@ ohai() {
 }
 
 pdone() {
-    printf "${tty_green}[✔]${tty_bold} %s${tty_reset}\n" "$*"
+    printf "  ${tty_green}[✔]${tty_bold} %s${tty_reset}\n" "$*"
 }
 
 info() {
@@ -133,6 +133,7 @@ echo ""
 wait_for_user
 
 # Install Git if not present
+ohai "Installing requirements ..."
 if ! command -v git &> /dev/null; then
     ohai "Installing git ..."
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
@@ -164,21 +165,6 @@ if ! command -v git &> /dev/null; then
 else
     pdone "Installed Git"
 fi
-
-
-# Check if we are inside the cont repository
-if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    REPO_PATH="."
-else
-    if [ ! -d "cont" ]; then
-        ohai "Cloning boltzmann ..."
-        execute git clone https://github.com/unconst/cont
-        REPO_PATH="cont/"
-    else
-        REPO_PATH="cont/"
-    fi
-fi
-pdone "Pulled Boltzmann $REPO_PATH"
 
 
 # Check if npm is installed
@@ -243,6 +229,7 @@ pdone "Installed python3.12"
 touch ~/.bash_profile
 
 # Prompt the user for AWS credentials and inject them into the bash_profile file if not already stored
+ohai "Getting AWS credentials ..."
 if ! grep -q "AWS_ACCESS_KEY_ID" ~/.bash_profile || ! grep -q "AWS_SECRET_ACCESS_KEY" ~/.bash_profile || ! grep -q "BUCKET" ~/.bash_profile; then
     clear
     warn "This script will store your AWS credentials in your ~/.bash_profile file."
@@ -263,8 +250,22 @@ fi
 
 # Source the bashrc file to apply the changes
 source ~/.bash_profile
-
 pdone "Found AWS credentials"
+
+ohai "Installing Boltzmann ..."
+# Check if we are inside the cont repository
+if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    REPO_PATH="."
+else
+    if [ ! -d "cont" ]; then
+        ohai "Cloning boltzmann ..."
+        execute git clone https://github.com/unconst/cont
+        REPO_PATH="cont/"
+    else
+        REPO_PATH="cont/"
+    fi
+fi
+pdone "Pulled Boltzmann $REPO_PATH"
 
 # Create a virtual environment if it does not exist
 if [ ! -d "$REPO_PATH/venv" ]; then
@@ -281,8 +282,7 @@ fi
 pdone "Activated venv at $REPO_PATH"
 
 
-ohai "Installing requirements..."
-execute pip install -r $REPO_PATH/requirements.txt
+execute pip install -r $REPO_PATH/requirements.txt > /dev/null 2>&1
 pdone "Installed requirements"
 
 
@@ -293,12 +293,10 @@ if ! command -v nvidia-smi &> /dev/null; then
     NUM_GPUS=0
 else
     NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
-    ohai "Number of GPUs: $NUM_GPUS"
 
     if [ "$NUM_GPUS" -gt 0 ]; then
-        ohai "GPU Memory Information:"
         nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | while read -r memory; do
-            ohai "$((memory / 1024)) GB"
+            pdone " - Found GPU with $((memory / 1024)) GB"
         done
     else
         warn "No GPUs found on this machine."
@@ -306,38 +304,32 @@ else
 fi
 
 # Check system RAM
-ohai "Checking system RAM..."
 if command -v free &> /dev/null; then
     TOTAL_RAM=$(free -g | awk '/^Mem:/{print $2}')
-    ohai "Total System RAM: $TOTAL_RAM GB"
 else
     warn "Cannot determine system RAM. 'free' command not found."
 fi
 
 # Create the default key
-ohai "Creating the coldkey"
+ohai "Creating wallets ..."
 if ! python3 -c "import bittensor as bt; w = bt.wallet(); print(w.coldkey_file.exists_on_device())" | grep -q "True"; then
     execute btcli w new_coldkey --wallet.path ~/.bittensor/wallets --wallet.name default --n-words 12 
-else
-    ohai "Default key already exists on device." > /dev/null 2>&1
 fi
-
+pdone "Attained wallet (default)"
 
 # Ensure btcli is installed
 if ! command -v btcli &> /dev/null; then
     abort "btcli command not found. Please ensure it is installed."
 fi
 
-
 # Create hotkeys and register them
+ohai "Creating hotkeys ..."
 if [ "$NUM_GPUS" -gt 0 ]; then
     for i in $(seq 0 $((NUM_GPUS - 1))); do
         # Check if the hotkey file exists on the device
         exists_on_device=$(python3 -c "import bittensor as bt; w = bt.wallet(hotkey='C$i'); print(w.hotkey_file.exists_on_device())" 2>/dev/null)
         if [ "$exists_on_device" != "True" ]; then
             echo "n" | btcli wallet new_hotkey --wallet.name default --wallet.hotkey C$i --n-words 12 > /dev/null 2>&1;
-        else
-            ohai "Hotkey C$i already exists on device."
         fi
 
         # Check if the hotkey is registered on subnet 220
@@ -345,16 +337,18 @@ if [ "$NUM_GPUS" -gt 0 ]; then
         if [[ "$is_registered" != *"True"* ]]; then
             ohai "Registering key on subnet 220"
             btcli subnet pow_register --wallet.name default --wallet.hotkey C$i --netuid 220 --subtensor.network test --no_prompt > /dev/null 2>&1;
-        else
-            ohai "Key is already registered on subnet 220"
         fi
+        pdone "Registered Wallet( default, C$i )"
     done
 else
     warn "No GPUs found. Skipping hotkey creation."
+    exit
 fi
+pdone "Registered $NUM_GPUS keys to subnet 220"
 
 ohai "Logging into wandb..."
 execute wandb login > /dev/null 2>&1
+pdone "Initialized wandb"
 
 # # Close down all previous processes and restart them
 # ohai "Stopping all pm2 processes..."
@@ -364,8 +358,10 @@ execute wandb login > /dev/null 2>&1
 PROJECT=${2:-aesop}
 ohai "Cleaning bucket $BUCKET..."
 execute python3 cont/tools/clean.py --bucket "$BUCKET" > /dev/null 2>&1
+pdone "Cleaned bucket"
 
 # Start all the processes again
+ohai "Starting miners ..."
 if [ "$NUM_GPUS" -gt 0 ]; then
     for i in $(seq 1 $NUM_GPUS); do
         GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | sed -n "${i}p")
@@ -383,12 +379,11 @@ if [ "$NUM_GPUS" -gt 0 ]; then
             BATCH_SIZE=1
         fi
         ohai "Starting miner on GPU $((i-1)) with batch size $BATCH_SIZE..."
-        execute pm2 start cont/miner.py --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$((i-1)) --use_wandb --project "$PROJECT" > /dev/null 2>&1
+        execute pm2 start $REPO_PATH/miner.py --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$((i-1)) --use_wandb --project "$PROJECT" > /dev/null 2>&1
     done
 else
     warn "No GPUs found. Skipping miner startup."
 fi
+pdone "Started miners"
 
 pm2 list
-
-ohai "Script completed successfully."
