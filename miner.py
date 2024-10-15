@@ -315,9 +315,9 @@ class Miner:
                     
                     # Clean file history.
                     st = T()
-                    await delete_files_before_window( window_max = window - self.hparams.max_history, key = 'slice')
+                    await delete_files_before_window( window_max = window - self.hparams.max_history, key = 'state')
                     await delete_files_before_window( window_max = window - self.hparams.max_history, key = 'delta')
-                    await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history, key = 'slice' )
+                    await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history, key = 'state' )
                     await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history, key = 'delta' )
                     logger.info(f"{P(window, T() - st)}: Cleaned file history.")
                     
