@@ -144,7 +144,6 @@ class Miner:
         
     async def update(self):
         while not self.stop_event.is_set():
-            logger.info(f"\tUpdating global state.")
             start_time = time.time()
             self.subtensor = bt.subtensor(config=self.config)
             self.metagraph = self.subtensor.metagraph(self.config.netuid)
@@ -154,7 +153,7 @@ class Miner:
                 try: next_buckets.append(self.config.bucket if not self.config.remote else self.subtensor.get_commitment( self.config.netuid, uid ))
                 except: next_buckets.append(None)    
             self.buckets = next_buckets    
-            logger.info(f"\t\tUpdated global state in {time.time() - start_time} seconds.")
+            logger.info(f"[steel_blue]{self.current_window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Updated global state.")
             await asyncio.sleep(60)
 
     async def run(self):
@@ -201,50 +200,57 @@ class Miner:
                     key = 'state'
                 )
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window state.")
-
-                # Apply the delta from the previous window.
-                start_time = time.time()
-                await apply_slices_to_model( 
-                    model = self.model, 
-                    window = window - 1,
-                    seed = window - 1,
-                    compression = self.hparams.compression,
-                    key = 'delta'
-                )         
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window delta.")
-                       
+        
                 # Download the page for the current window.
                 start_time = time.time()
                 pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
                     offset = window,
-                    n_pages = 1,
+                    n_pages = self.validator_window_eval_size,
                     seed = self.uid if not self.config.random else random.randint(0, 1000)
                 )
+                random.shuffle( pages )
                 dataset = await AsyncSubsetFineWebEdu2Loader.create(
                     batch_size = self.config.actual_batch_size,
                     sequence_length = self.hparams.sequence_length,
                     pages_info = pages,
                     tokenizer = self.hparams.tokenizer
                 )
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded training page: [tan]{pages[0][1]}[/tan] random = {self.config.random}")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded training page: [light_steel_blue]{[p[1] for p in pages]}[/light_steel_blue] random = {self.config.random}")
 
                 # Accumualte gradients on the model applied to the base state.
                 start_time = time.time()
+                self.model.zero_grad(); self.model.eval()
                 total_loss = 0.0
-                for idx, batch in enumerate(dataset):
-                    input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
-                    labels = input_ids.clone()
-                    labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
-                    with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
-                        outputs = self.model(input_ids=input_ids, labels=labels)
-                    total_loss += outputs.loss.item()
-                    outputs.loss.backward()                
+                full_steps = 0; total_steps = 0; 
+                exhuasted_window = False
+                for batch in dataset:
+                    total_steps += 1
+                    if random.random() < self.sample_rate and not exhuasted_window:
+                        full_steps += 1
+                        input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
+                        labels = input_ids.clone()
+                        labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
+                        with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
+                            outputs = self.model(input_ids=input_ids, labels=labels)
+                        total_loss += outputs.loss.item()
+                        outputs.loss.backward()     
+                        if window != self.current_window: exhuasted_window = True; continue
+                if self.hparams.grad_clip: torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.hparams.grad_clip)
                 self.optimizer.step()
                 self.scheduler.step()
                 self.optimizer.zero_grad()
-                step_loss = total_loss/(idx+1)
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Accumulated gradients with loss: [salmon1]{step_loss:.3f}[/salmon1] in: [salmon1]{idx}[/salmon1] steps.")
-                
+                torch.cuda.empty_cache()
+                step_loss = total_loss/(full_steps+1)
+                tokens_per_step = self.hparams.sequence_length * self.config.actual_batch_size * (full_steps + 1)
+                tokens_per_second =  tokens_per_step / (time.time() - start_time)
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Accumulated gradients:")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tTotal steps: [tan]{full_steps}/{total_steps}[/tan], Rate: [tan]{(full_steps/total_steps):.2f}[/tan], Target: [tan]{self.sample_rate:.2f}[/tan]")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tTotal tokens: [tan]{tokens_per_step}[/tan], Tokens per second: [tan]{tokens_per_second:.2f}[/tan]")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tLoss: [tan]{step_loss}[tan]")
+                # Update sample rate.
+                if exhuasted_window: self.sample_rate = max(0.0001, self.sample_rate * 0.95)
+                else: self.sample_rate = min(1, self.sample_rate * 1.05)
+
                 # Upload the delta for the previous window.
                 start_time = time.time()
                 await upload_slice_for_window(
@@ -258,6 +264,17 @@ class Miner:
                 )                
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Uploaded the delta.")
                 
+                # Apply the delta from the previous window.
+                start_time = time.time()
+                await apply_slices_to_model( 
+                    model = self.model, 
+                    window = window - 1,
+                    seed = window - 1,
+                    compression = self.hparams.compression,
+                    key = 'delta'
+                )         
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window delta.")
+               
                 # Upload the state for the current window.
                 start_time = time.time()
                 await upload_slice_for_window(
@@ -272,9 +289,12 @@ class Miner:
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Uploaded the state.")
                 
                 # Wait until we are on a new window.
+                step_end_time = time.time()
                 while self.current_window == window:
                     await asyncio.sleep(0.1)
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_step_time:.2f}s[/grey63]): Finished step.")
+                window_time_delta = self.window_time - step_end_time
+                window_delta_str = f"[red]{window_time_delta:.2f}[/red]" if window_time_delta < 0 else f"[green]+{window_time_delta:.2f}[/green]"
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{step_end_time - start_step_time:.2f}s[/grey63])[{window_delta_str}]: Finished step.")
                             
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
@@ -305,6 +325,7 @@ class Miner:
             if self.block_to_window(self.current_block) != self.current_window:
                 self.window_seeds[ self.block_to_window(self.current_block) ] = self.window_to_seed( self.block_to_window(self.current_block) )
                 self.current_window = self.block_to_window(self.current_block)
+                self.window_time = time.time()
                 loop.call_soon_threadsafe(self.new_window_event.set)
                 logger.info(f"-- New window: {self.current_window} -- ")
         # Run listener with retry.

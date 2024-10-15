@@ -220,36 +220,50 @@ class Validator:
 
                 # Download the eval page for this uid.
                 start_time = time.time()
-                eval_page = await AsyncSubsetFineWebEdu2Loader.next_pages(
+                eval_pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
                     offset = window,
-                    n_pages = 1,
+                    n_pages = self.hparams.validator_window_eval_size,
                     seed = eval_uid
-                )                
+                )            
+                random.shuffle( eval_pages )    
                 eval_dataset = await AsyncSubsetFineWebEdu2Loader.create(
                     batch_size = self.config.actual_batch_size,
                     sequence_length = self.hparams.sequence_length,
-                    pages_info = eval_page,
+                    pages_info = eval_pages,
                     tokenizer = self.hparams.tokenizer
                 )                
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded eval page: [tan]{eval_page[0][1]}[/tan].")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded eval pages: [light_steel_blue]{[p[1] for p in eval_pages]}[/light_steel_blue].")
   
                 # Accumulate gradients from this page.
                 start_time = time.time()
                 self.model.zero_grad()
-                self.model.eval()
-                total_loss = 0
+                total_loss = 0.0
+                full_steps = 0; total_steps = 0; 
+                exhuasted_window = False
                 with torch.enable_grad():
                     for idx, batch in enumerate(eval_dataset):
-                        input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
-                        labels = input_ids.clone()
-                        labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
-                        with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
-                            outputs = self.model(input_ids=input_ids, labels=labels)
-                        total_loss += outputs.loss.item()
-                        outputs.loss.backward()
-                step_loss = total_loss/(idx+1)
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Accumulated gradients with loss: [salmon1]{step_loss:.3f}[/salmon1] in: [salmon1]{idx}[/salmon1] steps.")
-
+                        total_steps += 1
+                        if random.random() < self.sample_rate and not exhuasted_window:
+                            full_steps += 1
+                            input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
+                            labels = input_ids.clone()
+                            labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
+                            with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
+                                outputs = self.model(input_ids=input_ids, labels=labels)
+                            total_loss += outputs.loss.item()
+                            outputs.loss.backward()
+                            if self.current_window - offset != window: exhuasted_window = True; continue
+                step_loss = total_loss/(full_steps+1)
+                tokens_per_step = self.hparams.sequence_length * self.config.actual_batch_size * (full_steps + 1)
+                tokens_per_second = tokens_per_step / (time.time() - start_time)
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Accumulated gradients:")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tTotal steps: [tan]{full_steps}/{total_steps}[/tan], Rate: [tan]{(full_steps/total_steps):.2f}[/tan], Target: [tan]{self.sample_rate:.2f}[/tan]")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tTotal tokens: [tan]{tokens_per_step}[/tan], Tokens per second: [tan]{tokens_per_second:.2f}[/tan]")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tLoss: [tan]{step_loss}[tan]")
+                # Update sample rate.
+                if exhuasted_window: self.sample_rate = max(0.0001, self.sample_rate * 0.95)
+                else: self.sample_rate = min(1, self.sample_rate * 1.05)
+                
                 # Compute the score for this slice.
                 start_time = time.time()
                 score = 0.0 
@@ -307,10 +321,12 @@ class Validator:
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window deltas.")
 
                 # Finish step.
-                while self.current_window - offset == window: 
+                step_end_time = time.time()
+                while self.current_window - offset == window:
                     await asyncio.sleep(0.1)
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([bold grey63]{time.time() - start_step_time:.2f}s[/bold grey63]): Finished step.")                
-
+                window_time_delta = self.window_time - step_end_time
+                window_delta_str = f"[red]{window_time_delta:.2f}[/red]" if window_time_delta < 0 else f"[green]+{window_time_delta:.2f}[/green]"
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{step_end_time - start_step_time:.2f}s[/grey63])[{window_delta_str}]: Finished step.")
                                                                 
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
@@ -341,6 +357,7 @@ class Validator:
             if self.block_to_window(self.current_block) != self.current_window:
                 self.window_seeds[ self.block_to_window(self.current_block) ] = self.window_to_seed( self.block_to_window(self.current_block) )
                 self.current_window = self.block_to_window(self.current_block)
+                self.window_time = time.time()
                 loop.call_soon_threadsafe(self.new_window_event.set)
                 logger.info(f"-- New window: {self.current_window} -- ")
         # Run listener with retry.
