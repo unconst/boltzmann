@@ -275,16 +275,14 @@ fi
 pdone "Created venv at $REPO_PATH"
 
 
+pdone "Installing python requirements.txt"
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
-    ohai "Activating virtual environment..."
-    source venv/bin/activate > /dev/null 2>&1
+    source $REPO_PATH/venv/bin/activate > /dev/null 2>&1
 fi
 pdone "Activated venv at $REPO_PATH"
 
-
 execute pip install -r $REPO_PATH/requirements.txt > /dev/null 2>&1
 pdone "Installed requirements"
-
 
 # Check for GPUs
 ohai "Checking for GPUs..."
@@ -354,7 +352,7 @@ pdone "Initialized wandb"
 # Delete items from bucket
 PROJECT=${2:-aesop}
 ohai "Cleaning bucket $BUCKET..."
-execute python3 $REPO_PATH/tools/clean.py --bucket "$BUCKET" > /dev/null 2>&1
+execute python3 $REPO_PATH/tools/clean.py --bucket "$BUCKET"
 pdone "Cleaned bucket"
 
 # Close down all previous processes and restart them
