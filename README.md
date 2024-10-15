@@ -8,18 +8,18 @@
 
 ---
 
-Welcome to the **BISTRO** project! This repository implements an innovative incentive system for decentralized machine learning training on the Bittensor network.
+This repository implements an incentive system for decentralized training on the Bittensor network.
 
 ## Overview
 
-**BISTRO** introduces a decentralized framework where **miners** collaboratively train a shared model by processing specific subsets of data, and **validators** ensure the quality and integrity of their contributions. The incentive mechanism is designed to reward miners for effectively training on their designated data subsets, promoting efficient and collaborative model improvement in a trustless environment.
+**BISTRO** is a framework where **miners** collaboratively train a shared model by processing specific subsets of data, and **validators** ensure the quality and integrity of these contributions. The incentive landscape is designed to reward miners for effectively training on their designated data subsets, promoting efficient and collaborative model improvement in a trustless environment.
 
 ## How It Works
 
 ### Miners
 
 - **Model Synchronization**: Miners start by downloading the latest model state, which is a subset of model parameters (called **slices**) aggregated from other miners.
-- **Training**: They receive a designated subset of data (pages) from the dataset for each window (a fixed number of blocks). They train the model on this subset, performing gradient updates.
+- **Training**: They receive a designated subset of data (pages) from the dataset for each window (a fixed number of blocks). They train the model on this subset, performing a single gradient update.
 - **Uploading Deltas**: After training, miners compute the **delta** (the change in their model parameters) and upload this delta to an S3 bucket associated with their identity.
 - **Window Progression**: Miners proceed to the next window, repeating the process with new data subsets.
 

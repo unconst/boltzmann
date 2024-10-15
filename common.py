@@ -67,7 +67,6 @@ def trace():
 def T(): return time.time()
 def P( w, d ): return f"[steel_blue]{w}[/steel_blue] ([grey63]{d:.2f}s[/grey63])"
 
-    
 # Load environment variables
 env_config = {**dotenv_values(".env"), **os.environ}
 AWS_ACCESS_KEY_ID = env_config.get('AWS_ACCESS_KEY_ID')
@@ -87,7 +86,7 @@ semaphore = asyncio.Semaphore(1000)
 async def get_slices( filename:str, device:str ) -> Dict[str, torch.Tensor]:
     # Attempt to acquire the lock with a timeout of 1 second.
     lock: FileLock = FileLock(f"{filename}.lock")
-    with lock.acquire(timeout=1):
+    with lock.acquire(timeout=5):
         pass
     return torch.load(
         filename,

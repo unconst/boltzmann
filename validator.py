@@ -205,7 +205,7 @@ class Validator:
                 n_eval_slices = len(eval_slices[ window ]) if window in eval_slices else 0
                 logger.info(f"{P(window, T() - st)}: Downloaded {n_eval_slices} window deltas.")                
                 if n_eval_slices == 0:
-                    logger.info(f"[steel_blue]{window}[/steel_blue]: No slices to eval, continue ...")
+                    logger.info(f"{P(window, T() - st)}: No slices to eval, continue ...")
                     while self.current_window - offset == window: await asyncio.sleep(0.1) # Wait for next window.
                     continue
                 
@@ -235,7 +235,7 @@ class Validator:
                 eval_slice_info = random.choice( eval_slices[ window ] )                
                 try: eval_uid = self.metagraph.hotkeys.index(eval_slice_info.hotkey)
                 except ValueError:
-                    logger.warning(f"Hotkey {eval_slice_info.hotkey} not found in metagraph hotkeys.")
+                    logger.warning(f"{P(window, T() - st)}: {eval_slice_info.hotkey} not found in metagraph")
                     continue                                
                 eval_slice_data = await get_slices( eval_slice_info.temp_file, self.model.device )                
                 logger.info(f"{P(window, T() - st)}: Loaded window slices for uid: [dark_sea_green]{eval_uid}[/dark_sea_green].")
