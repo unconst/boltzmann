@@ -39,7 +39,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 # Import local files.
 from common import *
 from hparams import load_hparams
-from dataset import AsyncSubsetFineWebEdu2Loader
+from dataset import DatasetLoader
 
 # GPU optimizations.
 torch.backends.cudnn.benchmark = True
@@ -203,13 +203,13 @@ class Miner:
         
                 # Download the page for the current window.
                 start_time = time.time()
-                pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
+                pages = await DatasetLoader.next_pages(
                     offset = window,
                     n_pages = self.validator_window_eval_size,
                     seed = self.uid if not self.config.random else random.randint(0, 1000)
                 )
                 random.shuffle( pages )
-                dataset = await AsyncSubsetFineWebEdu2Loader.create(
+                dataset = await DatasetLoader.create(
                     batch_size = self.config.actual_batch_size,
                     sequence_length = self.hparams.sequence_length,
                     pages_info = pages,
@@ -293,6 +293,12 @@ class Miner:
                     key = 'state',
                 )
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Uploaded the state.")
+                
+                # Clean file history.
+                start_time = time.time()
+                await delete_files_before_window( window_max = window - self.hparams.max_history )
+                await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history )
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Cleaned file history.")
                 
                 # Wait until we are on a new window.
                 step_end_time = time.time()

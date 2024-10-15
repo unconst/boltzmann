@@ -182,7 +182,7 @@ class SubsetLoader(IterableDataset):
         raise StopIteration
 
 
-class AsyncSubsetFineWebEdu2Loader(SubsetLoader):
+class DatasetLoader(SubsetLoader):
 
     name: str = "HuggingFaceFW/fineweb-edu-score-2"
     rows_base_url: str = "https://datasets-server.huggingface.co/rows"
@@ -194,7 +194,7 @@ class AsyncSubsetFineWebEdu2Loader(SubsetLoader):
 
     @staticmethod
     async def next_pages(offset: int, n_pages: int, seed: str, num_rows_per_page: int = 100):
-        configs_data = await AsyncSubsetFineWebEdu2Loader.fetch_dataset_configs()
+        configs_data = await DatasetLoader.fetch_dataset_configs()
         rng = np.random.default_rng(hash(seed) & 0xffffffff)  # Create a generator with a seed
         rng.bit_generator.advance(offset)  # Efficiently skip ahead `n` steps
         result = []
@@ -438,14 +438,14 @@ class AsyncSubsetFineWebEdu2Loader(SubsetLoader):
         """
         # Request parameters
         params = dict(
-            dataset=AsyncSubsetFineWebEdu2Loader.name
+            dataset=DatasetLoader.name
         )
 
         attempt = 0
-        while attempt < AsyncSubsetFineWebEdu2Loader.retry_limit:
+        while attempt < DatasetLoader.retry_limit:
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(AsyncSubsetFineWebEdu2Loader.size_base_url, params=params) as response:
+                    async with session.get(DatasetLoader.size_base_url, params=params) as response:
                         response.raise_for_status()
 
                         data = await response.json()
@@ -465,14 +465,14 @@ class AsyncSubsetFineWebEdu2Loader(SubsetLoader):
 
             except aiohttp.ClientResponseError as e:
                 attempt += 1
-                if attempt < AsyncSubsetFineWebEdu2Loader.retry_limit:
-                    await asyncio.sleep(AsyncSubsetFineWebEdu2Loader.retry_delay)
+                if attempt < DatasetLoader.retry_limit:
+                    await asyncio.sleep(DatasetLoader.retry_delay)
                 else:
                     raise
 
     @staticmethod
     async def next_pages_async(offset: int, n_pages: int, seed: str, num_rows_per_page: int = 100):
-        configs_data = await AsyncSubsetFineWebEdu2Loader.fetch_dataset_configs()
+        configs_data = await DatasetLoader.fetch_dataset_configs()
         rng = np.random.default_rng(hash(seed) & 0xffffffff)  # Create a generator with a seed
         rng.bit_generator.advance(offset)  # Efficiently skip ahead `n` steps
         result = []

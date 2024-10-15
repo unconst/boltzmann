@@ -38,7 +38,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 # Import local files.
 from common import *
 from hparams import load_hparams
-from dataset import AsyncSubsetFineWebEdu2Loader
+from dataset import DatasetLoader
 
 # GPU optimizations.
 torch.backends.cudnn.benchmark = True
@@ -220,13 +220,13 @@ class Validator:
 
                 # Download the eval page for this uid.
                 start_time = time.time()
-                eval_pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
+                eval_pages = await DatasetLoader.next_pages(
                     offset = window,
                     n_pages = self.hparams.validator_window_eval_size,
                     seed = eval_uid
                 )            
                 random.shuffle( eval_pages )    
-                eval_dataset = await AsyncSubsetFineWebEdu2Loader.create(
+                eval_dataset = await DatasetLoader.create(
                     batch_size = self.config.actual_batch_size,
                     sequence_length = self.hparams.sequence_length,
                     pages_info = eval_pages,
@@ -260,9 +260,15 @@ class Validator:
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tTotal steps: [tan]{full_steps}/{total_steps}[/tan], Rate: [tan]{(full_steps/total_steps):.2f}[/tan], Target: [tan]{self.sample_rate:.2f}[/tan]")
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tTotal tokens: [tan]{tokens_per_step}[/tan], Tokens per second: [tan]{tokens_per_second:.2f}[/tan]")
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tLoss: [tan]{step_loss}[tan]")
-                # Update sample rate.
                 if exhuasted_window: self.sample_rate = max(0.0001, self.sample_rate * 0.95)
                 else: self.sample_rate = min(1, self.sample_rate * 1.05)
+                 if self.config.use_wandb:
+                    wandb.log({
+                        f"loss": step_loss,
+                        f"tokens_per_step": tokens_per_step,
+                        f"tokens_per_second": tokens_per_second,
+                        f"sample_rate": self.sample_rate,
+                    })
                 
                 # Compute the score for this slice.
                 start_time = time.time()
@@ -279,7 +285,7 @@ class Validator:
                     score += weight_i * sim_i
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Computed score: [bold dark_sea_green]{score:.4f}[/bold dark_sea_green]")           
 
-                # Assign scores and log scores.
+                # Assign and log scores.
                 start_time = time.time()
                 self.step_scores[ eval_uid ] = score
                 self.scores[ eval_uid ] = (1 - self.hparams.validator_moving_alpha) * score + self.hparams.validator_moving_alpha * self.scores[eval_uid]
@@ -295,8 +301,6 @@ class Validator:
                             f"step_scores/{uid_i.item()}": self.step_scores[ uid_i ].item(),
                             f"moving_scores/{uid_i.item()}": self.scores[ uid_i ].item(),
                             f"weights/{uid_i.item()}": self.weights[ uid_i ].item(),
-                            'self.sample_rate': self.sample_rate,
-                            'loss': step_loss,
                         })
                 for uid_i in valid_score_indices:
                     moving_score = self.scores[ uid_i ].item()
@@ -319,6 +323,12 @@ class Validator:
                     key = 'delta',
                 )
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window deltas.")
+                
+                # Clean local and remote space from old slices.
+                start_time = time.time()
+                await delete_files_before_window( window_max = window - self.hparams.max_history )
+                await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history )
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Cleaned file history.")
 
                 # Finish step.
                 step_end_time = time.time()

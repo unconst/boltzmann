@@ -38,7 +38,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 # Import local files.
 from common import *
 from hparams import load_hparams
-from dataset import AsyncSubsetFineWebEdu2Loader
+from dataset import DatasetLoader
 
 # GPU optimizations.
 torch.backends.cudnn.benchmark = True
@@ -228,14 +228,14 @@ class Validator:
                 start_time = time.time()
                 offset_i = self.eval_window * self.hparams.window_length * self.hparams.window_speed
                 seed = uid
-                sampled_pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
+                sampled_pages = await DatasetLoader.next_pages(
                     offset = offset_i,
                     n_pages = self.hparams.validator_window_eval_size,
                     seed = seed
                 )
                 random.shuffle(sampled_pages) # Important to not preference early pages.
                 logger.info(f"\t\tLoading pages: {[p[1] for p in sampled_pages]} for offset: {offset_i}, uid: {uid} and seed: {seed}")
-                eval_dataset = await AsyncSubsetFineWebEdu2Loader.create(
+                eval_dataset = await DatasetLoader.create(
                     batch_size=self.config.actual_batch_size,
                     sequence_length=self.hparams.sequence_length,
                     pages_info = sampled_pages,
