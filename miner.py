@@ -61,6 +61,7 @@ class Miner:
         parser.add_argument('--debug', action='store_true', help='Enable debug logging')
         parser.add_argument('--trace', action='store_true', help='Enable trace logging')
         parser.add_argument('--random', action='store_true', help='Train on random')
+        parser.add_argument('--sync_state', action='store_true', help='Syncs the model state by pulling from the history.')
         bt.wallet.add_args(parser)
         bt.subtensor.add_args(parser)
         config = bt.config(parser)
@@ -162,8 +163,27 @@ class Miner:
         self.loop = asyncio.get_running_loop()
         self.update_task = asyncio.create_task(self.update())
         self.listener = threading.Thread(target=self.block_listener, args=(self.loop,), daemon=True).start()
+        
+        # Optionally sync the model state by pulling model states from the history.
+        if self.config.sync_state:
+            history_windows = [ self.current_window - i for i in range (self.hparams.max_history) ]
+            state_slices = await download_slices_for_buckets_and_windows(
+                buckets = self.buckets,
+                windows = history_windows,
+                key = 'state'
+            )
+            for window in tqdm(history_windows, desc="Syncing state"):
+                await apply_slices_to_model( 
+                    model = self.model, 
+                    window = window,
+                    seed = window,
+                    compression = self.hparams.compression,
+                    key = 'state'
+                )
+            torch.cuda.empty_cache()
+            
+        # Main training loop.
         while True:
-
             try:      
                 # Start the window step.     
                 logger.info('[bold]' + '\n' + '-' * 40 + f' Step: {self.global_step} ' + '-' * 40)
@@ -273,7 +293,7 @@ class Miner:
                 
                 # Apply the delta from the previous window.
                 start_time = time.time()
-                await apply_slices_to_model( 
+                await apply_slices_to_model(
                     model = self.model, 
                     window = window - 1,
                     seed = window - 1,
