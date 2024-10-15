@@ -205,7 +205,7 @@ class Miner:
                 start_time = time.time()
                 pages = await DatasetLoader.next_pages(
                     offset = window,
-                    n_pages = self.validator_window_eval_size,
+                    n_pages = self.hparams.validator_window_eval_size,
                     seed = self.uid if not self.config.random else random.randint(0, 1000)
                 )
                 random.shuffle( pages )

@@ -166,12 +166,13 @@ class Validator:
                 
                 # Download the state for the eval window.
                 start_time = time.time()
-                await download_slices_for_buckets_and_windows(
+                state_slices = await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
                     windows = [ window ],
                     key = 'state'
                 )
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded window state.")
+                n_state_slices = len(state_slices[ window ]) if window in state_slices else 0
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded {n_state_slices} window states.")
                 
                 # Download the delta for the eval window.
                 start_time = time.time()
@@ -180,11 +181,11 @@ class Validator:
                     windows = [ window ],
                     key = 'delta'
                 ) 
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded window delta.")                
-                if len(list(eval_slices.keys())) == 0:
+                n_eval_slices = len(eval_slices[ window ]) if window in eval_slices else 0
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded {n_eval_slices} window deltas.")                
+                if n_eval_slices == 0:
                     logger.info(f"[steel_blue]{window}[/steel_blue]: No slices to eval, continue ...")
-                    while self.current_window == window: 
-                        await asyncio.sleep(0.1)
+                    while self.current_window - offset == window: await asyncio.sleep(0.1) # Wait for next window.
                     continue
                 
                 # Applied the model state state for the eval window.
@@ -262,7 +263,7 @@ class Validator:
                 logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): \tLoss: [tan]{step_loss}[tan]")
                 if exhuasted_window: self.sample_rate = max(0.0001, self.sample_rate * 0.95)
                 else: self.sample_rate = min(1, self.sample_rate * 1.05)
-                 if self.config.use_wandb:
+                if self.config.use_wandb:
                     wandb.log({
                         f"loss": step_loss,
                         f"tokens_per_step": tokens_per_step,
