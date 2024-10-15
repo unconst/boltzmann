@@ -62,6 +62,7 @@ class Miner:
         parser.add_argument('--trace', action='store_true', help='Enable trace logging')
         parser.add_argument('--random', action='store_true', help='Train on random')
         parser.add_argument('--sync_state', action='store_true', help='Syncs the model state by pulling from the history.')
+        parser.add_argument('--baseline', action='store_true', help='Dont perform syncing with other peers, just train.')
         bt.wallet.add_args(parser)
         bt.subtensor.add_args(parser)
         config = bt.config(parser)
@@ -191,36 +192,37 @@ class Miner:
                 start_step_time = time.time()
                 window = self.current_window
                 
-                # Download the state for the current window.
-                start_time = time.time()
-                state_slices = await download_slices_for_buckets_and_windows(
-                    buckets = self.buckets,
-                    windows = [ window ],
-                    key = 'state'
-                )
-                n_slices = len(state_slices[ window ]) if window in state_slices else 0
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded {n_slices} window states.")
-                
-                # Download the delta from the previous window.
-                start_time = time.time()
-                delta_slices = await download_slices_for_buckets_and_windows(
-                    buckets = self.buckets,
-                    windows = [ window - 1 ],
-                    key = 'delta'
-                )       
-                n_slices = len(delta_slices[ window - 1  ]) if window - 1 in delta_slices else 0
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Download {n_slices} window deltas.")
-                
-                # Apply the state for the current window.
-                start_time = time.time()
-                await apply_slices_to_model( 
-                    model = self.model, 
-                    window = window,
-                    seed = window,
-                    compression = self.hparams.compression,
-                    key = 'state'
-                )
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window state.")
+                # Run for non-baseline miners.
+                if not self.config.baseline:
+                    start_time = time.time()
+                    state_slices = await download_slices_for_buckets_and_windows(
+                        buckets = self.buckets,
+                        windows = [ window ],
+                        key = 'state'
+                    )
+                    n_slices = len(state_slices[ window ]) if window in state_slices else 0
+                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded {n_slices} window states.")
+                    
+                    # Download the delta from the previous window.
+                    start_time = time.time()
+                    delta_slices = await download_slices_for_buckets_and_windows(
+                        buckets = self.buckets,
+                        windows = [ window - 1 ],
+                        key = 'delta'
+                    )       
+                    n_slices = len(delta_slices[ window - 1  ]) if window - 1 in delta_slices else 0
+                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Download {n_slices} window deltas.")
+                    
+                    # Apply the state for the current window.
+                    start_time = time.time()
+                    await apply_slices_to_model( 
+                        model = self.model, 
+                        window = window,
+                        seed = window,
+                        compression = self.hparams.compression,
+                        key = 'state'
+                    )
+                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window state.")
         
                 # Download the page for the current window.
                 start_time = time.time()
@@ -278,59 +280,61 @@ class Miner:
                         f"sample_rate": self.sample_rate,
                     })
 
-                # Upload the delta for the previous window.
-                start_time = time.time()
-                await upload_slice_for_window(
-                    bucket = self.config.bucket, 
-                    model = self.model, 
-                    window = window,
-                    seed = window,
-                    wallet = self.wallet, 
-                    compression = self.hparams.compression,
-                    key = 'delta'
-                )                
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Uploaded the delta.")
+                # Run for non-baseline nodes.
+                if not self.config.baseline:
+                    # Upload the delta for the previous window.
+                    start_time = time.time()
+                    await upload_slice_for_window(
+                        bucket = self.config.bucket, 
+                        model = self.model, 
+                        window = window,
+                        seed = window,
+                        wallet = self.wallet, 
+                        compression = self.hparams.compression,
+                        key = 'delta'
+                    )                
+                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Uploaded the delta.")
+                    
+                    # Apply the delta from the previous window.
+                    start_time = time.time()
+                    await apply_slices_to_model(
+                        model = self.model, 
+                        window = window - 1,
+                        seed = window - 1,
+                        compression = self.hparams.compression,
+                        key = 'delta'
+                    )         
+                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window delta.")
                 
-                # Apply the delta from the previous window.
-                start_time = time.time()
-                await apply_slices_to_model(
-                    model = self.model, 
-                    window = window - 1,
-                    seed = window - 1,
-                    compression = self.hparams.compression,
-                    key = 'delta'
-                )         
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window delta.")
-               
-                # Upload the state for the current window.
-                start_time = time.time()
-                await upload_slice_for_window(
-                    bucket = self.config.bucket, 
-                    model = self.model, 
-                    window = window + 1,
-                    seed = window + 1, 
-                    wallet = self.wallet, 
-                    compression = self.hparams.compression,
-                    key = 'state',
-                )
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Uploaded the state.")
-                
-                # Clean file history.
-                start_time = time.time()
-                await delete_files_before_window( window_max = window - self.hparams.max_history, key = 'slice')
-                await delete_files_before_window( window_max = window - self.hparams.max_history, key = 'delta')
-                await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history, key = 'slice' )
-                await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history, key = 'delta' )
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Cleaned file history.")
-                
-                # Wait until we are on a new window.
-                step_end_time = time.time()
-                while self.current_window == window:
-                    await asyncio.sleep(0.1)
-                window_time_delta = self.window_time - step_end_time
-                window_delta_str = f"[red]{window_time_delta:.2f}[/red]" if window_time_delta < 0 else f"[green]+{window_time_delta:.2f}[/green]"
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{step_end_time - start_step_time:.2f}s[/grey63])[{window_delta_str}]: Finished step.")
-                            
+                    # Upload the state for the current window.
+                    start_time = time.time()
+                    await upload_slice_for_window(
+                        bucket = self.config.bucket, 
+                        model = self.model, 
+                        window = window + 1,
+                        seed = window + 1, 
+                        wallet = self.wallet, 
+                        compression = self.hparams.compression,
+                        key = 'state',
+                    )
+                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Uploaded the state.")
+                    
+                    # Clean file history.
+                    start_time = time.time()
+                    await delete_files_before_window( window_max = window - self.hparams.max_history, key = 'slice')
+                    await delete_files_before_window( window_max = window - self.hparams.max_history, key = 'delta')
+                    await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history, key = 'slice' )
+                    await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history, key = 'delta' )
+                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Cleaned file history.")
+                    
+                    # Wait until we are on a new window.
+                    step_end_time = time.time()
+                    while self.current_window == window:
+                        await asyncio.sleep(0.1)
+                    window_time_delta = self.window_time - step_end_time
+                    window_delta_str = f"[red]{window_time_delta:.2f}[/red]" if window_time_delta < 0 else f"[green]+{window_time_delta:.2f}[/green]"
+                    logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{step_end_time - start_step_time:.2f}s[/grey63])[{window_delta_str}]: Finished step.")
+                                
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
                 logger.info("Training interrupted by user. Stopping the run.")
