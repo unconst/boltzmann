@@ -105,8 +105,8 @@ class Validator:
         logger.info('\n' + '-' * 40 + ' Hparams ' + '-' * 40)
         self.hparams = load_hparams()
         torch.manual_seed(42); np.random.seed(42); random.seed(42)
-        #self.model = LlamaForCausalLM(config=self.hparams.model_config)
-        self.model = LlamaForCausalLM.from_pretrained('TinyLlama/TinyLlama_v1.1')
+        self.model = LlamaForCausalLM(config=self.hparams.model_config)
+        # self.model = LlamaForCausalLM.from_pretrained('TinyLlama/TinyLlama_v1.1')
         self.model.to(self.config.device)
         self.model.eval()
         
