@@ -365,29 +365,41 @@ if pm2 list | grep -q 'online'; then
 fi
 
 # Start all the processes again
-ohai "Starting miners ..."
 if [ "$NUM_GPUS" -gt 0 ]; then
-    for i in $(seq 1 $NUM_GPUS); do
-        GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | sed -n "${i}p")
+    for i in $(seq 0 $((NUM_GPUS - 1))); do
+        # Adjust GPU index for zero-based numbering
+        GPU_INDEX=$i
+        GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | sed -n "$((i + 1))p")
         if [ -z "$GPU_MEMORY" ]; then
             warn "Could not get GPU memory for GPU $i"
             continue
         fi
+        # Determine batch size based on GPU memory
+        # This section adjusts the batch size for the miner based on the available GPU memory
+        # Higher memory allows for larger batch sizes, which can improve performance
         if [ "$GPU_MEMORY" -ge 80000 ]; then
+            # For GPUs with 80GB or more memory, use a batch size of 6
             BATCH_SIZE=6
         elif [ "$GPU_MEMORY" -ge 40000 ]; then
+            # For GPUs with 40GB to 79GB memory, use a batch size of 3
             BATCH_SIZE=3
-        elif [ "$GPU_MEMORY" -ge 30000 ]; then
+        elif [ "$GPU_MEMORY" -ge 20000 ]; then
+            # For GPUs with 20GB to 39GB memory, use a batch size of 1
             BATCH_SIZE=1
         else
+            # For GPUs with less than 20GB memory, also use a batch size of 1
+            # This ensures that even lower-end GPUs can still participate
             BATCH_SIZE=1
         fi
-        ohai "Starting miner on GPU $((i-1)) with batch size $BATCH_SIZE..."
-        execute pm2 start $REPO_PATH/miner.py --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$((i-1)) --use_wandb --project "$PROJECT" 
+        ohai "Starting miner on GPU $GPU_INDEX with batch size $BATCH_SIZE..."
+        execute pm2 start "$REPO_PATH/miner.py" --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$GPU_INDEX --use_wandb --project "$PROJECT"
     done
 else
     warn "No GPUs found. Skipping miner startup."
 fi
 pdone "Started miners"
-
 pm2 list
+
+echo ""
+pdone "SUCCESS"
+echo ""
