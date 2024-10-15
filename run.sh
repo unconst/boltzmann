@@ -107,7 +107,11 @@ execute_sudo() {
             abort "Failed to execute: sudo $*"
         fi
     else
-        abort "Sudo access is required"
+        warn "Sudo access is required, attempting to run without sudo"
+        ohai "$*"
+        if ! "$@"; then
+            abort "Failed to execute: $*"
+        fi
     fi
 }
 
