@@ -265,7 +265,7 @@ else
     warn "Cannot determine system RAM. 'free' command not found."
 fi
 
-# Create the Alice key
+# Create the default key
 ohai "Creating the coldkey"
 if ! python3 -c "import bittensor as bt; w = bt.wallet(); print(w.coldkey_file.exists_on_device())" | grep -q "True"; then
     execute btcli w new_coldkey --wallet.path ~/.bittensor/wallets --wallet.name default --n-words 12
@@ -284,7 +284,7 @@ if [ "$NUM_GPUS" -gt 0 ]; then
     for i in $(seq 0 $((NUM_GPUS - 1))); do
         ohai "Creating hotkeys C$i for default..."
         echo "n" | execute btcli wallet new_hotkey --wallet.name default --wallet.hotkey C$i --n-words 12 > /dev/null 2>&1
-        execute btcli subnet register --wallet.name default --wallet.hotkey C$i --netuid 220 --subtensor.network test --no-prompt > /dev/null 2>&1
+        execute btcli subnet pow_register --wallet.name default --wallet.hotkey C$i --netuid 220 --subtensor.network test --no_prompt > /dev/null 2>&1
     done
 else
     warn "No GPUs found. Skipping hotkey creation."
