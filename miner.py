@@ -96,6 +96,9 @@ class Miner:
             self.subtensor.commit(self.wallet, self.config.netuid, self.config.bucket)
         logger.info('Bucket:' + self.config.bucket)
 
+        # Set UID
+        set_uid(self.uid)
+
         # Init Wandb.
         if self.config.use_wandb:
             # Delete all runs with my name and create a new one.
