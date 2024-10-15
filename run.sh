@@ -357,7 +357,7 @@ pdone "Initialized wandb"
 # Delete items from bucket
 PROJECT=${2:-aesop}
 ohai "Cleaning bucket $BUCKET..."
-execute python3 cont/tools/clean.py --bucket "$BUCKET" > /dev/null 2>&1
+execute python3 $REPO_PATH/tools/clean.py --bucket "$BUCKET" > /dev/null 2>&1
 pdone "Cleaned bucket"
 
 # Start all the processes again
