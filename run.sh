@@ -253,16 +253,16 @@ source ~/.bash_profile
 pdone "Found AWS credentials"
 
 ohai "Installing Boltzmann ..."
-# Check if we are inside the cont repository
+# Check if we are inside the boltzmann repository
 if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
     REPO_PATH="."
 else
-    if [ ! -d "cont" ]; then
+    if [ ! -d "boltzmann" ]; then
         ohai "Cloning boltzmann ..."
-        execute git clone https://github.com/unconst/cont
-        REPO_PATH="cont/"
+        execute git clone https://github.com/unconst/boltzmann
+        REPO_PATH="boltzmann/"
     else
-        REPO_PATH="cont/"
+        REPO_PATH="boltzmann/"
     fi
 fi
 pdone "Pulled Boltzmann $REPO_PATH"
