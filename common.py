@@ -303,11 +303,8 @@ async def download_file(s3_client, bucket: str, filename: str) -> str:
         str: The path to the downloaded file in the temporary directory.
     """
     async with semaphore:
-        # Get the uid-specific directory
         uid_dir = get_uid_directory()
         temp_file = os.path.join(uid_dir, filename)
-        
-        # Check if the file already exists
         if os.path.exists(temp_file):
             logger.debug(f"File {temp_file} already exists, skipping download.")
             return temp_file
@@ -315,7 +312,9 @@ async def download_file(s3_client, bucket: str, filename: str) -> str:
         lock_file = f"{temp_file}.lock"
         lock = FileLock(lock_file)
         try:
+            # Try to acquire both locks with a timeout
             with lock.acquire(timeout=1):
+                # Proceed to download the file
                 logger.debug(f"Downloading file {filename} to {temp_file}")
                 head_response = await s3_client.head_object(Bucket=bucket, Key=filename)
                 object_size = head_response['ContentLength']
@@ -327,11 +326,13 @@ async def download_file(s3_client, bucket: str, filename: str) -> str:
                         if not chunk:
                             break
                         await outfile.write(chunk)
+
                 logger.debug(f"Successfully downloaded file {filename} to {temp_file}")
                 return temp_file
         except Timeout:
             logger.error(f"Timeout occurred while trying to acquire lock on {lock_file}")
             return None
+        
         except Exception as e:
             logger.exception(f"Failed to download file {filename} from bucket {bucket}: {e}")
             return None
