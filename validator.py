@@ -295,7 +295,7 @@ class Validator:
                 valid_score_indices = torch.nonzero((self.scores != 0) & (~torch.isnan(self.scores))).squeeze().view(-1, 1)
                 valid_scores = self.scores[valid_score_indices].view(-1, 1) if valid_score_indices.dim() == 1 else self.scores[valid_score_indices]
                 if valid_scores.numel() > 0:
-                    self.weights[valid_score_indices] = torch.nn.functional.softmax((valid_scores - valid_scores.max()) * self.hparams.validator_weights_temperature, dim=0)
+                    self.weights[valid_score_indices] = valid_scores / (valid_scores.sum() + 1e-8) # Weights are normalized scores.
                 # Log and print scores.
                 if self.config.use_wandb:
                     for uid_i in valid_score_indices:

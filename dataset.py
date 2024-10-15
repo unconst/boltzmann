@@ -360,7 +360,7 @@ class DatasetLoader(SubsetLoader):
         """
         # Offload the CPU-bound tokenization to a thread executor to prevent blocking the event loop
         input_ids = await asyncio.to_thread(
-            self.tokenizer.encode, content, truncation=True
+            self.tokenizer.encode, content, truncation=True, max_length=self.sequence_length
         )
         input_ids.append(self.tokenizer.eos_token_id)
         return input_ids
