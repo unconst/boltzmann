@@ -250,13 +250,12 @@ class Miner:
                 if exhuasted_window: self.sample_rate = max(0.0001, self.sample_rate * 0.95)
                 else: self.sample_rate = min(1, self.sample_rate * 1.05)
                 if self.config.use_wandb:
-                    for uid_i in valid_score_indices:
-                        wandb.log({
-                            f"loss": step_loss,
-                            f"tokens_per_step": tokens_per_step,
-                            f"tokens_per_second": tokens_per_second,
-                            f"sample_rate": self.sample_rate,
-                        })
+                    wandb.log({
+                        f"loss": step_loss,
+                        f"tokens_per_step": tokens_per_step,
+                        f"tokens_per_second": tokens_per_second,
+                        f"sample_rate": self.sample_rate,
+                    })
 
                 # Upload the delta for the previous window.
                 start_time = time.time()
