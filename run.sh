@@ -236,7 +236,7 @@ ohai "Activating virtual environment..."
 source venv/bin/activate > /dev/null 2>&1
 
 ohai "Installing requirements..."
-execute pip install -r requirements.txt > /dev/null 2>&1
+execute pip install -r cont/requirements.txt > /dev/null 2>&1
 
 # Check for GPUs
 ohai "Checking for GPUs..."
@@ -281,7 +281,6 @@ if ! command -v btcli &> /dev/null; then
 fi
 
 
-
 # Create hotkeys and register them
 if [ "$NUM_GPUS" -gt 0 ]; then
     for i in $(seq 0 $((NUM_GPUS - 1))); do
@@ -316,7 +315,7 @@ execute wandb login > /dev/null 2>&1
 # Delete items from bucket
 PROJECT=${2:-aesop}
 ohai "Cleaning bucket $BUCKET..."
-execute python3 tools/clean.py --bucket "$BUCKET" > /dev/null 2>&1
+execute python3 cont/tools/clean.py --bucket "$BUCKET" > /dev/null 2>&1
 
 # Start all the processes again
 if [ "$NUM_GPUS" -gt 0 ]; then
@@ -336,7 +335,7 @@ if [ "$NUM_GPUS" -gt 0 ]; then
             BATCH_SIZE=1
         fi
         ohai "Starting miner on GPU $((i-1)) with batch size $BATCH_SIZE..."
-        execute pm2 start miner.py --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$((i-1)) --use_wandb --project "$PROJECT" > /dev/null 2>&1
+        execute pm2 start cont/miner.py --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$((i-1)) --use_wandb --project "$PROJECT" > /dev/null 2>&1
     done
 else
     warn "No GPUs found. Skipping miner startup."
