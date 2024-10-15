@@ -141,6 +141,15 @@ fi
 # Check if npm is installed
 if ! command -v npm &> /dev/null; then
     ohai "npm could not be found, installing..."
+    if ! command -v node &> /dev/null; then
+        ohai "Node.js could not be found, installing..."
+        if ! curl -fsSL https://deb.nodesource.com/setup_14.x | sudo -E bash -; then
+            abort "Failed to download Node.js setup script"
+        fi
+        if ! sudo apt-get install -y nodejs; then
+            abort "Failed to install Node.js"
+        fi
+    fi
     if ! curl -L https://www.npmjs.com/install.sh | sh; then
         abort "Failed to install npm"
     fi
