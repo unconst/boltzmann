@@ -282,7 +282,7 @@ pdone "Activated venv at $REPO_PATH"
 
 
 ohai "Installing requirements..."
-execute pip install -r cont/requirements.txt > /dev/null 2>&1
+execute pip install -r $REPO_PATH/requirements.txt
 pdone "Installed requirements"
 
 
