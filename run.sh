@@ -18,6 +18,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 DEBUG=${1:-false}
+PROJECT=${2:-aesop}
 
 set -euo pipefail
 
