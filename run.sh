@@ -126,7 +126,7 @@ if ! command -v git &> /dev/null; then
         abort "Unsupported OS type: $OSTYPE"
     fi
 else
-    info "Git is already installed"
+    ohai "Git is already installed"
 fi
 
 # Clone the repository if not present
@@ -134,7 +134,7 @@ if [ ! -d "cont" ]; then
     ohai "Cloning the repository..."
     execute git clone https://github.com/unconst/cont
 else
-    info "Repository already cloned"
+    ohai "Repository already cloned"
 fi
 
 
@@ -154,7 +154,7 @@ if ! command -v npm &> /dev/null; then
         abort "Failed to install npm"
     fi
 else
-    info "npm is already installed"
+    ohai "npm is already installed"
 fi
 
 # Install pm2
@@ -162,7 +162,7 @@ if ! command -v pm2 &> /dev/null; then
     ohai "pm2 could not be found, installing..."
     execute npm install pm2 -g > /dev/null 2>&1
 else
-    info "pm2 is already installed"
+    ohai "pm2 is already installed"
 fi
 
 # Install Python 3.12 if not installed
@@ -196,12 +196,14 @@ if ! command -v python3.12 &> /dev/null; then
         abort "Unsupported OS type: $OSTYPE"
     fi
 else
-    info "Python 3.12 is already installed"
+    ohai "Python 3.12 is already installed"
 fi
 
-# Prompt the user for AWS credentials and inject them into the bashrc file if not already stored
-if ! grep -q "AWS_ACCESS_KEY_ID" ~/.bashrc || ! grep -q "AWS_SECRET_ACCESS_KEY" ~/.bashrc || ! grep -q "BUCKET" ~/.bashrc; then
-    warn "This script will store your AWS credentials in your ~/.bashrc file."
+touch ~/.bash_profile
+
+# Prompt the user for AWS credentials and inject them into the bash_profile file if not already stored
+if ! grep -q "AWS_ACCESS_KEY_ID" ~/.bash_profile || ! grep -q "AWS_SECRET_ACCESS_KEY" ~/.bash_profile || ! grep -q "BUCKET" ~/.bash_profile; then
+    warn "This script will store your AWS credentials in your ~/.bash_profile file."
     warn "This is not secure and is not recommended."
     read -p "Do you want to proceed? [y/N]: " proceed
     if [[ "$proceed" != "y" && "$proceed" != "Y" ]]; then
@@ -212,23 +214,22 @@ if ! grep -q "AWS_ACCESS_KEY_ID" ~/.bashrc || ! grep -q "AWS_SECRET_ACCESS_KEY" 
     read -p "Enter your AWS Secret Access Key: " AWS_SECRET_ACCESS_KEY
     read -p "Enter your S3 Bucket Name: " BUCKET
 
-    echo "export AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY_ID\"" >> ~/.bashrc
-    echo "export AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\"" >> ~/.bashrc
-    echo "export BUCKET=\"$BUCKET\"" >> ~/.bashrc
-    export BUCKET="$BUCKET"
+    echo "export AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY_ID\"" >> ~/.bash_profile
+    echo "export AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\"" >> ~/.bash_profile
+    echo "export BUCKET=\"$BUCKET\"" >> ~/.bash_profile
 else
-    info "AWS credentials are already stored in ~/.bashrc"
+    ohai "AWS credentials are already stored in ~/.bashrc"
 fi
 
 # Source the bashrc file to apply the changes
-# source ~/.bashrc
+source ~/.bash_profile
 
 # Create a virtual environment if it does not exist
 if [ ! -d "venv" ]; then
     ohai "Creating virtual environment..."
     execute python3.12 -m venv venv > /dev/null 2>&1
 else
-    info "Virtual environment already exists"
+    ohai "Virtual environment already exists"
 fi
 
 ohai "Activating virtual environment..."
@@ -244,12 +245,12 @@ if ! command -v nvidia-smi &> /dev/null; then
     NUM_GPUS=0
 else
     NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
-    info "Number of GPUs: $NUM_GPUS"
+    ohai "Number of GPUs: $NUM_GPUS"
 
     if [ "$NUM_GPUS" -gt 0 ]; then
         ohai "GPU Memory Information:"
         nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | while read -r memory; do
-            info "$((memory / 1024)) GB"
+            ohai "$((memory / 1024)) GB"
         done
     else
         warn "No GPUs found on this machine."
@@ -260,7 +261,7 @@ fi
 ohai "Checking system RAM..."
 if command -v free &> /dev/null; then
     TOTAL_RAM=$(free -g | awk '/^Mem:/{print $2}')
-    info "Total System RAM: $TOTAL_RAM GB"
+    ohai "Total System RAM: $TOTAL_RAM GB"
 else
     warn "Cannot determine system RAM. 'free' command not found."
 fi
@@ -268,9 +269,9 @@ fi
 # Create the default key
 ohai "Creating the coldkey"
 if ! python3 -c "import bittensor as bt; w = bt.wallet(); print(w.coldkey_file.exists_on_device())" | grep -q "True"; then
-    execute btcli w new_coldkey --wallet.path ~/.bittensor/wallets --wallet.name default --n-words 12
+    execute btcli w new_coldkey --wallet.path ~/.bittensor/wallets --wallet.name default --n-words 12 
 else
-    info "Default key already exists on device."
+    ohai "Default key already exists on device." > /dev/null 2>&1
 fi
 
 
@@ -279,20 +280,30 @@ if ! command -v btcli &> /dev/null; then
     abort "btcli command not found. Please ensure it is installed."
 fi
 
+
+
 # Create hotkeys and register them
 if [ "$NUM_GPUS" -gt 0 ]; then
     for i in $(seq 0 $((NUM_GPUS - 1))); do
-        ohai "Creating hotkeys C$i for default..."
-        echo "n" | execute btcli wallet new_hotkey --wallet.name default --wallet.hotkey C$i --n-words 12 > /dev/null 2>&1
-        execute btcli subnet pow_register --wallet.name default --wallet.hotkey C$i --netuid 220 --subtensor.network test --no_prompt > /dev/null 2>&1
+        # Check if the hotkey file exists on the device
+        exists_on_device=$(python3 -c "import bittensor as bt; w = bt.wallet(hotkey='C$i'); print(w.hotkey_file.exists_on_device())" 2>/dev/null)
+        if [ "$exists_on_device" != "True" ]; then
+            echo "n" | btcli wallet new_hotkey --wallet.name default --wallet.hotkey C$i --n-words 12 > /dev/null 2>&1;
+        else
+            ohai "Hotkey C$i already exists on device."
+        fi
+
+        # Check if the hotkey is registered on subnet 220
+        is_registered=$(python3 -c "import bittensor as bt; w = bt.wallet(hotkey='C$i'); sub = bt.subtensor('test'); print(sub.is_hotkey_registered_on_subnet(hotkey_ss58=w.hotkey.ss58_address, netuid=220))" 2>/dev/null)
+        if [[ "$is_registered" != *"True"* ]]; then
+            ohai "Registering key on subnet 220"
+            btcli subnet pow_register --wallet.name default --wallet.hotkey C$i --netuid 220 --subtensor.network test --no_prompt > /dev/null 2>&1;
+        else
+            ohai "Key is already registered on subnet 220"
+        fi
     done
 else
     warn "No GPUs found. Skipping hotkey creation."
-fi
-
-# Login to wandb
-if ! command -v wandb &> /dev/null; then
-    abort "wandb command not found. Please ensure it is installed."
 fi
 
 ohai "Logging into wandb..."
@@ -325,7 +336,7 @@ if [ "$NUM_GPUS" -gt 0 ]; then
             BATCH_SIZE=1
         fi
         ohai "Starting miner on GPU $((i-1)) with batch size $BATCH_SIZE..."
-        execute pm2 start miner.py --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$((i-1)) --use_wandb --project "$PROJECT"
+        execute pm2 start miner.py --interpreter python3 --name C$i -- --actual_batch_size "$BATCH_SIZE" --wallet.name default --wallet.hotkey C$i --bucket "$BUCKET" --device cuda:$((i-1)) --use_wandb --project "$PROJECT" > /dev/null 2>&1
     done
 else
     warn "No GPUs found. Skipping miner startup."
