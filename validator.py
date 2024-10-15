@@ -248,7 +248,7 @@ class Validator:
                         total_loss += outputs.loss.item()
                         outputs.loss.backward()
                 step_loss = total_loss/(idx+1)
-                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Accumulated gradients with loss: [salmon1]{step_loss:.3f}[/salmon1] over over: [salmon1]{idx}[/salmon1] steps.")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Accumulated gradients with loss: [salmon1]{step_loss:.3f}[/salmon1] in: [salmon1]{idx}[/salmon1] steps.")
 
                 # Compute the score for this slice.
                 start_time = time.time()

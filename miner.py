@@ -164,49 +164,59 @@ class Miner:
         self.listener = threading.Thread(target=self.block_listener, args=(self.loop,), daemon=True).start()
         while True:
 
-            try:               
-                # Get the current step window.      
-                step_window = self.current_window
+            try:      
+                # Start the window step.     
+                logger.info('[bold]' + '\n' + '-' * 40 + f' Step: {self.global_step} ' + '-' * 40)
+                self.global_step += 1
+                start_step_time = time.time()
+                window = self.current_window
                 
                 # Download the state for the current window.
-                await download_slices_for_buckets_and_windows(
+                start_time = time.time()
+                state_slices = await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
-                    windows = [ step_window ],
+                    windows = [ window ],
                     key = 'state'
                 )
-                logger.info(f"{step_window}: Downloaded the state for the step window: {step_window}")
+                n_slices = len(state_slices[ window ]) if window in state_slices else 0
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded {n_slices} window states.")
                 
                 # Download the delta from the previous window.
-                await download_slices_for_buckets_and_windows(
+                start_time = time.time()
+                delta_slices = await download_slices_for_buckets_and_windows(
                     buckets = self.buckets,
-                    windows = [ step_window - 1 ],
+                    windows = [ window - 1 ],
                     key = 'delta'
                 )       
-                logger.info(f"{step_window}: Download the delta from the previous window: {step_window-1} ")
+                n_slices = len(delta_slices[ window - 1  ]) if window - 1  in delta_slices else 0
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Download {n_slices} window deltas.")
                 
                 # Apply the state for the current window.
+                start_time = time.time()
                 await apply_slices_to_model( 
                     model = self.model, 
-                    window = step_window,
-                    seed = step_window,
+                    window = window,
+                    seed = window,
                     compression = self.hparams.compression,
                     key = 'state'
                 )
-                logger.info(f"{step_window}: Applied the state for the current window: {step_window}")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window state.")
 
                 # Apply the delta from the previous window.
+                start_time = time.time()
                 await apply_slices_to_model( 
                     model = self.model, 
-                    window = step_window - 1,
-                    seed = step_window - 1,
+                    window = window - 1,
+                    seed = window - 1,
                     compression = self.hparams.compression,
                     key = 'delta'
                 )         
-                logger.info(f"{step_window}: Applied the delta from the previous window: {step_window - 1}")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Applied window delta.")
                        
                 # Download the page for the current window.
+                start_time = time.time()
                 pages = await AsyncSubsetFineWebEdu2Loader.next_pages(
-                    offset = step_window,
+                    offset = window,
                     n_pages = 1,
                     seed = self.uid if not self.config.random else random.randint(0, 1000)
                 )
@@ -216,49 +226,55 @@ class Miner:
                     pages_info = pages,
                     tokenizer = self.hparams.tokenizer
                 )
-                logger.info(f"{step_window}: Downloaded the page: {pages[0][1]} for window: {step_window}, is_random: {self.config.random}")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Downloaded training page: [tan]{pages[0][1]}[/tan] random = {self.config.random}")
 
                 # Accumualte gradients on the model applied to the base state.
+                start_time = time.time()
+                total_loss = 0.0
                 for idx, batch in enumerate(dataset):
                     input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
                     labels = input_ids.clone()
                     labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
                     with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
                         outputs = self.model(input_ids=input_ids, labels=labels)
+                    total_loss += outputs.loss.item()
                     outputs.loss.backward()                
                 self.optimizer.step()
                 self.scheduler.step()
                 self.optimizer.zero_grad()
-                logger.info(f"{step_window}: Accumualted gradients on the model applied with {idx} steps.")
+                step_loss = total_loss/(idx+1)
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Accumulated gradients with loss: [salmon1]{step_loss:.3f}[/salmon1] in: [salmon1]{idx}[/salmon1] steps.")
                 
                 # Upload the delta for the previous window.
+                start_time = time.time()
                 await upload_slice_for_window(
                     bucket = self.config.bucket, 
                     model = self.model, 
-                    window = step_window,
-                    seed = step_window,
+                    window = window,
+                    seed = window,
                     wallet = self.wallet, 
                     compression = self.hparams.compression,
                     key = 'delta'
                 )                
-                logger.info(f"{step_window}: Uploaded the delta for the current window: {step_window}")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Uploaded the delta.")
                 
                 # Upload the state for the current window.
+                start_time = time.time()
                 await upload_slice_for_window(
                     bucket = self.config.bucket, 
                     model = self.model, 
-                    window = step_window + 1,
-                    seed = step_window + 1, 
+                    window = window + 1,
+                    seed = window + 1, 
                     wallet = self.wallet, 
                     compression = self.hparams.compression,
                     key = 'state',
                 )
-                logger.info(f"{step_window}: Uploaded the state for the next window: {step_window + 1}")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_time:.2f}s[/grey63]): Uploaded the state.")
                 
                 # Wait until we are on a new window.
-                while self.current_window == step_window:
+                while self.current_window == window:
                     await asyncio.sleep(0.1)
-                logger.info(f"{step_window}: Finished step.")
+                logger.info(f"[steel_blue]{window}[/steel_blue] ([grey63]{time.time() - start_step_time:.2f}s[/grey63]): Finished step.")
                             
             # Catch keyboard interrrupt.
             except KeyboardInterrupt:
