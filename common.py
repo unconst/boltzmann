@@ -294,7 +294,7 @@ async def get_indices_for_window(model: torch.nn.Module, seed: str, compression:
 
 async def download_file(s3_client, bucket: str, filename: str) -> str:
     """
-    Downloads a file from S3 and saves it to the uid-specific directory.
+    Downloads a file from S3, using parallel downloads for large files.
     
     Args:
         s3_client: The S3 client.
@@ -459,10 +459,6 @@ async def load_files_for_window(window: int, key: str = 'slice') -> List[str]:
     Returns:
         List[str]: A list of file paths corresponding to the window.
     """
-    logger.debug(f"Retrieving files for window {window} from temporary directory")
-    global uid
-    if uid is None:
-        raise ValueError("UID has not been set in common.py module.")
 
     uid_dir = get_uid_directory()
     window_files = []
@@ -474,15 +470,11 @@ async def load_files_for_window(window: int, key: str = 'slice') -> List[str]:
 
 async def delete_files_before_window(window_max: int, key:str = 'slice'):
     """
-    Deletes all files in the uid-specific directory which have a window id before a specific value window_max.
+    Deletes all files on the local machine which have a window id before a specific value window_max.
 
     Args:
         window_max (int): The maximum window id. Files with window ids less than this value will be deleted.
     """
-    global uid
-    if uid is None:
-        raise ValueError("UID has not been set in common.py module.")
-
     logger.debug(f"Deleting files with window id before {window_max} for uid {uid}")
     uid_dir = get_uid_directory()
     for filename in os.listdir(uid_dir):
