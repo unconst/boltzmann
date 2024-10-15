@@ -39,6 +39,10 @@ ohai() {
     printf "${tty_blue}==>${tty_bold} %s${tty_reset}\n" "$*"
 }
 
+pdone() {
+    printf "${tty_green}[✔]${tty_bold} %s${tty_reset}\n" "$*"
+}
+
 info() {
     printf "${tty_green}%s${tty_reset}\n" "$*"
 }
@@ -54,6 +58,26 @@ error() {
 abort() {
     error "$@"
     exit 1
+}
+
+getc() {
+  local save_state
+  save_state="$(/bin/stty -g)"
+  /bin/stty raw -echo
+  IFS='' read -r -n 1 -d '' "$@"
+  /bin/stty "${save_state}"
+}
+
+wait_for_user() {
+  local c
+  echo
+  echo "Press ${tty_bold}RETURN${tty_reset}/${tty_bold}ENTER${tty_reset} to continue or any other key to abort:"
+  getc c
+  # we test for \r and \n because some stuff does \r instead
+  if ! [[ "${c}" == $'\r' || "${c}" == $'\n' ]]
+  then
+    exit 1
+  fi
 }
 
 execute() {
@@ -96,9 +120,21 @@ test_curl() {
   version_ge "$(major_minor "${curl_name_and_version##* }")" "$(major_minor "${REQUIRED_CURL_VERSION}")"
 }
 
+clear
+echo ""
+echo ""
+echo " ______   _____         _______ ______ _______ _______ __   _ __   _"
+echo " |_____] |     | |         |     ____/ |  |  | |_____| | \  | | \  |"
+echo " |_____] |_____| |_____    |    /_____ |  |  | |     | |  \_| |  \_|"
+echo "                                                                    "
+echo ""
+echo ""
+
+wait_for_user
+
 # Install Git if not present
 if ! command -v git &> /dev/null; then
-    ohai "Git could not be found, installing..."
+    ohai "Installing git ..."
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
         ohai "Detected Linux"
         if [ -f /etc/os-release ]; then
@@ -126,21 +162,28 @@ if ! command -v git &> /dev/null; then
         abort "Unsupported OS type: $OSTYPE"
     fi
 else
-    ohai "Git is already installed"
+    pdone "Installed Git"
 fi
 
-# Clone the repository if not present
-if [ ! -d "cont" ]; then
-    ohai "Cloning the repository..."
-    execute git clone https://github.com/unconst/cont
+
+# Check if we are inside the cont repository
+if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    REPO_PATH="."
 else
-    ohai "Repository already cloned"
+    if [ ! -d "cont" ]; then
+        ohai "Cloning boltzmann ..."
+        execute git clone https://github.com/unconst/cont
+        REPO_PATH="cont/"
+    else
+        REPO_PATH="cont/"
+    fi
 fi
+pdone "Pulled Boltzmann $REPO_PATH"
 
 
 # Check if npm is installed
 if ! command -v npm &> /dev/null; then
-    ohai "npm could not be found, installing..."
+    ohai "Installing npm ..."
     if ! command -v node &> /dev/null; then
         ohai "Node.js could not be found, installing..."
         if ! curl -fsSL https://deb.nodesource.com/setup_14.x | sudo -E bash -; then
@@ -153,21 +196,20 @@ if ! command -v npm &> /dev/null; then
     if ! curl -L https://www.npmjs.com/install.sh | sh; then
         abort "Failed to install npm"
     fi
-else
-    ohai "npm is already installed"
 fi
+pdone "Installed npm"
+
 
 # Install pm2
 if ! command -v pm2 &> /dev/null; then
-    ohai "pm2 could not be found, installing..."
+    ohai "Installing pm2 ..."
     execute npm install pm2 -g > /dev/null 2>&1
-else
-    ohai "pm2 is already installed"
 fi
+pdone "Installed pm2"
 
 # Install Python 3.12 if not installed
 if ! command -v python3.12 &> /dev/null; then
-    ohai "Python 3.12 not found, installing..."
+    ohai "Installing python3.12 ..."
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
         ohai "Detected Linux"
         if [ -f /etc/os-release ]; then
@@ -195,14 +237,14 @@ if ! command -v python3.12 &> /dev/null; then
     else
         abort "Unsupported OS type: $OSTYPE"
     fi
-else
-    ohai "Python 3.12 is already installed"
 fi
+pdone "Installed python3.12"
 
 touch ~/.bash_profile
 
 # Prompt the user for AWS credentials and inject them into the bash_profile file if not already stored
 if ! grep -q "AWS_ACCESS_KEY_ID" ~/.bash_profile || ! grep -q "AWS_SECRET_ACCESS_KEY" ~/.bash_profile || ! grep -q "BUCKET" ~/.bash_profile; then
+    clear
     warn "This script will store your AWS credentials in your ~/.bash_profile file."
     warn "This is not secure and is not recommended."
     read -p "Do you want to proceed? [y/N]: " proceed
@@ -217,26 +259,32 @@ if ! grep -q "AWS_ACCESS_KEY_ID" ~/.bash_profile || ! grep -q "AWS_SECRET_ACCESS
     echo "export AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY_ID\"" >> ~/.bash_profile
     echo "export AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\"" >> ~/.bash_profile
     echo "export BUCKET=\"$BUCKET\"" >> ~/.bash_profile
-else
-    ohai "AWS credentials are already stored in ~/.bashrc"
 fi
 
 # Source the bashrc file to apply the changes
 source ~/.bash_profile
 
-# Create a virtual environment if it does not exist
-if [ ! -d "venv" ]; then
-    ohai "Creating virtual environment..."
-    execute python3.12 -m venv venv > /dev/null 2>&1
-else
-    ohai "Virtual environment already exists"
-fi
+pdone "Found AWS credentials"
 
-ohai "Activating virtual environment..."
-source venv/bin/activate > /dev/null 2>&1
+# Create a virtual environment if it does not exist
+if [ ! -d "$REPO_PATH/venv" ]; then
+    ohai "Creating virtual environment at $REPO_PATH..."
+    execute python3.12 -m venv "$REPO_PATH/venv" > /dev/null 2>&1
+fi
+pdone "Created venv at $REPO_PATH"
+
+
+if [[ "$VIRTUAL_ENV" == "" ]]; then
+    ohai "Activating virtual environment..."
+    source venv/bin/activate > /dev/null 2>&1
+fi
+pdone "Activated venv at $REPO_PATH"
+
 
 ohai "Installing requirements..."
 execute pip install -r cont/requirements.txt > /dev/null 2>&1
+pdone "Installed requirements"
+
 
 # Check for GPUs
 ohai "Checking for GPUs..."
