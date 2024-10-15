@@ -295,14 +295,12 @@ async def get_indices_for_window(model: torch.nn.Module, seed: str, compression:
 async def download_file(s3_client, bucket: str, filename: str) -> str:
     """
     Downloads a file from S3, using parallel downloads for large files.
-    
     Args:
         s3_client: The S3 client.
         bucket (str): Name of the S3 bucket.
         filename (str): The S3 object key (filename).
-    
     Returns:
-        str: The path to the downloaded file in the uid directory.
+        str: The path to the downloaded file in the temporary directory.
     """
     async with semaphore:
         # Get the uid-specific directory
@@ -323,7 +321,6 @@ async def download_file(s3_client, bucket: str, filename: str) -> str:
                 object_size = head_response['ContentLength']
                 CHUNK_SIZE = 1 * 1024 * 1024  # 1 MB
                 
-                # Download the file from S3
                 response = await s3_client.get_object(Bucket=bucket, Key=filename)
                 async with aiofiles.open(temp_file, 'wb') as outfile:
                     while True:
@@ -331,7 +328,6 @@ async def download_file(s3_client, bucket: str, filename: str) -> str:
                         if not chunk:
                             break
                         await outfile.write(chunk)
-                
                 logger.debug(f"Successfully downloaded file {filename} to {temp_file}")
                 return temp_file
         except Timeout:
@@ -459,7 +455,7 @@ async def load_files_for_window(window: int, key: str = 'slice') -> List[str]:
     Returns:
         List[str]: A list of file paths corresponding to the window.
     """
-
+    logger.debug(f"Retrieving files for window {window} from temporary directory")
     uid_dir = get_uid_directory()
     window_files = []
     for filename in os.listdir(uid_dir):
@@ -475,7 +471,7 @@ async def delete_files_before_window(window_max: int, key:str = 'slice'):
     Args:
         window_max (int): The maximum window id. Files with window ids less than this value will be deleted.
     """
-    logger.debug(f"Deleting files with window id before {window_max} for uid {uid}")
+    logger.debug(f"Deleting files with window id before {window_max}")
     uid_dir = get_uid_directory()
     for filename in os.listdir(uid_dir):
         if filename.startswith(f"{key}-") and ( filename.endswith(".pt") or filename.endswith(".lock") ):
