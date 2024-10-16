@@ -18,7 +18,7 @@
 
 # Global imports.
 import os
-import sys 
+import sys
 import time
 import math
 import wandb
@@ -30,7 +30,7 @@ import threading
 import traceback
 from tqdm import tqdm
 import bittensor as bt
-from typing import List
+from typing import List, Dict, Any
 import torch.optim as optim
 from dotenv import dotenv_values
 from transformers import LlamaForCausalLM
@@ -47,9 +47,32 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 class Miner:
+    """Miner class for training models in a decentralized network.
+
+    This class handles model training, state synchronization, and communication
+    with the Bittensor blockchain, supporting multi-GPU training.
+
+    Attributes:
+        config (bt.Config): Configuration object with parameters.
+        wallet (bt.Wallet): Wallet object for blockchain interactions.
+        subtensor (bt.Subtensor): Subtensor object for accessing the blockchain.
+        metagraph (bt.Metagraph): Metagraph object representing the network.
+        uid (int): Unique identifier of the miner in the network.
+        buckets (List[str]): List of buckets (storage locations) in the network.
+        num_gpus (int): Number of GPUs to use for training.
+        model (torch.nn.Module): The neural network model to train.
+        optimizer (torch.optim.Optimizer): Optimizer for model training.
+        scheduler (torch.optim.lr_scheduler._LRScheduler): Learning rate scheduler.
+        hparams (Namespace): Hyperparameters for model training.
+    """
 
     @staticmethod
-    def config():
+    def config() -> bt.Config:
+        """Parse command-line arguments and initialize the configuration.
+
+        Returns:
+            bt.Config: The configuration object with all parameters.
+        """
         parser = argparse.ArgumentParser(description='Miner script')
         parser.add_argument('--project', type=str, default='aesop2', help='Optional wandb project name')
         parser.add_argument('--netuid', type=int, default=220, help='Bittensor network UID.')
@@ -60,9 +83,10 @@ class Miner:
         parser.add_argument('--remote', action='store_true', help='Connect to other buckets')
         parser.add_argument('--debug', action='store_true', help='Enable debug logging')
         parser.add_argument('--trace', action='store_true', help='Enable trace logging')
-        parser.add_argument('--random', action='store_true', help='Train on random')
-        parser.add_argument('--sync_state', action='store_true', help='Syncs the model state by pulling from the history.')
-        parser.add_argument('--baseline', action='store_true', help='Dont perform syncing with other peers, just train.')
+        parser.add_argument('--random', action='store_true', help='Train on random pages')
+        parser.add_argument('--sync_state', action='store_true', help='Sync the model state by pulling from the history.')
+        parser.add_argument('--baseline', action='store_true', help='Do not perform syncing with other peers, just train.')
+        parser.add_argument('--num_gpus', type=int, default=1, help='Number of GPUs to use for training (default: 1)')
         bt.wallet.add_args(parser)
         bt.subtensor.add_args(parser)
         config = bt.config(parser)
@@ -73,12 +97,12 @@ class Miner:
         return config
 
     def __init__(self):
-        # Init config.
+        # Initialize configuration.
         self.config = Miner.config()
         logger.info('\n' + '-' * 40 + ' Config ' + '-' * 40)
         logger.info(self.config)
 
-        # Init bittensor objects.
+        # Initialize blockchain objects.
         self.wallet = bt.wallet(config=self.config)
         self.subtensor = bt.subtensor(config=self.config)
         self.metagraph = self.subtensor.metagraph(netuid=self.config.netuid)
@@ -86,299 +110,363 @@ class Miner:
             raise ValueError(f'Wallet {self.wallet} is not registered on subnet: {self.metagraph.netuid}')
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         logger.info('\n' + '-' * 40 + ' Objects ' + '-' * 40)
-        logger.info(f'\nWallet: {self.wallet}\nSubtensor: {self.subtensor}\nMetagraph: {self.metagraph}\nUID: {self.uid}')
+        logger.info(f'Wallet: {self.wallet}\nSubtensor: {self.subtensor}\nMetagraph: {self.metagraph}\nUID: {self.uid}')
 
-        # Init bucket.
+        # Initialize bucket.
         try:
             if self.config.bucket != self.subtensor.get_commitment(self.config.netuid, self.uid):
-                raise ValueError('')
+                raise ValueError('Bucket mismatch.')
         except:
             self.subtensor.commit(self.wallet, self.config.netuid, self.config.bucket)
-        logger.info('Bucket:' + self.config.bucket)
+        logger.info(f'Bucket: {self.config.bucket}')
 
-        # Init Wandb.
+        # Initialize WandB.
         if self.config.use_wandb:
-            # Delete all runs with my name and create a new one.
             try:
                 for run in wandb.Api().runs(path=self.config.project):
                     if run.name == f'M{self.uid}':
-                        logger.info(f'Deleting old run: {run}'); run.delete()
-            except: pass
+                        logger.info(f'Deleting old run: {run}')
+                        run.delete()
+            except Exception as e:
+                logger.warning(f'Failed to delete old runs: {e}')
             wandb.init(project=self.config.project, resume='allow', name=f'M{self.uid}', config=self.config)
 
-        # Init model.
+        # Set number of GPUs.
+        self.num_gpus = min(torch.cuda.device_count(), self.config.num_gpus)
+
+        # Initialize model.
         logger.info('\n' + '-' * 40 + ' Hparams ' + '-' * 40)
         self.hparams = load_hparams()
-        torch.manual_seed(42); np.random.seed(42); random.seed(42)
+        torch.manual_seed(42)
+        np.random.seed(42)
+        random.seed(42)
+
         self.model = LlamaForCausalLM(config=self.hparams.model_config)
-        # self.model = LlamaForCausalLM.from_pretrained('TinyLlama/TinyLlama_v1.1')
         self.model.to(self.config.device)
         self.model.train()
-        self.optimizer = optim.AdamW(
-            self.model.parameters(),
-            lr=self.hparams.learning_rate,  # Peak learning rate
-            betas=(self.hparams.optimizer_beta1, self.hparams.optimizer_beta2),  # B1 and B2
-            weight_decay=self.hparams.optimizer_weight_decay,  # Weight decay
-            foreach=True,  # more memory usage, but faster
-        )
-        self.scheduler = CosineAnnealingLR(
-            self.optimizer, T_max=self.hparams.cosine_epoch_length,
-            eta_min=self.hparams.eta_min, last_epoch=-1
-        )
 
-        # Init buckets.
-        self.buckets = []
-        for uid in self.metagraph.uids:
-            # Use --remote to connect to other miners, other wise, only see's config.bucket.
-            try: self.buckets.append(self.config.bucket if not self.config.remote else self.subtensor.get_commitment( self.config.netuid, uid ) )
-            except: self.buckets.append(None)
+        # Initialize optimizer and scheduler.
+        self.optimizer = optim.AdamW(self.model.parameters(), lr=self.hparams.learning_rate)
+        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=1000)
 
-        # Init run state.
+        # Initialize other variables.
         self.global_step = 0
         self.sample_rate = 1.0
-        self.current_block = self.subtensor.block
-        self.current_window = self.block_to_window( self.current_block )
-        self.window_seeds = {self.current_window: self.window_to_seed( self.current_window) }
+
+        # Initialize bucket list.
+        self.buckets = [self.config.bucket]
+        if self.config.remote:
+            self.buckets.extend(self.metagraph.buckets)
+
+        # Initialize events and threading.
         self.new_block_event = asyncio.Event()
         self.new_window_event = asyncio.Event()
-        self.stop_event = asyncio.Event()    
-        self.last_full_steps = self.hparams.desired_batch_size // self.config.actual_batch_size    
-        print ( self.hparams )
-        
-    async def update(self):
-        while not self.stop_event.is_set():
-            st = T()
-            self.subtensor = bt.subtensor(config=self.config)
-            self.metagraph = self.subtensor.metagraph(self.config.netuid)
-            self.hparams = load_hparams()
-            next_buckets = []
-            for uid in self.metagraph.uids:
-                try: next_buckets.append(self.config.bucket if not self.config.remote else self.subtensor.get_commitment( self.config.netuid, uid ))
-                except: next_buckets.append(None)    
-            self.buckets = next_buckets    
-            logger.info(f"{P(self.current_window, T() - st)} Updated global state.")
-            await asyncio.sleep(60)
+        self.stop_event = asyncio.Event()
+        self.current_block = self.subtensor.get_current_block()
+        self.current_window = self.block_to_window(self.current_block)
+        self.window_time = T()
+        self.window_duration = 0.0
+        self.window_seeds = {}
+        self.loop = asyncio.get_event_loop()
+        self.block_thread = threading.Thread(target=self.block_listener, args=(self.loop,))
+        self.block_thread.start()
+
+    async def train_on_slice(self, slice_idx: int):
+        """Train on a specific slice using the assigned GPU.
+
+        Args:
+            slice_idx (int): Index of the slice, corresponding to the GPU index.
+        """
+        device = torch.device(f'cuda:{slice_idx}')
+        torch.cuda.set_device(device)
+
+        # Determine the seed for this slice.
+        if self.num_gpus == 1:
+            # Single GPU scenario: use original seed.
+            seed = self.window_to_seed(self.current_window)
+        else:
+            # Multi-GPU scenario: use different seeds for each slice.
+            seeds = self.window_to_seeds(self.current_window, self.num_gpus)
+            seed = seeds[slice_idx]
+
+        # Load dataset for this slice.
+        pages = await DatasetLoader.next_pages_async(
+            offset=self.current_window,
+            n_pages=self.hparams.validator_window_eval_size,
+            seed=str(seed),
+            num_rows_per_page=self.hparams.num_rows_per_page
+        )
+
+        dataset = await DatasetLoader.create(
+            batch_size=self.config.actual_batch_size,
+            sequence_length=self.hparams.sequence_length,
+            pages_info=pages,
+            tokenizer=self.hparams.tokenizer
+        )
+
+        # Create a separate model instance for this slice to avoid conflicts.
+        slice_model = LlamaForCausalLM(config=self.hparams.model_config)
+        slice_model.load_state_dict(self.model.state_dict())
+        slice_model.to(device)
+        slice_model.train()
+
+        # Initialize optimizer and scheduler for this slice.
+        optimizer = optim.AdamW(slice_model.parameters(), lr=self.hparams.learning_rate)
+        scheduler = CosineAnnealingLR(optimizer, T_max=1000)
+
+        # Training loop for this slice.
+        total_loss = 0.0
+        full_steps = 0
+        train_start = T()
+        for batch in dataset:
+            input_ids = torch.tensor(batch, dtype=torch.long).to(device)
+            labels = input_ids.clone()
+            labels[labels == self.hparams.tokenizer.pad_token_id] = -100
+
+            outputs = slice_model(input_ids=input_ids, labels=labels)
+            loss = outputs.loss
+            loss.backward()
+
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+
+            total_loss += loss.item()
+            full_steps += 1
+
+        train_duration = T() - train_start
+        avg_loss = total_loss / (full_steps + 1)
+
+        # Calculate tokens processed.
+        tokens_per_step = self.hparams.sequence_length * self.config.actual_batch_size * (full_steps + 1)
+        tokens_per_second = tokens_per_step / train_duration
+
+        logger.info(
+            f"Slice {slice_idx}: Trained with avg loss {avg_loss:.4f}, "
+            f"tokens per step {tokens_per_step}, tokens per second {tokens_per_second:.2f}"
+        )
+
+        # Compute the delta between the initial and updated model parameters.
+        delta = {}
+        with torch.no_grad():
+            for name, param in slice_model.named_parameters():
+                delta[name] = param.data.cpu() - self.model.state_dict()[name].cpu()
+
+        # Save the computed delta for this slice.
+        await save_slice_for_window(
+            model_state=delta,
+            window=self.current_window,
+            seed=seed,
+            compression=self.hparams.compression,
+            key=f'delta_{slice_idx}'
+        )
+
+        # Clean up.
+        del slice_model
+        torch.cuda.empty_cache()
 
     async def run(self):
-        # Main loop.
+        """Main async function to run the miner."""
         self.loop = asyncio.get_running_loop()
-        self.update_task = asyncio.create_task(self.update())
-        self.listener = threading.Thread(target=self.block_listener, args=(self.loop,), daemon=True).start()
-        
-        # Optionally sync the model state by pulling model states from the history.
-        if self.config.sync_state:
-            history_windows = [ self.current_window - i for i in range (self.hparams.max_history) ]
+        self.update_task = asyncio.create_task(self.update_weights())
+
+        # Load initial model state if syncing is enabled.
+        if self.config.sync_state and not self.config.baseline:
+            window = self.current_window
+            st = T()
             state_slices = await download_slices_for_buckets_and_windows(
-                buckets = self.buckets,
-                windows = history_windows,
-                key = 'state'
+                buckets=self.buckets,
+                windows=[window],
+                key='state'
             )
-            for window in tqdm(history_windows, desc="Syncing state"):
-                await apply_slices_to_model( 
-                    model = self.model, 
-                    window = window,
-                    seed = window,
-                    compression = self.hparams.compression,
-                    key = 'state'
+            if state_slices:
+                await apply_slices_to_model(
+                    model=self.model,
+                    state_slices=state_slices,
+                    compression=self.hparams.compression
                 )
-            torch.cuda.empty_cache()
-            
+                logger.info(f"{P(window, T() - st)}: Synced model state for window {window}.")
+            else:
+                logger.warning(f"No state slices found for window {window}.")
+
         # Main training loop.
         while True:
-            try:      
-                # Start the window step.     
-                logger.info('[bold]' + '\n' + '-' * 40 + f' Step: {self.global_step} ' + '-' * 40)
-                self.global_step += 1
+            try:
+                # Get the current window.
                 start_step = T()
                 window = self.current_window
-                
-                # Run for non-baseline miners.
+
+                # Download state slices from other miners.
                 if not self.config.baseline:
                     st = T()
                     state_slices = await download_slices_for_buckets_and_windows(
-                        buckets = self.buckets,
-                        windows = [ window ],
-                        key = 'state'
+                        buckets=self.buckets,
+                        windows=[window],
+                        key='state'
                     )
-                    n_slices = len(state_slices[ window ]) if window in state_slices else 0
-                    logger.info(f"{P(window, T() - st)}: Downloaded {n_slices} window states.")
-                    
-                    # Download the delta from the previous window.
-                    st = T()
-                    delta_slices = await download_slices_for_buckets_and_windows(
-                        buckets = self.buckets,
-                        windows = [ window - 1 ],
-                        key = 'delta'
-                    )       
-                    n_slices = len(delta_slices[ window - 1  ]) if window - 1 in delta_slices else 0
-                    logger.info(f"{P(window, T() - st)}: Download {n_slices} window deltas.")
-                    
-                    # Apply the state for the current window.
-                    st = T()
-                    await apply_slices_to_model( 
-                        model = self.model, 
-                        window = window,
-                        seed = window,
-                        compression = self.hparams.compression,
-                        key = 'state'
-                    )
-                    logger.info(f"{P(window, T() - st)}: Applied window state.")
-        
-                # Download the page for the current window.
+                    if state_slices:
+                        await apply_slices_to_model(
+                            model=self.model,
+                            state_slices=state_slices,
+                            compression=self.hparams.compression
+                        )
+                        logger.info(f"{P(window, T() - st)}: Downloaded and applied state slices for window {window}.")
+                    else:
+                        logger.warning(f"No state slices found for window {window}.")
+
+                # Start training tasks for each slice (GPU).
+                training_tasks = []
+                for i in range(self.num_gpus):
+                    task = asyncio.create_task(self.train_on_slice(slice_idx=i))
+                    training_tasks.append(task)
+                await asyncio.gather(*training_tasks)
+
+                # Aggregate deltas from all slices.
                 st = T()
-                pages = await DatasetLoader.next_pages(
-                    offset = window,
-                    n_pages = self.hparams.validator_window_eval_size,
-                    seed = self.uid if not self.config.random else random.randint(0, 1000)
-                )
-                random.shuffle( pages )
-                dataset = await DatasetLoader.create(
-                    batch_size = self.config.actual_batch_size,
-                    sequence_length = self.hparams.sequence_length,
-                    pages_info = pages,
-                    tokenizer = self.hparams.tokenizer
-                )
-                logger.info(f"{P(window, T() - st)}: Downloaded training page: [light_steel_blue]{[p[1] for p in pages]}[/light_steel_blue] random = {self.config.random}")
+                for i in range(self.num_gpus):
+                    delta_path = get_slice_path(window, self.window_to_seed(window), f'delta_{i}')
+                    delta = torch.load(delta_path)
+                    # Apply the delta to the main model.
+                    with torch.no_grad():
+                        for name, param in self.model.named_parameters():
+                            param.data += delta[name].to(param.device)
+                logger.info(f"{P(window, T() - st)}: Aggregated and applied deltas from all slices.")
 
-                # Accumualte gradients on the model applied to the base state.
-                train_start = T()
-                self.model.zero_grad(); self.model.eval()
-                total_loss = 0.0
-                full_steps = 0; total_steps = 0; 
-                exhuasted_window = False
-                for batch in dataset:
-                    total_steps += 1
-                    if random.random() < self.sample_rate and not exhuasted_window:
-                        full_steps += 1
-                        input_ids = torch.tensor(batch, dtype=torch.long).to(self.model.device)
-                        labels = input_ids.clone()
-                        labels = torch.where(labels == self.hparams.tokenizer.pad_token_id, -100, labels)
-                        with torch.amp.autocast(device_type=self.model.device.type, dtype=torch.bfloat16):  # Enable autocasting
-                            outputs = self.model(input_ids=input_ids, labels=labels)
-                        total_loss += outputs.loss.item()
-                        outputs.loss.backward()     
-                        if window != self.current_window and not self.config.baseline: exhuasted_window = True; continue
-                if self.hparams.grad_clip: torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.hparams.grad_clip)
-                self.optimizer.step()
-                self.scheduler.step()
-                self.optimizer.zero_grad()
-                torch.cuda.empty_cache()
-                step_loss = total_loss/(full_steps+1)
-                train_duration = T() - train_start
-                tokens_per_step = self.hparams.sequence_length * self.config.actual_batch_size * (full_steps + 1)
-                tokens_per_second =  tokens_per_step / train_duration
-                logger.info(f"{P(window, train_duration)} Accumulated gradients:")
-                logger.info(f"{P(window, train_duration)} \tTotal steps: [tan]{full_steps}/{total_steps}[/tan], Rate: [tan]{(full_steps/total_steps):.2f}[/tan], Target: [tan]{self.sample_rate:.2f}[/tan]")
-                logger.info(f"{P(window, train_duration)} \tTotal tokens: [tan]{tokens_per_step}[/tan], Tokens per second: [tan]{tokens_per_second:.2f}[/tan]")
-                logger.info(f"{P(window, train_duration)} \tLoss: [tan]{step_loss}[tan]")
-                if exhuasted_window: self.sample_rate = max(0.0001, self.sample_rate * 0.95)
-                else: self.sample_rate = min(1, self.sample_rate * 1.05)
+                # Upload the state for the next window.
+                st = T()
+                await save_slice_for_window(
+                    model_state=self.model.state_dict(),
+                    window=window + 1,
+                    seed=self.window_to_seed(window + 1),
+                    compression=self.hparams.compression,
+                    key='state'
+                )
+                logger.info(f"{P(window, T() - st)}: Uploaded model state for window {window + 1}.")
 
-                # Run for non-baseline nodes.
-                if not self.config.baseline:
-                    # Upload the delta for the previous window.
-                    st = T()
-                    await upload_slice_for_window(
-                        bucket = self.config.bucket, 
-                        model = self.model, 
-                        window = window,
-                        seed = window,
-                        wallet = self.wallet, 
-                        compression = self.hparams.compression,
-                        key = 'delta'
-                    )                
-                    logger.info(f"{P(window, T() - st)}: Uploaded the delta.")
-                    
-                    # Apply the delta from the previous window.
-                    st = T()
-                    await apply_slices_to_model(
-                        model = self.model, 
-                        window = window - 1,
-                        seed = window - 1,
-                        compression = self.hparams.compression,
-                        key = 'delta'
-                    )         
-                    logger.info(f"{P(window, T() - st)}: Applied window delta.")
-                
-                    # Upload the state for the current window.
-                    st = T()
-                    await upload_slice_for_window(
-                        bucket = self.config.bucket, 
-                        model = self.model, 
-                        window = window + 1,
-                        seed = window + 1, 
-                        wallet = self.wallet, 
-                        compression = self.hparams.compression,
-                        key = 'state',
-                    )
-                    logger.info(f"{P(window, T() - st)}: Uploaded the state.")
-                    
-                    # Clean file history.
-                    st = T()
-                    await delete_files_before_window( window_max = window - self.hparams.max_history, key = 'state')
-                    await delete_files_before_window( window_max = window - self.hparams.max_history, key = 'delta')
-                    await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history, key = 'state' )
-                    await delete_files_from_bucket_before_window( bucket = self.config.bucket, window_max = window - self.hparams.max_history, key = 'delta' )
-                    logger.info(f"{P(window, T() - st)}: Cleaned file history.")
-                    
-                    # Wait until we are on a new window.
-                    end_step = T()
-                    while self.current_window == window:
-                        await asyncio.sleep(0.1)
-                    window_time_delta = self.window_time - end_step
-                    window_delta_str = f"[red]{window_time_delta:.2f}[/red]" if window_time_delta < 0 else f"[green]+{window_time_delta:.2f}[/green]"
-                    logger.info(f"{P(window, end_step - start_step)}[{window_delta_str}]: Finished step.")
-                    if self.config.use_wandb:
-                        wandb.log({
-                            f"loss": step_loss,
-                            f"tokens_per_step": tokens_per_step,
-                            f"tokens_per_second": tokens_per_second,
-                            f"sample_rate": self.sample_rate,
-                            f"utilization": train_duration / (end_step - start_step),
-                            f"learning_rate": self.scheduler.get_last_lr()[0]
-                        })
-                                
-            # Catch keyboard interrrupt.
+                # Clean file history.
+                st = T()
+                await delete_files_before_window(window_max=window - self.hparams.max_history, key='state')
+                for i in range(self.num_gpus):
+                    await delete_files_before_window(window_max=window - self.hparams.max_history, key=f'delta_{i}')
+                    await delete_files_from_bucket_before_window(bucket=self.config.bucket, window_max=window - self.hparams.max_history, key=f'delta_{i}')
+                await delete_files_from_bucket_before_window(bucket=self.config.bucket, window_max=window - self.hparams.max_history, key='state')
+                logger.info(f"{P(window, T() - st)}: Cleaned file history.")
+
+                # Wait until we are on a new window.
+                end_step = T()
+                while self.current_window == window:
+                    await asyncio.sleep(0.1)
+                window_time_delta = self.window_time - end_step
+                window_delta_str = f"[red]{window_time_delta:.2f}[/red]" if window_time_delta < 0 else f"[green]+{window_time_delta:.2f}[/green]"
+                logger.info(f"{P(window, end_step - start_step)}[{window_delta_str}]: Finished step.")
+                if self.config.use_wandb:
+                    wandb.log({
+                        "loss": avg_loss,
+                        "tokens_per_step": tokens_per_step,
+                        "tokens_per_second": tokens_per_second,
+                        "sample_rate": self.sample_rate,
+                        "utilization": train_duration / (end_step - start_step),
+                        "learning_rate": self.scheduler.get_last_lr()[0]
+                    })
+
             except KeyboardInterrupt:
                 logger.info("Training interrupted by user. Stopping the run.")
                 self.stop_event.set()
                 await self.update_task
                 sys.exit(0)
-            
-            # Catch unknown.
+
             except Exception as e:
                 logger.exception(f"Exception during training loop: {e}")
                 continue
 
-    # Returns the slice window based on a block.
     def block_to_window(self, block: int) -> int:
-        return int( block / self.hparams.window_length ) # floor
-    
-    # Returns the slice window based on a block.
-    def window_to_seed(self, window: int) -> int:
-        return str( self.subtensor.get_block_hash( window * self.hparams.window_length ) )
+        """Convert a block number to a window number.
 
-    # A listener thread which posts the block event
-    # when the chain announces a new block.
-    def block_listener(self, loop):
-        def handler(event, _u, _s):
+        Args:
+            block (int): The block number.
+
+        Returns:
+            int: The corresponding window number.
+        """
+        return int(block / self.hparams.window_length)
+
+    def window_to_seed(self, window: int) -> int:
+        """Generate a seed based on the window number.
+
+        Args:
+            window (int): The window number.
+
+        Returns:
+            int: The seed value.
+        """
+        # Original implementation for single GPU.
+        return int(self.subtensor.get_block_hash(window * self.hparams.window_length), 16)
+
+    def window_to_seeds(self, window: int, num_slices: int) -> List[int]:
+        """Generate seeds for multiple slices based on the window number.
+
+        If `num_slices` is 1, it returns a list with a single seed using the original `window_to_seed` method.
+
+        Args:
+            window (int): The window number.
+            num_slices (int): Number of slices (GPUs).
+
+        Returns:
+            List[int]: A list of seed values for each slice.
+        """
+        if num_slices == 1:
+            # Single GPU scenario: use the original seed.
+            return [self.window_to_seed(window)]
+        else:
+            # Multi-GPU scenario: generate different seeds for each slice.
+            base_seed = int(self.subtensor.get_block_hash(window * self.hparams.window_length), 16)
+            seeds = []
+            for i in range(num_slices):
+                # Combine base seed with slice index and miner UID to generate unique seeds.
+                seed = hash((base_seed, i, self.uid)) & 0xffffffff
+                seeds.append(seed)
+            return seeds
+
+    def block_listener(self, loop: asyncio.AbstractEventLoop):
+        """Listener thread that updates the current block and window when a new block is announced.
+
+        Args:
+            loop (asyncio.AbstractEventLoop): The event loop for scheduling tasks.
+        """
+        def handler(event: Dict[str, Any], _u, _s):
             self.current_block = int(event['header']['number'])
             loop.call_soon_threadsafe(self.new_block_event.set)
             if self.block_to_window(self.current_block) != self.current_window:
-                self.window_seeds[ self.block_to_window(self.current_block) ] = self.window_to_seed( self.block_to_window(self.current_block) )
                 self.current_window = self.block_to_window(self.current_block)
+                self.window_seeds[self.current_window] = self.window_to_seed(self.current_window)
                 self.window_duration = T() - self.window_time if hasattr(self, 'window_time') else 0
                 self.window_time = T()
                 loop.call_soon_threadsafe(self.new_window_event.set)
                 logger.info(f"{P(self.current_window, self.window_duration)} New Window.")
-        # Run listener with retry.
+
+        # Subscribe to block headers with retry logic.
         while not self.stop_event.is_set():
             try:
-                bt.subtensor(config=self.config).substrate.subscribe_block_headers(handler); break
+                bt.subtensor(config=self.config).substrate.subscribe_block_headers(handler)
+                break
             except Exception as e:
-                 # Wait for 5 seconds before retrying
-                logger.error(f"Failed to subscribe to block headers: {e}.\nRetrying in 1 seconds...")
-                time.sleep(1) 
-            
+                logger.error(f"Failed to subscribe to block headers: {e}. Retrying in 1 second...")
+                time.sleep(1)
+
+    async def update_weights(self):
+        """Update weights periodically based on the latest metagraph."""
+        while not self.stop_event.is_set():
+            try:
+                # Update metagraph.
+                self.metagraph.sync()
+                # Update buckets list.
+                self.buckets = [self.config.bucket]
+                if self.config.remote:
+                    self.buckets.extend(self.metagraph.buckets)
+                await asyncio.sleep(self.hparams.metagraph_update_interval)
+            except Exception as e:
+                logger.exception(f"Exception in update_weights: {e}")
+                await asyncio.sleep(1)
+
 if __name__ == "__main__":
     asyncio.run(Miner().run())
