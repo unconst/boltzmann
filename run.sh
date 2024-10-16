@@ -8,25 +8,70 @@
 # the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
 # and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
-
-DEBUG=false
-if [[ "$1" == "--debug" ]]; then
-  DEBUG=true
-fi
-PROJECT=${2:-aesop}
-echo $DEBUG
+# [License continues...]
 
 set -euo pipefail
 
-trap 'abort "An unexpected error occurred."' ERR
+# Initialize default values
+DEBUG=false
+PROJECT="aesop"
+AWS_ACCESS_KEY_ID=""
+AWS_SECRET_ACCESS_KEY=""
+BUCKET=""
+
+# Function to display help message
+display_help() {
+    cat << EOF
+Usage: $0 [options]
+
+Options:
+    --debug                     Enable debug mode
+    --project <project_name>    Set the project name (default: aesop)
+    --aws-access-key-id <key>   Set AWS Access Key ID
+    --aws-secret-access-key <key> Set AWS Secret Access Key
+    --bucket <bucket_name>      Set the S3 bucket name
+    -h, --help                  Display this help message
+
+Description:
+    Installs and runs a Boltzmann miner on your GPU.
+EOF
+}
+
+# Parse command-line arguments
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+        --debug)
+            DEBUG=true
+            shift
+            ;;
+        --project)
+            PROJECT="$2"
+            shift 2
+            ;;
+        --aws-access-key-id)
+            AWS_ACCESS_KEY_ID="$2"
+            shift 2
+            ;;
+        --aws-secret-access-key)
+            AWS_SECRET_ACCESS_KEY="$2"
+            shift 2
+            ;;
+        --bucket)
+            BUCKET="$2"
+            shift 2
+            ;;
+        -h|--help|-help|--h)
+            display_help
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            display_help
+            exit 1
+            ;;
+    esac
+done
 
 # Set up colors and styles
 if [[ -t 1 ]]; then
@@ -42,6 +87,7 @@ tty_yellow="$(tty_mkbold 33)"
 tty_bold="$(tty_mkbold 39)"
 tty_reset="$(tty_escape 0)"
 
+# Logging functions
 ohai() {
     printf "${tty_blue}==>${tty_bold} %s${tty_reset}\n" "$*"
 }
@@ -67,24 +113,26 @@ abort() {
     exit 1
 }
 
+trap 'abort "An unexpected error occurred."' ERR
+
 getc() {
-  local save_state
-  save_state="$(/bin/stty -g)"
-  /bin/stty raw -echo
-  IFS='' read -r -n 1 -d '' "$@"
-  /bin/stty "${save_state}"
+    local save_state
+    save_state="$(/bin/stty -g)"
+    /bin/stty raw -echo
+    IFS='' read -r -n 1 -d '' "$@"
+    /bin/stty "${save_state}"
 }
 
 wait_for_user() {
-  local c
-  echo
-  echo "Press ${tty_bold}RETURN${tty_reset}/${tty_bold}ENTER${tty_reset} to continue or any other key to abort:"
-  getc c
-  # we test for \r and \n because some stuff does \r instead
-  if ! [[ "${c}" == $'\r' || "${c}" == $'\n' ]]
-  then
-    exit 1
-  fi
+    local c
+    echo
+    echo "Press ${tty_bold}RETURN${tty_reset}/${tty_bold}ENTER${tty_reset} to continue or any other key to abort:"
+    getc c
+    # we test for \r and \n because some stuff does \r instead
+    if ! [[ "${c}" == $'\r' || "${c}" == $'\n' ]]
+    then
+        exit 1
+    fi
 }
 
 execute() {
@@ -123,18 +171,25 @@ execute_sudo() {
     fi
 }
 
-test_curl() {
-  if [[ ! -x "$1" ]]
-  then
-    return 1
-  fi
+# Function to set or replace environment variables in bash_profile
+set_or_replace_env_var() {
+    local var_name="$1"
+    local var_value="$2"
+    local profile_file="$3"
 
-  local curl_version_output curl_name_and_version
-  curl_version_output="$("$1" --version 2>/dev/null)"
-  curl_name_and_version="${curl_version_output%% (*}"
-  version_ge "$(major_minor "${curl_name_and_version##* }")" "$(major_minor "${REQUIRED_CURL_VERSION}")"
+    # Escape special characters for sed
+    local escaped_var_value=$(printf '%s\n' "$var_value" | sed -e 's/[\/&]/\\&/g')
+
+    if grep -q "^export $var_name=" "$profile_file"; then
+        # Variable exists, replace it
+        sed -i.bak "s/^export $var_name=.*/export $var_name=\"$escaped_var_value\"/" "$profile_file"
+    else
+        # Variable does not exist, append it
+        echo "export $var_name=\"$var_value\"" >> "$profile_file"
+    fi
 }
 
+# Clear the screen and display the logo
 clear
 echo ""
 echo ""
@@ -146,12 +201,17 @@ echo ""
 echo ""
 wait_for_user
 
+# Ensure ~/.bash_profile exists
 touch ~/.bash_profile
+source ~/.bash_profile
 
-# Prompt the user for AWS credentials and inject them into the bash_profile file if not already stored
+# Backup the bash_profile
+cp ~/.bash_profile ~/.bash_profile.bak
+
+# Prompt the user for AWS credentials if not supplied via command-line
 ohai "Getting AWS credentials ..."
-if ! grep -q "AWS_ACCESS_KEY_ID" ~/.bash_profile || ! grep -q "AWS_SECRET_ACCESS_KEY" ~/.bash_profile || ! grep -q "BUCKET" ~/.bash_profile; then
-    clear
+if [[ -z "$AWS_ACCESS_KEY_ID" ]] || [[ -z "$AWS_SECRET_ACCESS_KEY" ]] || [[ -z "$BUCKET" ]]; then
+    # TODO: Consider securely storing AWS credentials rather than storing them in plain text
     warn "This script will store your AWS credentials in your ~/.bash_profile file."
     warn "This is not secure and is not recommended."
     read -p "Do you want to proceed? [y/N]: " proceed
@@ -159,23 +219,30 @@ if ! grep -q "AWS_ACCESS_KEY_ID" ~/.bash_profile || ! grep -q "AWS_SECRET_ACCESS
         abort "Aborted by user."
     fi
 
-    read -p "Enter your AWS Access Key ID: " AWS_ACCESS_KEY_ID
-    read -p "Enter your AWS Secret Access Key: " AWS_SECRET_ACCESS_KEY
-    read -p "Enter your S3 Bucket Name: " BUCKET
-
-    echo "export AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY_ID\"" >> ~/.bash_profile
-    echo "export AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\"" >> ~/.bash_profile
-    echo "export BUCKET=\"$BUCKET\"" >> ~/.bash_profile
+    if [[ -z "$AWS_ACCESS_KEY_ID" ]]; then
+        read -p "Enter your AWS Access Key ID: " AWS_ACCESS_KEY_ID
+    fi
+    if [[ -z "$AWS_SECRET_ACCESS_KEY" ]]; then
+        read -p "Enter your AWS Secret Access Key: " AWS_SECRET_ACCESS_KEY
+    fi
+    if [[ -z "$BUCKET" ]]; then
+        read -p "Enter your S3 Bucket Name: " BUCKET
+    fi
 fi
 
-# Source the bashrc file to apply the changes
-source ~/.bash_profile
-pdone "Found AWS credentials"
+# Overwrite or add the AWS credentials in the bash_profile
+set_or_replace_env_var "AWS_ACCESS_KEY_ID" "$AWS_ACCESS_KEY_ID" ~/.bash_profile
+set_or_replace_env_var "AWS_SECRET_ACCESS_KEY" "$AWS_SECRET_ACCESS_KEY" ~/.bash_profile
+set_or_replace_env_var "BUCKET" "$BUCKET" ~/.bash_profile
 
-# Install Git if not present
+# Source the bash_profile to apply the changes
+source ~/.bash_profile
+pdone "AWS credentials set in ~/.bash_profile"
+
 ohai "Installing requirements ..."
+# Install Git if not present
 if ! command -v git &> /dev/null; then
-    ohai "Installing git ..."
+    ohai "Git not found. Installing git ..."
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
         ohai "Detected Linux"
         if [ -f /etc/os-release ]; then
@@ -212,9 +279,11 @@ if ! command -v git &> /dev/null; then
         abort "Unsupported OS type: $OSTYPE"
     fi
 else
-    pdone "Installed Git"
+    pdone "Git is already installed"
 fi
 
+# TODO: Add error handling for package installations
+# TODO: Ensure compatibility with different package managers
 
 # Check if npm is installed
 if ! command -v npm &> /dev/null; then
@@ -232,8 +301,7 @@ if ! command -v npm &> /dev/null; then
         abort "Failed to install npm"
     fi
 fi
-pdone "Installed npm"
-
+pdone "npm is installed"
 
 # Install pm2
 if ! command -v pm2 &> /dev/null; then
@@ -244,7 +312,7 @@ if ! command -v pm2 &> /dev/null; then
         execute npm install pm2 -g > /dev/null 2>&1
     fi
 fi
-pdone "Installed pm2"
+pdone "pm2 is installed"
 
 ohai "Installing Boltzmann ..."
 # Check if we are inside the boltzmann repository
@@ -259,7 +327,7 @@ else
         REPO_PATH="boltzmann/"
     fi
 fi
-pdone "Pulled Boltzmann $REPO_PATH"
+pdone "Boltzmann repository is ready at $REPO_PATH"
 
 # Install Python 3.12 if not installed
 if ! command -v python3.12 &> /dev/null; then
@@ -287,7 +355,6 @@ if ! command -v python3.12 &> /dev/null; then
                     execute_sudo apt-get install --reinstall python3-apt > /dev/null 2>&1
                     execute_sudo apt-get install python3.12 -y > /dev/null 2>&1
                     execute_sudo apt-get install python3.12-venv > /dev/null 2>&1
-
                 fi
             else
                 warn "Unsupported Linux distribution: $ID"
@@ -312,7 +379,7 @@ if ! command -v python3.12 &> /dev/null; then
         abort "Unsupported OS type: $OSTYPE"
     fi
 fi
-pdone "Installed python3.12"
+pdone "Python 3.12 is installed"
 
 # Create a virtual environment if it does not exist
 if [ ! -d "$REPO_PATH/venv" ]; then
@@ -323,8 +390,9 @@ if [ ! -d "$REPO_PATH/venv" ]; then
         execute python3.12 -m venv "$REPO_PATH/venv" > /dev/null 2>&1
     fi
 fi
-pdone "Created venv at $REPO_PATH"
+pdone "Virtual environment is set up at $REPO_PATH"
 
+# Activate the virtual environment
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
     if [[ "$DEBUG" == "true" ]]; then
         source $REPO_PATH/venv/bin/activate
@@ -332,9 +400,9 @@ if [[ -z "${VIRTUAL_ENV:-}" ]]; then
         source $REPO_PATH/venv/bin/activate > /dev/null 2>&1
     fi
 fi
-pdone "Activated venv at $REPO_PATH"
+pdone "Virtual environment activated"
 
-ohai "Installing python3 requirements.txt ..."
+ohai "Installing Python requirements ..."
 if [[ "$DEBUG" == "true" ]]; then
     execute pip install -r $REPO_PATH/requirements.txt
     execute pip install --upgrade cryptography pyOpenSSL
@@ -342,7 +410,7 @@ else
     execute pip install -r $REPO_PATH/requirements.txt > /dev/null 2>&1
     execute pip install --upgrade cryptography pyOpenSSL > /dev/null 2>&1
 fi
-pdone "Installed requirements"
+pdone "Python requirements installed"
 
 # Check for GPUs
 ohai "Checking for GPUs..."
@@ -354,7 +422,7 @@ else
 
     if [ "$NUM_GPUS" -gt 0 ]; then
         nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | while read -r memory; do
-            pdone " - Found GPU with $((memory / 1024)) GB"
+            pdone "Found GPU with $((memory / 1024)) GB of memory"
         done
     else
         warn "No GPUs found on this machine."
@@ -364,16 +432,17 @@ fi
 # Check system RAM
 if command -v free &> /dev/null; then
     TOTAL_RAM=$(free -g | awk '/^Mem:/{print $2}')
+    pdone "System RAM: ${TOTAL_RAM} GB"
 else
     warn "Cannot determine system RAM. 'free' command not found."
 fi
 
-# Create the default key
 ohai "Creating wallets ..."
+# Create the default key
 if ! python3 -c "import bittensor as bt; w = bt.wallet(); print(w.coldkey_file.exists_on_device())" | grep -q "True"; then
     execute btcli w new_coldkey --wallet.path ~/.bittensor/wallets --wallet.name default --n-words 12 
 fi
-pdone "Attained Wallet(default)"
+pdone "Wallet 'default' is ready"
 
 # Ensure btcli is installed
 if ! command -v btcli &> /dev/null; then
@@ -388,21 +457,21 @@ if [ "$NUM_GPUS" -gt 0 ]; then
         if [ "$exists_on_device" != "True" ]; then
             echo "n" | btcli wallet new_hotkey --wallet.name default --wallet.hotkey C$i --n-words 12 > /dev/null 2>&1;
         fi
-        pdone "Created Hotkey( C$i )"
+        pdone "Created Hotkey 'C$i'"
 
         # Check if the hotkey is registered on subnet 220
         is_registered=$(python3 -c "import bittensor as bt; w = bt.wallet(hotkey='C$i'); sub = bt.subtensor('test'); print(sub.is_hotkey_registered_on_subnet(hotkey_ss58=w.hotkey.ss58_address, netuid=220))" 2>/dev/null)
         if [[ "$is_registered" != *"True"* ]]; then
-            ohai "Registering key on subnet 220"
+            ohai "Registering hotkey 'C$i' on subnet 220"
             btcli subnet pow_register --wallet.name default --wallet.hotkey C$i --netuid 220 --subtensor.network test --no_prompt > /dev/null 2>&1;
         fi
-        pdone "Registered Hotkey( C$i )"
+        pdone "Registered Hotkey 'C$i' on subnet 220"
     done
 else
     warn "No GPUs found. Skipping hotkey creation."
     exit
 fi
-pdone "Registered $NUM_GPUS keys to subnet 220"
+pdone "All hotkeys registered"
 
 ohai "Logging into wandb..."
 if [[ "$DEBUG" == "true" ]]; then
@@ -410,24 +479,22 @@ if [[ "$DEBUG" == "true" ]]; then
 else
     execute wandb login > /dev/null 2>&1
 fi
-pdone "Initialized wandb"
+pdone "wandb is configured"
 
-
-# Delete items from bucket
-
+# Clean the bucket
 ohai "Cleaning bucket $BUCKET..."
 if [[ "$DEBUG" == "true" ]]; then
     execute python3 $REPO_PATH/tools/clean.py --bucket "$BUCKET"
 else
     execute python3 $REPO_PATH/tools/clean.py --bucket "$BUCKET" > /dev/null 2>&1
 fi
-pdone "Cleaned bucket"
+pdone "Bucket '$BUCKET' cleaned"
 
 # Close down all previous processes and restart them
 if pm2 list | grep -q 'online'; then
     ohai "Stopping old pm2 processes..."
     pm2 delete all
-    pdone "Stopped old processes"
+    pdone "Old processes stopped"
 fi
 
 # Start all the processes again
@@ -441,20 +508,13 @@ if [ "$NUM_GPUS" -gt 0 ]; then
             continue
         fi
         # Determine batch size based on GPU memory
-        # This section adjusts the batch size for the miner based on the available GPU memory
-        # Higher memory allows for larger batch sizes, which can improve performance
         if [ "$GPU_MEMORY" -ge 80000 ]; then
-            # For GPUs with 80GB or more memory, use a batch size of 6
             BATCH_SIZE=6
         elif [ "$GPU_MEMORY" -ge 40000 ]; then
-            # For GPUs with 40GB to 79GB memory, use a batch size of 3
             BATCH_SIZE=3
         elif [ "$GPU_MEMORY" -ge 20000 ]; then
-            # For GPUs with 20GB to 39GB memory, use a batch size of 1
             BATCH_SIZE=1
         else
-            # For GPUs with less than 20GB memory, also use a batch size of 1
-            # This ensures that even lower-end GPUs can still participate
             BATCH_SIZE=1
         fi
         ohai "Starting miner on GPU $GPU_INDEX with batch size $BATCH_SIZE..."
@@ -467,7 +527,7 @@ if [ "$NUM_GPUS" -gt 0 ]; then
 else
     warn "No GPUs found. Skipping miner startup."
 fi
-pdone "Started miners"
+pdone "All miners started"
 pm2 list
 
 echo ""
@@ -476,3 +536,7 @@ echo ""
 
 # Start logging process 1
 pm2 logs C0
+
+# TODO: Implement proper cleanup and error handling
+# TODO: Add checks for all dependencies and versions
+# TODO: Securely handle AWS credentials and consider alternatives to storing them in plain text
