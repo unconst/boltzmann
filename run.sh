@@ -487,11 +487,7 @@ fi
 pdone "All hotkeys registered"
 
 ohai "Logging into wandb..."
-if [[ "$DEBUG" == "true" ]]; then
-    execute wandb login
-else
-    execute wandb login > /dev/null 2>&1
-fi
+execute wandb login
 pdone "wandb is configured"
 
 # Clean the bucket
