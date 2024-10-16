@@ -8,7 +8,7 @@
 
 ---
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/unconst/boltzmann/refs/heads/master/run.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/unconst/boltzmann/master/run.sh)"
 ```
 
 ---
