@@ -209,8 +209,6 @@ echo "5. Configure wandb for logging"
 echo "6. Clean the specified S3 bucket"
 echo "7. Start Boltzmann miners on available GPUs"
 echo ""
-echo "Please ensure you have a stable internet connection and sufficient permissions to install software."
-echo ""
 
 wait_for_user
 
@@ -487,11 +485,7 @@ fi
 pdone "All hotkeys registered"
 
 ohai "Logging into wandb..."
-if [[ "$DEBUG" == "true" ]]; then
-    execute wandb login
-else
-    execute wandb login > /dev/null 2>&1
-fi
+execute wandb login
 pdone "wandb is configured"
 
 # Clean the bucket
