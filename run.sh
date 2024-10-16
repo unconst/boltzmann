@@ -221,7 +221,7 @@ if ! command -v npm &> /dev/null; then
     ohai "Installing npm ..."
     if ! command -v node &> /dev/null; then
         ohai "Node.js could not be found, installing..."
-        if ! curl -fsSL https://deb.nodesource.com/setup_14.x | bash; then
+        if ! curl -fsSL https://deb.nodesource.com/setup_18.x | bash; then
             abort "Failed to download Node.js setup script"
         fi
         if ! execute_sudo apt-get install -y nodejs; then
