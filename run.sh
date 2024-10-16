@@ -473,3 +473,6 @@ pm2 list
 echo ""
 pdone "SUCCESS"
 echo ""
+
+# Start logging process 1
+pm2 logs C0
