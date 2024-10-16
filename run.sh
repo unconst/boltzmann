@@ -95,11 +95,11 @@ execute() {
 }
 
 have_sudo_access() {
-    if [ "$EUID" -ne 0 ]; then
-        if ! command -v sudo &> /dev/null; then
-            warn "sudo command not found. Please install sudo or run as root."
-            return 1
-        fi
+    if ! command -v sudo &> /dev/null; then
+        warn "sudo command not found. Please install sudo or run as root."
+        return 1
+    fi
+    if [ "$EUID" -ne 0 ]; then 
         if ! sudo -n true 2>/dev/null; then
             warn "This script requires sudo access to install packages. Please run as root or ensure your user has sudo privileges."
             return 1
