@@ -199,6 +199,19 @@ echo " |_____] |_____| |_____    |    /_____ |  |  | |     | |  \_| |  \_|"
 echo "                                                                    "
 echo ""
 echo ""
+
+echo "This script will do the following:"
+echo "1. Install required software (Git, npm, pm2, Python 3.12)"
+echo "2. Set up AWS credentials"
+echo "3. Clone and set up the Boltzmann repository"
+echo "4. Create and register Bittensor wallets"
+echo "5. Configure wandb for logging"
+echo "6. Clean the specified S3 bucket"
+echo "7. Start Boltzmann miners on available GPUs"
+echo ""
+echo "Please ensure you have a stable internet connection and sufficient permissions to install software."
+echo ""
+
 wait_for_user
 
 # Ensure ~/.bash_profile exists
