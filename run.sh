@@ -17,8 +17,12 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-DEBUG=${1:-false}
+DEBUG=false
+if [[ "$1" == "--debug" ]]; then
+  DEBUG=true
+fi
 PROJECT=${2:-aesop}
+echo $DEBUG
 
 set -euo pipefail
 
@@ -140,8 +144,33 @@ echo " |_____] |_____| |_____    |    /_____ |  |  | |     | |  \_| |  \_|"
 echo "                                                                    "
 echo ""
 echo ""
-
 wait_for_user
+
+touch ~/.bash_profile
+
+# Prompt the user for AWS credentials and inject them into the bash_profile file if not already stored
+ohai "Getting AWS credentials ..."
+if ! grep -q "AWS_ACCESS_KEY_ID" ~/.bash_profile || ! grep -q "AWS_SECRET_ACCESS_KEY" ~/.bash_profile || ! grep -q "BUCKET" ~/.bash_profile; then
+    clear
+    warn "This script will store your AWS credentials in your ~/.bash_profile file."
+    warn "This is not secure and is not recommended."
+    read -p "Do you want to proceed? [y/N]: " proceed
+    if [[ "$proceed" != "y" && "$proceed" != "Y" ]]; then
+        abort "Aborted by user."
+    fi
+
+    read -p "Enter your AWS Access Key ID: " AWS_ACCESS_KEY_ID
+    read -p "Enter your AWS Secret Access Key: " AWS_SECRET_ACCESS_KEY
+    read -p "Enter your S3 Bucket Name: " BUCKET
+
+    echo "export AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY_ID\"" >> ~/.bash_profile
+    echo "export AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\"" >> ~/.bash_profile
+    echo "export BUCKET=\"$BUCKET\"" >> ~/.bash_profile
+fi
+
+# Source the bashrc file to apply the changes
+source ~/.bash_profile
+pdone "Found AWS credentials"
 
 # Install Git if not present
 ohai "Installing requirements ..."
@@ -217,6 +246,21 @@ if ! command -v pm2 &> /dev/null; then
 fi
 pdone "Installed pm2"
 
+ohai "Installing Boltzmann ..."
+# Check if we are inside the boltzmann repository
+if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    REPO_PATH="."
+else
+    if [ ! -d "boltzmann" ]; then
+        ohai "Cloning boltzmann ..."
+        execute git clone https://github.com/unconst/boltzmann
+        REPO_PATH="boltzmann/"
+    else
+        REPO_PATH="boltzmann/"
+    fi
+fi
+pdone "Pulled Boltzmann $REPO_PATH"
+
 # Install Python 3.12 if not installed
 if ! command -v python3.12 &> /dev/null; then
     ohai "Installing python3.12 ..."
@@ -227,13 +271,23 @@ if ! command -v python3.12 &> /dev/null; then
             if [[ "$ID" == "ubuntu" || "$ID_LIKE" == *"ubuntu"* ]]; then
                 ohai "Detected Ubuntu, installing Python 3.12..."
                 if [[ "$DEBUG" == "true" ]]; then
-                    execute_sudo add-apt-repository ppa:deadsnakes/ppa -y
+                    if have_sudo_access; then
+                        execute_sudo add-apt-repository ppa:deadsnakes/ppa -y
+                    else
+                        warn "Skipping add-apt-repository due to lack of sudo access"
+                    fi
                     execute_sudo apt-get update -y
-                    execute_sudo apt-get install python3.12 -y
                 else
-                    execute_sudo add-apt-repository ppa:deadsnakes/ppa -y > /dev/null 2>&1
+                    if have_sudo_access; then
+                        execute_sudo add-apt-repository ppa:deadsnakes/ppa -y > /dev/null 2>&1
+                    else
+                        warn "Skipping add-apt-repository due to lack of sudo access"
+                    fi
                     execute_sudo apt-get update -y > /dev/null 2>&1
+                    execute_sudo apt-get install --reinstall python3-apt > /dev/null 2>&1
                     execute_sudo apt-get install python3.12 -y > /dev/null 2>&1
+                    execute_sudo apt-get install python3.12-venv > /dev/null 2>&1
+
                 fi
             else
                 warn "Unsupported Linux distribution: $ID"
@@ -260,47 +314,6 @@ if ! command -v python3.12 &> /dev/null; then
 fi
 pdone "Installed python3.12"
 
-touch ~/.bash_profile
-
-# Prompt the user for AWS credentials and inject them into the bash_profile file if not already stored
-ohai "Getting AWS credentials ..."
-if ! grep -q "AWS_ACCESS_KEY_ID" ~/.bash_profile || ! grep -q "AWS_SECRET_ACCESS_KEY" ~/.bash_profile || ! grep -q "BUCKET" ~/.bash_profile; then
-    clear
-    warn "This script will store your AWS credentials in your ~/.bash_profile file."
-    warn "This is not secure and is not recommended."
-    read -p "Do you want to proceed? [y/N]: " proceed
-    if [[ "$proceed" != "y" && "$proceed" != "Y" ]]; then
-        abort "Aborted by user."
-    fi
-
-    read -p "Enter your AWS Access Key ID: " AWS_ACCESS_KEY_ID
-    read -p "Enter your AWS Secret Access Key: " AWS_SECRET_ACCESS_KEY
-    read -p "Enter your S3 Bucket Name: " BUCKET
-
-    echo "export AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY_ID\"" >> ~/.bash_profile
-    echo "export AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\"" >> ~/.bash_profile
-    echo "export BUCKET=\"$BUCKET\"" >> ~/.bash_profile
-fi
-
-# Source the bashrc file to apply the changes
-source ~/.bash_profile
-pdone "Found AWS credentials"
-
-ohai "Installing Boltzmann ..."
-# Check if we are inside the boltzmann repository
-if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    REPO_PATH="."
-else
-    if [ ! -d "boltzmann" ]; then
-        ohai "Cloning boltzmann ..."
-        execute git clone https://github.com/unconst/boltzmann
-        REPO_PATH="boltzmann/"
-    else
-        REPO_PATH="boltzmann/"
-    fi
-fi
-pdone "Pulled Boltzmann $REPO_PATH"
-
 # Create a virtual environment if it does not exist
 if [ ! -d "$REPO_PATH/venv" ]; then
     ohai "Creating virtual environment at $REPO_PATH..."
@@ -312,13 +325,16 @@ if [ ! -d "$REPO_PATH/venv" ]; then
 fi
 pdone "Created venv at $REPO_PATH"
 
-
-pdone "Installing python requirements.txt"
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
-    source $REPO_PATH/venv/bin/activate > /dev/null 2>&1
+    if [[ "$DEBUG" == "true" ]]; then
+        source $REPO_PATH/venv/bin/activate
+    else
+        source $REPO_PATH/venv/bin/activate > /dev/null 2>&1
+    fi
 fi
 pdone "Activated venv at $REPO_PATH"
 
+ohai "Installing python3 requirements.txt ..."
 if [[ "$DEBUG" == "true" ]]; then
     execute pip install -r $REPO_PATH/requirements.txt
     execute pip install --upgrade cryptography pyOpenSSL
