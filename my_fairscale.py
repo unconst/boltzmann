@@ -100,6 +100,26 @@ def main():
                     reduce_dtype=torch.float16,
                     buffer_dtype=torch.float16,
                 )
+                
+                # Define the auto wrap policy for transformer layers
+                auto_wrap_policy = functools.partial(
+                    transformer_auto_wrap_policy,
+                    transformer_layer_cls={LlamaDecoderLayer},
+                )
+
+                # Define FSDP parameters
+                fsdp_params: dict = dict(
+                    mixed_precision=mixed_precision_policy,
+                    sharding_strategy=ShardingStrategy.FULL_SHARD,
+                    device_id=device,
+                    auto_wrap_policy=auto_wrap_policy,
+                    use_orig_params=True,
+                    sync_module_states=False,
+                )
+
+                # Wrap the model with FSDP using the auto wrap policy
+                with enable_wrap(wrapper_cls=FSDP, **fsdp_params):
+                    model = wrap(model)
 
                 # Move model to device before wrapping
                 model.to(device)
