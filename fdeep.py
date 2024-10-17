@@ -77,12 +77,21 @@ async def main():
     num_gpus = torch.cuda.device_count()
     
     # Configure DeepSpeed for ZeRO Stage 3 with optimizations
-    bs = 32
-    ds_config = {
-        "train_micro_batch_size_per_gpu": bs,
+    batch_size: int = 16
+    ds_config: dict = {
+        "train_micro_batch_size_per_gpu": batch_size,
         "gradient_accumulation_steps": 1,
-        "train_batch_size": bs * num_gpus,  # Corrected computation
-        "bf16": {"enabled": True},
+        "train_batch_size": batch_size * num_gpus,
+        "bf16": {"enabled": True},  # Enable bfloat16 precision
+        "optimizer": {
+            "type": "AdamW",
+            "params": {
+                "lr": 1e-5,
+                "betas": [0.9, 0.999],
+                "eps": 1e-8,
+                "weight_decay": 1e-2
+            }
+        },
         "zero_optimization": {
             "stage": 3,
             "overlap_comm": True,
@@ -116,13 +125,14 @@ async def main():
     if local_rank == 0:
         print(f"Attempting model with hidden_size={hidden_size}, intermediate_size={intermediate_size}, num_hidden_layers={num_hidden_layers}")
     model = create_and_initialize_model(hidden_size, intermediate_size, num_hidden_layers, ds_config)
+    print(model)
     total_params = sum(p.numel() for p in model.parameters())
     if local_rank == 0:
         print(f"Total parameter count: {total_params:,}")
 
     model_engine, _, _, _ = deepspeed.initialize(
         model=model,
-        model_parameters=model.parameters(),
+        # model_parameters=model.parameters(),
         config=ds_config
     )        
     
@@ -147,16 +157,30 @@ async def main():
     for step, batch in tqdm(enumerate(dataset)):
         if step >= num_steps and num_steps != -1:
             break
-        input_ids = torch.tensor(batch, dtype=torch.long).to(device)  # Move input_ids to the correct device
-        labels = input_ids.clone()
-        labels = torch.where(labels == tokenizer.pad_token_id, -100, labels)
-        outputs = model_engine(input_ids.clone(), use_cache=True)
-        # loss = outputs.loss
-        # model_engine.backward(loss)
-        # model_engine.step()
-        tokens += input_ids.numel()
-    elapsed_time = time.time() - start_time
 
+        # Convert batch to tensor and move to the correct device
+        input_ids: torch.Tensor = torch.tensor(batch, dtype=torch.long).to(device).contiguous()
+        # Prepare labels; ignore padding tokens for loss computation
+        labels: torch.Tensor = input_ids.clone()
+        labels = torch.where(labels == tokenizer.pad_token_id, -100, labels).contiguous()
+
+        # Forward pass with labels to compute the loss
+        outputs = model_engine(input_ids=input_ids, labels=labels)
+        loss: torch.Tensor = outputs.loss
+
+        # Check if loss is valid
+        # if loss is None:
+        #     raise ValueError("Loss is None. Please ensure that labels are correctly set.")
+
+        # Backward pass
+        model_engine.backward(loss)
+
+        Optimization step
+        model_engine.step()
+
+        tokens += input_ids.numel()
+
+    elapsed_time: float = time.time() - start_time
     # Print results
     if local_rank == 0:
         print(f"Time taken: {elapsed_time:.2f} seconds")
