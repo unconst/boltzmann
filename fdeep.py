@@ -175,7 +175,7 @@ async def main():
         # Backward pass
         model_engine.backward(loss)
 
-        Optimization step
+        # Optimization step
         model_engine.step()
 
         tokens += input_ids.numel()
