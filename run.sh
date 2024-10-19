@@ -298,6 +298,32 @@ fi
 # TODO: Add error handling for package installations
 # TODO: Ensure compatibility with different package managers
 
+# Check for Rust installation
+if ! command -v rustc &> /dev/null; then
+    ohai "Installing Rust ..."
+    if [[ "$DEBUG" == "true" ]]; then
+        execute curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    else
+        execute curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y > /dev/null 2>&1
+    fi
+    # Add Rust to the PATH for the current session
+    source $HOME/.cargo/env
+fi
+pdone "Rust is installed"
+
+# Install uv if not present
+if ! command -v uv &> /dev/null; then
+    ohai "Installing uv ..."
+    if [[ "$DEBUG" == "true" ]]; then
+        execute curl -LsSf https://astral.sh/uv/install.sh | sh
+    else
+        execute curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+    fi
+    # Add uv to the PATH for the current session
+    export PATH="$HOME/.cargo/bin:$PATH"
+fi
+pdone "uv is installed"
+
 # Check if npm is installed
 if ! command -v npm &> /dev/null; then
     ohai "Installing npm ..."
@@ -398,9 +424,9 @@ pdone "Python 3.12 is installed"
 if [ ! -d "$REPO_PATH/venv" ]; then
     ohai "Creating virtual environment at $REPO_PATH..."
     if [[ "$DEBUG" == "true" ]]; then
-        execute python3.12 -m venv "$REPO_PATH/venv"
+        execute uv venv "$REPO_PATH/venv"
     else
-        execute python3.12 -m venv "$REPO_PATH/venv" > /dev/null 2>&1
+        execute uv venv "$REPO_PATH/venv" > /dev/null 2>&1
     fi
 fi
 pdone "Virtual environment is set up at $REPO_PATH"
