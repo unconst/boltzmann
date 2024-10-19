@@ -416,10 +416,6 @@ if [ ! -d "$REPO_PATH/venv" ]; then
 fi
 pdone "Virtual environment is set up at $REPO_PATH"
 
-# Activate the virtual environment
-ohai "Activating virtual environment ..."
-source $REPO_PATH/.venv/bin/activate
-pdone "Virtual environment activated"
 
 # Activate the virtual environment
 ohai "Activating virtual environment ..."
