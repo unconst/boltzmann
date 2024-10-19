@@ -8,7 +8,14 @@
 # the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
 # and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
-# [License continues...]
+# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
+# the Software.
+
+# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
 
 set -euo pipefail
 
@@ -277,17 +284,6 @@ if ! command -v git &> /dev/null; then
             warn "Cannot detect Linux distribution"
             abort "Cannot install Git automatically"
         fi
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        ohai "Detected macOS, installing Git..."
-        if ! command -v brew &> /dev/null; then
-            warn "Homebrew is not installed, installing Homebrew..."
-            execute /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-        fi
-        if [[ "$DEBUG" == "true" ]]; then
-            execute brew install git
-        else
-            execute brew install git > /dev/null 2>&1
-        fi
     else
         abort "Unsupported OS type: $OSTYPE"
     fi
@@ -403,17 +399,6 @@ if ! command -v python3.12 &> /dev/null; then
             warn "Cannot detect Linux distribution"
             abort "Cannot install Python 3.12 automatically"
         fi
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        ohai "Detected macOS, installing Python 3.12..."
-        if ! command -v brew &> /dev/null; then
-            warn "Homebrew is not installed, installing Homebrew..."
-            execute /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-        fi
-        if [[ "$DEBUG" == "true" ]]; then
-            execute brew install python@3.12
-        else
-            execute brew install python@3.12 > /dev/null 2>&1
-        fi
     else
         abort "Unsupported OS type: $OSTYPE"
     fi
@@ -430,16 +415,6 @@ if [ ! -d "$REPO_PATH/venv" ]; then
     fi
 fi
 pdone "Virtual environment is set up at $REPO_PATH"
-
-# # Activate the virtual environment
-# if [[ -z "${VIRTUAL_ENV:-}" ]]; then
-#     if [[ "$DEBUG" == "true" ]]; then
-#         source $REPO_PATH/.venv/bin/activate
-#     else
-#         source $REPO_PATH/.venv/bin/activate > /dev/null 2>&1
-#     fi
-# fi
-# pdone "Virtual environment activated"
 
 # Activate the virtual environment
 ohai "Activating virtual environment ..."
@@ -582,6 +557,3 @@ echo ""
 # Start logging process 1
 pm2 logs C0
 
-# TODO: Implement proper cleanup and error handling
-# TODO: Add checks for all dependencies and versions
-# TODO: Securely handle AWS credentials and consider alternatives to storing them in plain text
