@@ -424,9 +424,9 @@ pdone "Python 3.12 is installed"
 if [ ! -d "$REPO_PATH/venv" ]; then
     ohai "Creating virtual environment at $REPO_PATH..."
     if [[ "$DEBUG" == "true" ]]; then
-        execute uv venv "$REPO_PATH/venv"
+        execute uv venv "$REPO_PATH/.venv"
     else
-        execute uv venv "$REPO_PATH/venv" > /dev/null 2>&1
+        execute uv venv "$REPO_PATH/.venv" > /dev/null 2>&1
     fi
 fi
 pdone "Virtual environment is set up at $REPO_PATH"
@@ -434,9 +434,9 @@ pdone "Virtual environment is set up at $REPO_PATH"
 # Activate the virtual environment
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
     if [[ "$DEBUG" == "true" ]]; then
-        source $REPO_PATH/venv/bin/activate
+        source $REPO_PATH/.venv/bin/activate
     else
-        source $REPO_PATH/venv/bin/activate > /dev/null 2>&1
+        source $REPO_PATH/.venv/bin/activate > /dev/null 2>&1
     fi
 fi
 pdone "Virtual environment activated"
