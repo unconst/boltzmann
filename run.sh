@@ -431,14 +431,24 @@ if [ ! -d "$REPO_PATH/venv" ]; then
 fi
 pdone "Virtual environment is set up at $REPO_PATH"
 
+# # Activate the virtual environment
+# if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+#     if [[ "$DEBUG" == "true" ]]; then
+#         source $REPO_PATH/.venv/bin/activate
+#     else
+#         source $REPO_PATH/.venv/bin/activate > /dev/null 2>&1
+#     fi
+# fi
+# pdone "Virtual environment activated"
+
 # Activate the virtual environment
-if [[ -z "${VIRTUAL_ENV:-}" ]]; then
-    if [[ "$DEBUG" == "true" ]]; then
-        source $REPO_PATH/.venv/bin/activate
-    else
-        source $REPO_PATH/.venv/bin/activate > /dev/null 2>&1
-    fi
-fi
+ohai "Activating virtual environment ..."
+source $REPO_PATH/.venv/bin/activate
+pdone "Virtual environment activated"
+
+# Activate the virtual environment
+ohai "Activating virtual environment ..."
+source $REPO_PATH/.venv/bin/activate
 pdone "Virtual environment activated"
 
 ohai "Installing Python requirements ..."
