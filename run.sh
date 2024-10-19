@@ -443,11 +443,11 @@ pdone "Virtual environment activated"
 
 ohai "Installing Python requirements ..."
 if [[ "$DEBUG" == "true" ]]; then
-    execute pip install -r $REPO_PATH/requirements.txt
-    execute pip install --upgrade cryptography pyOpenSSL
+    execute uv pip install -r $REPO_PATH/requirements.txt
+    execute uv pip install --upgrade cryptography pyOpenSSL
 else
-    execute pip install -r $REPO_PATH/requirements.txt > /dev/null 2>&1
-    execute pip install --upgrade cryptography pyOpenSSL > /dev/null 2>&1
+    execute uv pip install -r $REPO_PATH/requirements.txt > /dev/null 2>&1
+    execute uv pip install --upgrade cryptography pyOpenSSL > /dev/null 2>&1
 fi
 pdone "Python requirements installed"
 
