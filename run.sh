@@ -8,7 +8,14 @@
 # the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
 # and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
-# [License continues...]
+# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
+# the Software.
+
+# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
 
 set -euo pipefail
 
@@ -277,17 +284,6 @@ if ! command -v git &> /dev/null; then
             warn "Cannot detect Linux distribution"
             abort "Cannot install Git automatically"
         fi
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        ohai "Detected macOS, installing Git..."
-        if ! command -v brew &> /dev/null; then
-            warn "Homebrew is not installed, installing Homebrew..."
-            execute /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-        fi
-        if [[ "$DEBUG" == "true" ]]; then
-            execute brew install git
-        else
-            execute brew install git > /dev/null 2>&1
-        fi
     else
         abort "Unsupported OS type: $OSTYPE"
     fi
@@ -297,6 +293,32 @@ fi
 
 # TODO: Add error handling for package installations
 # TODO: Ensure compatibility with different package managers
+
+# Check for Rust installation
+if ! command -v rustc &> /dev/null; then
+    ohai "Installing Rust ..."
+    if [[ "$DEBUG" == "true" ]]; then
+        execute curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    else
+        execute curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y > /dev/null 2>&1
+    fi
+    # Add Rust to the PATH for the current session
+    source $HOME/.cargo/env
+fi
+pdone "Rust is installed"
+
+# Install uv if not present
+if ! command -v uv &> /dev/null; then
+    ohai "Installing uv ..."
+    if [[ "$DEBUG" == "true" ]]; then
+        execute curl -LsSf https://astral.sh/uv/install.sh | sh
+    else
+        execute curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+    fi
+    # Add uv to the PATH for the current session
+    export PATH="$HOME/.cargo/bin:$PATH"
+fi
+pdone "uv is installed"
 
 # Check if npm is installed
 if ! command -v npm &> /dev/null; then
@@ -377,17 +399,6 @@ if ! command -v python3.12 &> /dev/null; then
             warn "Cannot detect Linux distribution"
             abort "Cannot install Python 3.12 automatically"
         fi
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        ohai "Detected macOS, installing Python 3.12..."
-        if ! command -v brew &> /dev/null; then
-            warn "Homebrew is not installed, installing Homebrew..."
-            execute /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-        fi
-        if [[ "$DEBUG" == "true" ]]; then
-            execute brew install python@3.12
-        else
-            execute brew install python@3.12 > /dev/null 2>&1
-        fi
     else
         abort "Unsupported OS type: $OSTYPE"
     fi
@@ -398,30 +409,26 @@ pdone "Python 3.12 is installed"
 if [ ! -d "$REPO_PATH/venv" ]; then
     ohai "Creating virtual environment at $REPO_PATH..."
     if [[ "$DEBUG" == "true" ]]; then
-        execute python3.12 -m venv "$REPO_PATH/venv"
+        execute uv venv "$REPO_PATH/.venv"
     else
-        execute python3.12 -m venv "$REPO_PATH/venv" > /dev/null 2>&1
+        execute uv venv "$REPO_PATH/.venv" > /dev/null 2>&1
     fi
 fi
 pdone "Virtual environment is set up at $REPO_PATH"
 
+
 # Activate the virtual environment
-if [[ -z "${VIRTUAL_ENV:-}" ]]; then
-    if [[ "$DEBUG" == "true" ]]; then
-        source $REPO_PATH/venv/bin/activate
-    else
-        source $REPO_PATH/venv/bin/activate > /dev/null 2>&1
-    fi
-fi
+ohai "Activating virtual environment ..."
+source $REPO_PATH/.venv/bin/activate
 pdone "Virtual environment activated"
 
 ohai "Installing Python requirements ..."
 if [[ "$DEBUG" == "true" ]]; then
-    execute pip install -r $REPO_PATH/requirements.txt
-    execute pip install --upgrade cryptography pyOpenSSL
+    execute uv pip install -r $REPO_PATH/requirements.txt
+    execute uv pip install --upgrade cryptography pyOpenSSL
 else
-    execute pip install -r $REPO_PATH/requirements.txt > /dev/null 2>&1
-    execute pip install --upgrade cryptography pyOpenSSL > /dev/null 2>&1
+    execute uv pip install -r $REPO_PATH/requirements.txt > /dev/null 2>&1
+    execute uv pip install --upgrade cryptography pyOpenSSL > /dev/null 2>&1
 fi
 pdone "Python requirements installed"
 
@@ -546,6 +553,3 @@ echo ""
 # Start logging process 1
 pm2 logs C0
 
-# TODO: Implement proper cleanup and error handling
-# TODO: Add checks for all dependencies and versions
-# TODO: Securely handle AWS credentials and consider alternatives to storing them in plain text
