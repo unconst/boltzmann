@@ -51,7 +51,15 @@ val_loader = DataLoader(
 
 
 def init_wandb_run(run_name: str) -> None:
-    wandb.init(project="chakana", name=run_name, group=str(start_ts))
+    wandb.init(
+        project="chakana",
+        name=run_name,
+        group=str(start_ts),
+        config={
+            "model_type": model_type,
+            "batch_size": general_settings.batch_size,
+        },
+    )
 
 
 def train_baselines(
