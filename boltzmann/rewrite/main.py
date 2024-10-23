@@ -16,7 +16,7 @@ from boltzmann.rewrite.loss import (
 import wandb
 from boltzmann.rewrite.miner import Miner
 from boltzmann.rewrite.model import MODEL_TYPE, ModelFactory
-from boltzmann.rewrite.settings import general_settings, start_ts
+from boltzmann.rewrite.settings import general_settings, start_ts, device
 from boltzmann.rewrite.validator import Validator
 from boltzmann.rewrite.viz import (
     InteractivePlotter,
@@ -37,10 +37,16 @@ general_logger.success(
 
 # Create DataLoader for training and validation sets
 train_loader = DataLoader(
-    train_dataset, batch_size=general_settings.batch_size, num_workers=4, shuffle=True
+    train_dataset,
+    batch_size=general_settings.batch_size,
+    num_workers=general_settings.num_workers_dataloader,
+    shuffle=True,
 )
 val_loader = DataLoader(
-    val_dataset, batch_size=general_settings.batch_size, num_workers=4, shuffle=False
+    val_dataset,
+    batch_size=general_settings.batch_size,
+    num_workers=general_settings.num_workers_dataloader,
+    shuffle=False,
 )
 
 
@@ -62,7 +68,8 @@ def train_baselines(
         model = ModelFactory.create_model(model_type)
         model.validate(val_loader)
         for _ in trange(general_settings.num_communication_rounds):
-            data = next(infinite_train_loader)
+            features, targets = next(infinite_train_loader)
+            data = features.to(device), targets.to(device)
             model.train_step(data)
             model.validate(val_loader)
 
@@ -149,7 +156,8 @@ for same_model_init in tqdm([True, False]):
         for round_num in trange(general_settings.num_communication_rounds):
             validator.reset_slices_and_indices()
             for miner in miners:
-                miner.data = next(infinite_train_loader)
+                features, targets = next(infinite_train_loader)
+                miner.data = features.to(device), targets.to(device)
                 miner.model.train_step(miner.data)
                 slice = miner.get_slice_from_indices(validator.slice_indices)
                 validator.add_miner_slice(slice)

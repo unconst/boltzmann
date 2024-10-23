@@ -1,6 +1,10 @@
 from pydantic_settings import BaseSettings
 from datetime import datetime
 from pathlib import Path
+import torch
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class TinyNNSettings(BaseSettings):
@@ -17,6 +21,7 @@ class GeneralSettings(BaseSettings):
 
     # Data
     batch_size: int = 128
+    num_workers_dataloader: int = 4 if device == "cuda" else 0
 
     # Synthetic data
     data_size: int = 10000

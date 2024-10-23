@@ -5,7 +5,7 @@ import torch.optim as optim
 import json
 
 
-from boltzmann.rewrite.settings import general_settings, tiny_nn_settings
+from boltzmann.rewrite.settings import general_settings, tiny_nn_settings, device
 
 from torch.utils.data import DataLoader
 from boltzmann.rewrite.logger import general_logger, metrics_logger
@@ -133,7 +133,7 @@ class Model:
         criterion: nn.modules.loss._Loss,
         loss_transformation: Callable | None = None,
     ):
-        self.torch_model = torch_model
+        self.torch_model = torch_model.to(device)
         self.optimizer = optimizer
         self.criterion = criterion
         self.loss_transformation = loss_transformation
