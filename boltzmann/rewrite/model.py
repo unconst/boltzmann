@@ -29,13 +29,25 @@ class MinerSlice(BaseModel):
         arbitrary_types_allowed = True
 
 
-MODEL_TYPE = Literal["two_neuron_network", "tiny_nn", "cifar10_cnn", "resnet18"]
+MODEL_TYPE = Literal[
+    "two_neuron_network", "tiny_nn", "cifar10_cnn", "resnet18", "densenet"
+]
 
 
 class ModelFactory:
     @staticmethod
     def create_model(model_type: MODEL_TYPE):
+        loss_transformation = None
         match model_type:
+            case "densenet":
+                torch_model = models.densenet121(pretrained=False)
+                torch_model.classifier = torch.nn.Linear(
+                    torch_model.classifier.in_features, 10
+                )
+                criterion = nn.CrossEntropyLoss()
+                optimizer = optim.Adam(
+                    torch_model.parameters(), lr=0.001, weight_decay=1e-4
+                )
             case "resnet18":
                 torch_model = models.resnet18()
                 torch_model.fc = torch.nn.Linear(torch_model.fc.in_features, 10)
@@ -43,20 +55,10 @@ class ModelFactory:
                 optimizer = optim.Adam(
                     torch_model.parameters(), lr=0.001, weight_decay=1e-4
                 )
-                return Model(
-                    torch_model,
-                    optimizer,
-                    criterion,
-                )
             case "cifar10_cnn":
                 torch_model = CIFAR10CNN()
                 criterion = nn.CrossEntropyLoss()
                 optimizer = optim.Adam(torch_model.parameters(), lr=0.001)
-                return Model(
-                    torch_model,
-                    optimizer,
-                    criterion,
-                )
             case "two_neuron_network":
                 torch_model = OneNeuronNetwork()
                 criterion = nn.MSELoss()
@@ -84,14 +86,14 @@ class ModelFactory:
                     l1_norm = sum(p.abs().sum() for p in torch_model.parameters())
                     return loss + l1_lambda * l1_norm  # Add L1 penalty
 
-                return Model(
-                    torch_model,
-                    optimizer,
-                    criterion,
-                    loss_transformation=loss_transformation,
-                )
             case _:
                 raise ValueError(f"Unsupported model type: {model_type}")
+        return Model(
+            torch_model,
+            optimizer,
+            criterion,
+            loss_transformation=loss_transformation,
+        )
 
 
 class CIFAR10CNN(nn.Module):
