@@ -24,7 +24,7 @@ from boltzmann.rewrite.viz import (
 
 
 # Choose model and dependent/independent initialization
-model_type: MODEL_TYPE = "cifar10_cnn"
+model_type: MODEL_TYPE = "resnet18"
 PLOT_INTERACTIVELY = False
 SEED = 42
 

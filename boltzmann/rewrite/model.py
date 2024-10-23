@@ -8,6 +8,7 @@ import json
 from boltzmann.rewrite.settings import general_settings, tiny_nn_settings, device
 
 from torch.utils.data import DataLoader
+import torchvision.models as models
 from boltzmann.rewrite.logger import general_logger, metrics_logger
 from pydantic import Field, BaseModel
 from datetime import datetime
@@ -28,13 +29,25 @@ class MinerSlice(BaseModel):
         arbitrary_types_allowed = True
 
 
-MODEL_TYPE = Literal["two_neuron_network", "tiny_nn", "cifar10_cnn"]
+MODEL_TYPE = Literal["two_neuron_network", "tiny_nn", "cifar10_cnn", "resnet18"]
 
 
 class ModelFactory:
     @staticmethod
     def create_model(model_type: MODEL_TYPE):
         match model_type:
+            case "resnet18":
+                torch_model = models.resnet18()
+                torch_model.fc = torch.nn.Linear(torch_model.fc.in_features, 10)
+                criterion = nn.CrossEntropyLoss()
+                optimizer = optim.Adam(
+                    torch_model.parameters(), lr=0.001, weight_decay=1e-4
+                )
+                return Model(
+                    torch_model,
+                    optimizer,
+                    criterion,
+                )
             case "cifar10_cnn":
                 torch_model = CIFAR10CNN()
                 criterion = nn.CrossEntropyLoss()

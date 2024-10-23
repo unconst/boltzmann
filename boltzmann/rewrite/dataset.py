@@ -10,7 +10,7 @@ class DatasetFactory:
     @staticmethod
     def create_dataset(model_type: MODEL_TYPE) -> tuple[Dataset, Dataset]:
         match model_type:
-            case "cifar10_cnn":
+            case "cifar10_cnn" | "resnet18":
                 # Define data transformation (e.g., normalization)
                 transform = transforms.Compose(
                     [
