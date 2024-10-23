@@ -118,6 +118,7 @@ for same_model_init in tqdm([True, False]):
         if same_model_init:
             torch.manual_seed(SEED)
         validator_model = ModelFactory.create_model(model_type)
+        validator_model.torch_model.eval()
         general_logger.success(
             f"Created {len(miner_models)} miner models and a validator model"
         )
