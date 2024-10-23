@@ -20,7 +20,7 @@ bittensor==7.4.0
 substrate-interface
 boto3==1.34.131
 safetensors==0.4.5
-torch>=2.4.0
+torch>=2.5.0
 transformers==4.44.2
 python-dotenv==1.0.1
 datasets==3.0.0
@@ -32,3 +32,12 @@ aioboto3>=13.1.1
 loguru==0.7.2
 uvloop==0.20.0
 aiofiles>=24.1.0
+torchdata==0.8.0
+triton
+flash-attn==2.6.3
+einops==0.8.0
+tomli==2.0.2
+sentencepiece==0.2.0
+tiktoken==0.8.0
+tensorboard
+omegaconf==2.3.0
