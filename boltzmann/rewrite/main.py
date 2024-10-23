@@ -6,6 +6,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from tqdm.auto import trange
+from typing import Iterator
 
 from boltzmann.rewrite.dataset import DatasetFactory
 from logger import general_logger, metrics_logger, add_file_logger
@@ -47,9 +48,33 @@ def init_wandb_run(run_name: str) -> None:
     wandb.init(project="chakana", name=run_name, group=str(start_ts))
 
 
+def train_baselines(
+    infinite_train_loader: Iterator[tuple[torch.Tensor, torch.Tensor]],
+) -> None:
+    for same_model_init in tqdm([True, False]):
+        wandb.finish()
+        run_name = (
+            f"Central training: {'Same Init' if same_model_init else 'Diff Init'}"
+        )
+        init_wandb_run(run_name)
+        if same_model_init:
+            torch.manual_seed(SEED)
+        model = ModelFactory.create_model(model_type)
+        model.validate(val_loader)
+        for _ in trange(general_settings.num_communication_rounds):
+            data = next(infinite_train_loader)
+            model.train_step(data)
+            model.validate(val_loader)
+
+
 # Infinite iterator for training
 infinite_train_loader = itertools.cycle(train_loader)
 validator_val_losses_compression_factor = {}
+
+# Train baselines
+train_baselines(infinite_train_loader)
+general_logger.success("Trained baselines")
+
 metrics_logger_id = None
 for same_model_init in tqdm([True, False]):
     for compression_idx, compression_factor in enumerate(tqdm([1, 10, 100, 1000])):
