@@ -4,24 +4,35 @@ from torchvision import datasets, transforms
 
 from boltzmann.rewrite.model import MODEL_TYPE
 from boltzmann.rewrite.settings import general_settings, tiny_nn_settings
+from timm.data import create_transform
 
 
 class DatasetFactory:
     @staticmethod
     def create_dataset(model_type: MODEL_TYPE) -> tuple[Dataset, Dataset]:
         match model_type:
-            case "cifar10_cnn" | "resnet18" | "densenet":
+            case "cifar10_cnn" | "resnet18" | "densenet" | "deit-b":
                 # Define data transformation (e.g., normalization)
-                transform = transforms.Compose(
-                    [
-                        transforms.RandomHorizontalFlip(),
-                        transforms.RandomCrop(32, padding=4),
-                        transforms.ToTensor(),
-                        transforms.Normalize(
-                            (0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)
-                        ),
-                    ]
-                )
+                if model_type == "deit-b":
+                    transform = create_transform(
+                        input_size=224,  # Resize CIFAR-10 images to 224x224
+                        is_training=True,
+                        auto_augment="rand-m9-mstd0.5-inc1",
+                        interpolation="bicubic",
+                        mean=(0.485, 0.456, 0.406),
+                        std=(0.229, 0.224, 0.225),
+                    )
+                else:
+                    transform = transforms.Compose(
+                        [
+                            transforms.RandomHorizontalFlip(),
+                            transforms.RandomCrop(32, padding=4),
+                            transforms.ToTensor(),
+                            transforms.Normalize(
+                                (0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)
+                            ),
+                        ]
+                    )
 
                 train_dataset = datasets.CIFAR10(
                     root="./data", train=True, download=True, transform=transform

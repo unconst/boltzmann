@@ -1,20 +1,19 @@
-from copy import deepcopy
-import torch
-import torch.nn as nn
-import torch.optim as optim
 import json
-
-
-from boltzmann.rewrite.settings import general_settings, tiny_nn_settings, device
-
-from torch.utils.data import DataLoader
-import torchvision.models as models
-from boltzmann.rewrite.logger import general_logger, metrics_logger
-from pydantic import Field, BaseModel
+from copy import deepcopy
 from datetime import datetime
 from typing import Callable, Literal
 
+import timm
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision.models as models
+from pydantic import BaseModel, Field
+from torch.utils.data import DataLoader
+
 import wandb
+from boltzmann.rewrite.logger import general_logger, metrics_logger
+from boltzmann.rewrite.settings import device, tiny_nn_settings
 
 
 class MinerSlice(BaseModel):
@@ -30,7 +29,7 @@ class MinerSlice(BaseModel):
 
 
 MODEL_TYPE = Literal[
-    "two_neuron_network", "tiny_nn", "cifar10_cnn", "resnet18", "densenet"
+    "two_neuron_network", "tiny_nn", "cifar10_cnn", "resnet18", "densenet", "deit-b"
 ]
 
 
@@ -39,6 +38,15 @@ class ModelFactory:
     def create_model(model_type: MODEL_TYPE):
         loss_transformation = None
         match model_type:
+            case "deit-b":
+                # Load the pretrained DeiT model
+                torch_model = timm.create_model(
+                    "deit_base_patch16_224", pretrained=False, num_classes=10
+                )
+
+                # Define loss and optimizer
+                criterion = torch.nn.CrossEntropyLoss()
+                optimizer = torch.optim.Adam(torch_model.parameters(), lr=1e-4)
             case "densenet":
                 torch_model = models.densenet121(pretrained=False)
                 torch_model.classifier = torch.nn.Linear(
