@@ -23,27 +23,28 @@ def clear_gpu_memory():
 def create_and_initialize_model(hidden_size, intermediate_size, num_hidden_layers, ds_config):
     from deepspeed import zero
 
-    with zero.Init(config_dict_or_path=ds_config):
-        num_attention_heads = max(1, hidden_size // 64)  # Ensure divisibility
-        llama_config = LlamaConfig(
-            vocab_size=32000,
-            hidden_size=hidden_size,
-            intermediate_size=intermediate_size,
-            num_hidden_layers=num_hidden_layers,
-            num_attention_heads=num_attention_heads,
-            num_key_value_heads=num_attention_heads,
-            max_position_embeddings=2048,
-            rms_norm_eps=1e-6,
-            use_cache=True,
-            pad_token_id=0,
-            bos_token_id=1,
-            eos_token_id=2,
-            tie_word_embeddings=False,
-            activation_function="swiGLU"
-        )
+    # dont need ZeRO 3 for inference
 
-        model = LlamaForCausalLM(llama_config)
-    return model
+    num_attention_heads = max(1, hidden_size // 64)  # Ensure divisibility
+    llama_config = LlamaConfig(
+        vocab_size=32000,
+        hidden_size=hidden_size,
+        intermediate_size=intermediate_size,
+        num_hidden_layers=num_hidden_layers,
+        num_attention_heads=num_attention_heads,
+        num_key_value_heads=num_attention_heads,
+        max_position_embeddings=2048,
+        rms_norm_eps=1e-6,
+        use_cache=True,
+        pad_token_id=0,
+        bos_token_id=1,
+        eos_token_id=2,
+        tie_word_embeddings=False,
+        activation_function="swiGLU",
+    )
+
+    model = LlamaForCausalLM(llama_config)
+    return torch.compile(model, mode="max-autotune") # opt 2
 
 def main():
     # Remove manual initialization of the distributed process group
@@ -90,11 +91,11 @@ def main():
                 print(f"Total parameter count: {total_params:,}")
 
             try:
-                model_engine, _, _, _ = deepspeed.initialize(
-                    model=model,
-                    model_parameters=model.parameters(),
-                    config=ds_config
-                )
+                model_engine = deepspeed.init_inference(model, # opt 1
+                                     tensor_parallel={"tp_size": num_gpus},
+                                     dtype=torch.bfloat16,
+                                     replace_with_kernel_inject=False, # deepspeed doesn't support swiGLU yet
+                                     )
 
                 # Move tokenizer inputs to the correct device
                 input_text = "DeepSpeed is"
